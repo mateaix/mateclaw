@@ -178,4 +178,57 @@ class GoalManagementToolTest {
         // total = agent(12) + eval(2)
         assertTrue(result.contains("\"totalLlmCallsUsed\":14"));
     }
+    @Test
+    void waitForGoalInputRequiresReasonAndBoundContext() {
+        ToolContext ctx = ctxWith("conv-1", 10L, "alice");
+        assertTrue(tool.waitForGoalInput("  ", ctx).contains("reason"));
+        assertTrue(tool.waitForGoalInput("Need hostname", null).contains("bound conversation"));
+        verify(goalService, never()).findActiveByConversation(anyString());
+        verify(goalService, never()).waitForInput(any(), anyString(), anyString());
+    }
+
+    @Test
+    void waitForGoalInputRequiresEnabledPersistentActiveGoal() {
+        ToolContext ctx = ctxWith("conv-1", 10L, "alice");
+        properties.setEnabled(false);
+        assertTrue(tool.waitForGoalInput("Need hostname", ctx).contains("disabled"));
+        verify(goalService, never()).findActiveByConversation(anyString());
+        properties.setEnabled(true);
+        GoalEntity goal = goal(GoalStatus.ACTIVE);
+        when(goalService.findActiveByConversation("conv-1")).thenReturn(goal);
+        assertTrue(tool.waitForGoalInput("Need hostname", ctx).contains("persistent"));
+        goal.setPersistentExecution(true);
+        goal.setStatus(GoalStatus.PAUSED);
+        assertTrue(tool.waitForGoalInput("Need hostname", ctx).contains("active goal"));
+        verify(goalService, never()).waitForInput(any(), anyString(), anyString());
+    }
+
+    @Test
+    void waitForGoalInputPausesBoundGoal_andBroadcastsUpdatedState() {
+        GoalEntity active = goal(GoalStatus.ACTIVE);
+        active.setPersistentExecution(true);
+        GoalEntity paused = goal(GoalStatus.PAUSED);
+        paused.setPersistentExecution(true);
+        paused.setProgressSummary("Waiting for input: Need the deployment hostname");
+        when(goalService.findActiveByConversation("conv-1")).thenReturn(active);
+        when(goalService.waitForInput(123L, "Need the deployment hostname", "alice")).thenReturn(paused);
+        when(goalService.toResponse(paused)).thenReturn(new vip.mate.goal.model.GoalResponse());
+        String result = tool.waitForGoalInput("  Need the deployment hostname  ", ctxWith("conv-1", 10L, "alice"));
+        assertTrue(result.contains("\"status\":\"paused\""));
+        assertTrue(result.contains("Need the deployment hostname"));
+        verify(streamTracker).broadcastObject(eq("conv-1"), eq("goal_updated"), any());
+        verify(goalService, never()).markCompleted(any(), any());
+    }
+
+    @Test
+    void waitForGoalInputReturnsErrorIfStateChangedBeforePause() {
+        GoalEntity active = goal(GoalStatus.ACTIVE);
+        active.setPersistentExecution(true);
+        when(goalService.findActiveByConversation("conv-1")).thenReturn(active);
+        when(goalService.waitForInput(123L, "Need hostname", "alice"))
+                .thenThrow(new MateClawException("err.goal.bad_transition", 409, "Goal no longer active"));
+        assertTrue(tool.waitForGoalInput("Need hostname", ctxWith("conv-1", 10L, "alice")).contains("Goal no longer active"));
+        verify(streamTracker, never()).broadcastObject(anyString(), anyString(), any());
+    }
+
 }

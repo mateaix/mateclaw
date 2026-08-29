@@ -5,6 +5,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
+import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.UserMessage;
@@ -94,6 +95,25 @@ class GoalEvaluationServiceTest {
     }
 
     // ==================== Pre-flight guards ====================
+
+    @Test
+    void persistentVerdictReceivesPriorVerifiedEvidenceOutsideConversationWindow() {
+        GoalEntity g = goalWithCriteria();
+        g.setPersistentExecution(true);
+        g.setCriteria("[{\"id\":\"C1\",\"text\":\"DNS configured\",\"passed\":true,\"evidence\":\"verified DNS checkpoint\"},"
+                + "{\"id\":\"C2\",\"text\":\"TLS enabled\",\"passed\":false,\"evidence\":\"\"}]");
+        stubChatResponse("{\"criterionVerdicts\":[{\"id\":\"C2\",\"passed\":true,\"evidence\":\"TLS handshake verified\"}],\"summary\":\"done\"}");
+
+        GoalEvaluationResult result = svc.evaluate(g,List.of(),"TLS handshake verified");
+
+        ArgumentCaptor<Prompt> request = ArgumentCaptor.forClass(Prompt.class);
+        verify(chatModel).call(request.capture());
+        String prompt = request.getValue().getContents();
+        assertTrue(prompt.contains("verified DNS checkpoint"), "persistent evaluation must retain prior evidence after history truncation");
+        assertTrue(prompt.contains("passed=true"));
+        assertTrue(prompt.contains("contradicts"));
+        assertTrue(result.completed(), "a new verified step can complete previously verified work without repeating it");
+    }
 
     @Test
     void nullGoal_returnsFallback_withoutTouchingProviders() {

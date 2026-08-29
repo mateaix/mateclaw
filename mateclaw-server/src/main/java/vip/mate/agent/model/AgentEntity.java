@@ -26,6 +26,14 @@ public class AgentEntity {
     /** Agent 类型：react / plan_execute */
     private String agentType;
 
+    /** Runtime provider type: native / dsh / other registered providers. */
+    @TableField(value = "runtime_type")
+    private String runtimeType;
+
+    /** Runtime-specific JSON configuration. Null means provider defaults. */
+    @TableField(value = "runtime_config", updateStrategy = FieldStrategy.ALWAYS)
+    private String runtimeConfig;
+
     /** 系统提示词 */
     @TableField(value = "system_prompt", updateStrategy = FieldStrategy.ALWAYS)
     private String systemPrompt;

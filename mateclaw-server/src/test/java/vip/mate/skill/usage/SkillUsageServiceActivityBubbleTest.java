@@ -9,12 +9,15 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DuplicateKeyException;
 import vip.mate.skill.lifecycle.SkillLifecycleService;
 import vip.mate.skill.repository.SkillUsageStatMapper;
 import vip.mate.skill.runtime.model.ResolvedSkill;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -48,7 +51,6 @@ class SkillUsageServiceActivityBubbleTest {
     @Test
     void recordLoadedBubblesActivityToLifecycle() {
         ResolvedSkill skill = ResolvedSkill.builder().id(7L).name("demo").build();
-        when(mapper.selectOne(any())).thenReturn(null);
 
         service.recordLoaded(skill, 1L, "conv-1", "SKILL.md", 100);
 
@@ -59,5 +61,18 @@ class SkillUsageServiceActivityBubbleTest {
     void recordLoadedIgnoresNullSkill() {
         service.recordLoaded(null, 1L, "conv-1", "SKILL.md", 100);
         verify(lifecycleService, never()).bumpActivity(any());
+    }
+
+    @Test
+    void recordLoadedRetriesAtomicUpdateWhenParallelInsertWins() {
+        ResolvedSkill skill = ResolvedSkill.builder().id(7L).name("demo").build();
+        when(mapper.update(any(), any())).thenReturn(0, 1);
+        doThrow(new DuplicateKeyException("parallel insert"))
+                .when(mapper).insert(any(SkillUsageStatEntity.class));
+
+        service.recordLoaded(skill, 1L, "conv-1", "SKILL.md", 100);
+
+        verify(mapper, times(2)).update(any(), any());
+        verify(lifecycleService).bumpActivity(7L);
     }
 }

@@ -8,6 +8,8 @@ interface RouteHydrationConversation {
   conversationId: string
 }
 
+type StreamStatusLike = string | null | undefined
+
 export function resolveRouteHydrationQuery(options: {
   routeAgentId?: string
   routeConversationId?: string
@@ -91,5 +93,28 @@ export function buildChatRouteQuery(options: {
     ...(options.agentId ? { agentId: options.agentId } : {}),
     ...(options.conversationId ? { conversationId: options.conversationId } : {}),
     ...runQuery,
+  }
+}
+
+export function decideConversationResume(options: {
+  currentConversationId?: string
+  targetConversationId: string
+  snapshotStreamStatus?: StreamStatusLike
+  liveStreamStatus?: StreamStatusLike
+}): {
+  shouldResetLocalStream: boolean
+  shouldRefreshMessages: boolean
+  shouldReconnectStream: boolean
+} {
+  const switchingConversation = options.currentConversationId !== options.targetConversationId
+  const hasLiveStatus = typeof options.liveStreamStatus === 'string' && options.liveStreamStatus.length > 0
+  const running = hasLiveStatus
+    ? options.liveStreamStatus === 'running'
+    : options.snapshotStreamStatus === 'running'
+
+  return {
+    shouldResetLocalStream: switchingConversation,
+    shouldRefreshMessages: true,
+    shouldReconnectStream: running,
   }
 }

@@ -11,7 +11,6 @@ import vip.mate.acp.model.AcpEndpointEntity;
 import vip.mate.exception.MateClawException;
 
 import java.io.IOException;
-import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 
@@ -46,11 +45,6 @@ import java.util.Map;
 @Service
 @RequiredArgsConstructor
 public class AcpDelegationService {
-
-    /** Hard ceiling on a single ACP delegation. Long enough for a
-     *  multi-turn coding session, short enough that a hung agent can't
-     *  permanently block an LLM tool call. */
-    private static final Duration PROMPT_TIMEOUT = Duration.ofMinutes(5);
 
     private static final long INITIALIZE_TIMEOUT_MS = 15_000L;
     private static final long SESSION_NEW_TIMEOUT_MS = 10_000L;
@@ -89,6 +83,7 @@ public class AcpDelegationService {
         List<String> args = endpointService.parseArgs(endpoint);
         Map<String, String> env = endpointService.parseEnv(endpoint);
         boolean trusted = !Boolean.FALSE.equals(endpoint.getTrusted());
+        long promptTimeoutMillis = resolvePromptTimeoutMillis(endpoint);
         // Always resolve cwd to a real directory: Zed's ACP Zod schema
         // marks cwd as a required string and rejects {@code undefined}
         // with -32602. See {@link AcpRuntimeSupport#resolveCwd}.
@@ -124,7 +119,7 @@ public class AcpDelegationService {
             ObjectNode promptParams = objectMapper.createObjectNode();
             promptParams.put("sessionId", sessionId);
             promptParams.set("prompt", buildPromptArray(userPrompt));
-            autoClose.sendRequest("session/prompt", promptParams, PROMPT_TIMEOUT.toMillis());
+            autoClose.sendRequest("session/prompt", promptParams, promptTimeoutMillis);
         } catch (IOException | InterruptedException e) {
             if (e instanceof InterruptedException) Thread.currentThread().interrupt();
             log.warn("ACP delegation failed for endpoint '{}': {}", endpointName, e.getMessage());
@@ -142,6 +137,12 @@ public class AcpDelegationService {
         }
 
         return accumulator.toString().trim();
+    }
+
+    static long resolvePromptTimeoutMillis(AcpEndpointEntity endpoint) {
+        int seconds = AcpEndpointService.normalizePromptTimeoutSeconds(
+                endpoint != null ? endpoint.getPromptTimeoutSeconds() : null);
+        return seconds * 1000L;
     }
 
     private void wireHandlers(AcpStdioClient client, StringBuilder buf,

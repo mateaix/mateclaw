@@ -4,12 +4,14 @@ import com.alibaba.cloud.ai.graph.OverAllState;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
+import vip.mate.agent.GraphEventPublisher;
 import vip.mate.agent.context.ConversationWindowManager;
 import vip.mate.agent.graph.state.FinishReason;
 import vip.mate.agent.graph.state.MateClawStateKeys;
 import vip.mate.goal.config.GoalProperties;
 import vip.mate.goal.model.GoalEntity;
 import vip.mate.goal.model.GoalEvaluationResult;
+import vip.mate.goal.model.GoalCriterion;
 import vip.mate.goal.model.GoalResponse;
 import vip.mate.goal.service.GoalEvaluationService;
 import vip.mate.goal.service.GoalFollowupService;
@@ -174,6 +176,43 @@ class GoalEvaluationNodeContinuationTest {
         assertEquals(Boolean.TRUE, out.get(MateClawStateKeys.GOAL_EVALUATED_THIS_RUN));
         assertFalse(out.containsKey(MateClawStateKeys.GOAL_FOLLOWUP_INJECTED));
         assertFalse(out.containsKey(MateClawStateKeys.CURRENT_ITERATION));
+    }
+
+    @Test
+    void persistentGoalYieldsToDurableSupervisorInsteadOfSpendingGraphFollowups() throws Exception {
+        Fixture f = new Fixture();
+        GoalEntity persistent = f.goalService.getById(1L);
+        persistent.setPersistentExecution(true);
+        persistent.setStatus(vip.mate.goal.model.GoalStatus.ACTIVE);
+        Map<String,Object> out = f.node().apply(f.state(FinishReason.NORMAL.getValue(),0,0));
+        assertEquals(Boolean.TRUE,out.get(MateClawStateKeys.GOAL_EVALUATED_THIS_RUN));
+        assertFalse(out.containsKey(MateClawStateKeys.GOAL_FOLLOWUP_INJECTED));
+        verify(f.followupService,never()).maybeBuildFollowup(any(),any());
+    }
+
+    @Test
+    void goalEvaluationEventCarriesStateSafeGoalSnapshot() throws Exception {
+        Fixture f = new Fixture();
+        GoalEntity persistent = f.goalService.getById(1L);
+        persistent.setPersistentExecution(true);
+        persistent.setStatus(vip.mate.goal.model.GoalStatus.ACTIVE);
+
+        GoalResponse response = new GoalResponse();
+        response.setId(1L);
+        response.setTitle("ship the feature");
+        response.setCriteria(List.of(new GoalCriterion("C1", "tests pass", false, "")));
+        when(f.goalService.toResponse(any())).thenReturn(response);
+
+        Map<String,Object> out = f.node().apply(f.state(FinishReason.NORMAL.getValue(),0,0));
+        @SuppressWarnings("unchecked")
+        List<GraphEventPublisher.GraphEvent> events =
+                (List<GraphEventPublisher.GraphEvent>) out.get(MateClawStateKeys.PENDING_EVENTS);
+        Object goalSnapshot = events.get(0).data().get("goal");
+
+        assertInstanceOf(Map.class, goalSnapshot);
+        Object criteria = ((Map<?, ?>) goalSnapshot).get("criteria");
+        assertInstanceOf(List.class, criteria);
+        assertInstanceOf(Map.class, ((List<?>) criteria).get(0));
     }
 
     // ===== Test fixture =====

@@ -65,14 +65,22 @@
       </button>
     </div>
 
-    <!-- Loading -->
-    <div v-if="isInitialLoading" class="cards-grid">
-      <div v-for="i in 3" :key="i" class="agent-card mc-surface-card agent-card-skeleton">
-        <el-skeleton :rows="2" animated />
+    <div v-if="initialLoadingCopy" class="live-loading-state" role="status" aria-live="polite">
+      <span v-if="initialLoadingStage !== 'failed'" class="live-loading-spinner" aria-hidden="true"></span>
+      <div class="live-loading-copy">
+        <strong>{{ t(initialLoadingCopy.title) }}</strong>
+        <span>{{ t(initialLoadingCopy.hint) }}</span>
       </div>
+      <button v-if="initialLoadingStage === 'failed'" class="loading-retry" @click="retryInitialLoad">
+        {{ t('live.loading.retry') }}
+      </button>
     </div>
 
     <template v-else>
+      <div v-if="loadingState.stage === 'syncingTeams'" class="team-sync-note" role="status" aria-live="polite">
+        <span class="team-sync-dot" aria-hidden="true"></span>
+        <span>{{ t('live.loading.syncingTeams') }}</span>
+      </div>
       <AgentRunGroups
         :groups="teamProjection.groups"
         :selected-run-id="selectedTeamRunId"
@@ -213,6 +221,7 @@ import { useLiveSnapshot } from '@/composables/useLiveSnapshot'
 import { mcConfirm } from '@/components/common/useConfirm'
 import { liveApi, goalApi, type LiveSnapshot, type LiveRunCard, type LiveSubagentCard, type Goal } from '@/api'
 import { buildTeamRunRoute } from '@/components/team-run/teamRunPresentation'
+import { resolveLivePanelLoading, type LivePanelLoadingStage } from '@/utils/livePanelLoading'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -243,12 +252,36 @@ const routeHydrator = createAgentsLiveRouteHydrator({
 })
 const selectedTeamRunId = computed(() => selection.value.selectedRunId)
 const selectedTeamTaskId = computed(() => selection.value.selectedTaskId)
-const isInitialLoading = liveSnapshot.loading
+const loadingElapsedMs = ref(0)
+const hasRuntimeActivity = computed(() => (
+  (snapshot.value?.runs.length ?? 0) > 0 || (snapshot.value?.subagents.length ?? 0) > 0
+))
+const loadingState = computed(() => resolveLivePanelLoading({
+  hasSnapshot: snapshot.value != null,
+  snapshotLoading: liveSnapshot.loading.value,
+  teamLoading: teamGroups.loading.value,
+  hasRuntimeActivity: hasRuntimeActivity.value,
+  hasError: liveSnapshot.error.value != null,
+  elapsedMs: loadingElapsedMs.value,
+}))
+const initialLoadingStage = computed<LivePanelLoadingStage>(() => (
+  loadingState.value.blocksContent ? loadingState.value.stage : null
+))
+const initialLoadingCopy = computed(() => {
+  switch (initialLoadingStage.value) {
+    case 'connecting': return { title: 'live.loading.connecting', hint: 'live.loading.connectingHint' }
+    case 'checking': return { title: 'live.loading.checking', hint: 'live.loading.checkingHint' }
+    case 'slow': return { title: 'live.loading.slow', hint: 'live.loading.slowHint' }
+    case 'failed': return { title: 'live.loading.failed', hint: 'live.loading.failedHint' }
+    default: return null
+  }
+})
 const autoRefresh = ref(true)
 const drawerOpen = ref(false)
 const detail = ref<LiveRunCard | null>(null)
 const activeFilter = ref<FilterKey>('all')
 let timer: ReturnType<typeof setInterval> | null = null
+let loadingClock: ReturnType<typeof setInterval> | null = null
 
 // ===== Lifecycle board mode =====
 // Same snapshot, laid out across run/goal lifecycle columns. Goals are fetched
@@ -458,6 +491,27 @@ async function refresh() {
   }
 }
 
+function stopLoadingClock() {
+  if (!loadingClock) return
+  clearInterval(loadingClock)
+  loadingClock = null
+}
+
+function startLoadingClock() {
+  stopLoadingClock()
+  const startedAt = Date.now()
+  loadingElapsedMs.value = 0
+  loadingClock = setInterval(() => {
+    loadingElapsedMs.value = Date.now() - startedAt
+    if (snapshot.value != null || !liveSnapshot.loading.value) stopLoadingClock()
+  }, 100)
+}
+
+function retryInitialLoad() {
+  startLoadingClock()
+  void refresh()
+}
+
 watch(
   () => [liveRoute.value.view, liveRoute.value.runId, liveRoute.value.taskId] as const,
   () => routeHydrator.hydrate(liveRoute.value),
@@ -565,12 +619,14 @@ async function confirmSweep() {
 }
 
 onMounted(() => {
+  startLoadingClock()
   refresh()
   timer = setInterval(refresh, 5000)
 })
 
 onBeforeUnmount(() => {
   if (timer) clearInterval(timer)
+  stopLoadingClock()
   liveSnapshot.close()
   teamGroups.close()
 })
@@ -582,6 +638,79 @@ onBeforeUnmount(() => {
 }
 .other-live-title { margin: 0 0 10px; color: var(--mc-text-primary); font-size: 14px; letter-spacing: 0; }
 .team-runs-error { margin: -8px 0 12px; color: var(--mc-danger, #c13d3d); font-size: 12px; }
+
+.live-loading-state {
+  min-height: 280px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  border-top: 1px solid var(--mc-border-light);
+  border-bottom: 1px solid var(--mc-border-light);
+  color: var(--mc-text-secondary);
+}
+
+.live-loading-spinner {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  border: 2px solid color-mix(in srgb, var(--mc-text-tertiary) 25%, transparent);
+  border-top-color: var(--mc-primary);
+  border-radius: 50%;
+  animation: live-loading-spin 0.8s linear infinite;
+}
+
+.live-loading-copy {
+  display: grid;
+  gap: 4px;
+  max-width: 520px;
+}
+
+.live-loading-copy strong {
+  color: var(--mc-text-primary);
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.live-loading-copy span {
+  color: var(--mc-text-tertiary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.loading-retry {
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--mc-border-light);
+  border-radius: 6px;
+  background: var(--mc-bg-elevated);
+  color: var(--mc-text-primary);
+  cursor: pointer;
+}
+
+.team-sync-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  margin: -4px 0 14px;
+  padding: 0 2px;
+  color: var(--mc-text-tertiary);
+  font-size: 12px;
+}
+
+.team-sync-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--mc-primary);
+  animation: chip-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes live-loading-spin {
+  to { transform: rotate(360deg); }
+}
 
 /* ===== Toolbar: live toggle + status filters + sweep ===== */
 .live-toolbar {

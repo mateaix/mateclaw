@@ -110,6 +110,10 @@ async function mapConcurrent<T, R>(
   return results
 }
 
+function hasRuntimeActivity(snapshot: LiveSnapshot | null): boolean {
+  return (snapshot?.runs?.length ?? 0) > 0 || (snapshot?.subagents?.length ?? 0) > 0
+}
+
 export function useAgentRunGroups(snapshot: Ref<LiveSnapshot | null>) {
   const listedRuns = ref<TeamRun[]>([])
   const ensuredRun = ref<TeamRun | null>(null)
@@ -146,6 +150,11 @@ export function useAgentRunGroups(snapshot: Ref<LiveSnapshot | null>) {
 
   async function runRefresh(request: number) {
     try {
+      if (!hasRuntimeActivity(snapshot.value)) {
+        listedRuns.value = []
+        error.value = null
+        return
+      }
       const teamsResponse: any = await teamApi.list()
       const teams = teamsResponse?.data ?? []
       if (closed || request !== listSequence) return

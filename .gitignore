@@ -83,6 +83,7 @@ mateclaw-server/src/main/resources/static/
 
 # mateclaw local runtime data (H2 DB, logs, etc. - do not commit)
 mateclaw-server/data/
+.sessions/
 /data/
 
 # VitePress build output and cache (do not commit)

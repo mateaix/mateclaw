@@ -26,7 +26,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -42,9 +41,11 @@ import static org.mockito.Mockito.when;
  * endpoints did not — an asymmetry that becomes a cross-workspace breach once
  * workspaces are untrusted isolation boundaries.
  *
- * <p>Post-fix behavior: shared conversations are visible only to members of
- * their own workspace (plus global admins, plus the legacy escape hatches for
- * pre-workspace rows and anonymous permitAll reconnects).
+ * <p>Post-fix behavior: shared conversations are visible only to global admins
+ * (plus the legacy escape hatches for pre-workspace rows and anonymous
+ * permitAll reconnects). Issue #616 intentionally rejects same-workspace
+ * ordinary members too, because workspace membership is not conversation
+ * ownership.
  *
  * <p>Pure-Mockito (no Spring context) so the test stays fast and isolated.
  *
@@ -101,17 +102,16 @@ class ConversationServiceOwnershipWorkspaceTest {
     }
 
     // ------------------------------------------------------------------
-    // 2. System conv, same-workspace member → allowed
+    // 2. System conv, same-workspace member → rejected (#616)
     // ------------------------------------------------------------------
 
     @Test
-    @DisplayName("system conv in requester's workspace: member passes")
-    void systemConvSameWorkspaceMember() {
+    @DisplayName("system conv in requester's workspace: member rejected (#616)")
+    void systemConvSameWorkspaceMemberRejected() {
         when(conversationMapper.selectOne(any())).thenReturn(conv(SYSTEM_CONV, "system", WS_TENANT_A));
-        when(workspaceService.hasPermissionCached(WS_TENANT_A, ALICE_USER_ID, "viewer"))
-                .thenReturn(true);
 
-        assertThat(service.isConversationOwner(SYSTEM_CONV, "alice")).isTrue();
+        assertThat(service.isConversationOwner(SYSTEM_CONV, "alice")).isFalse();
+        verify(workspaceService, never()).hasPermissionCached(anyLong(), anyLong(), anyString());
     }
 
     // ------------------------------------------------------------------
@@ -122,11 +122,9 @@ class ConversationServiceOwnershipWorkspaceTest {
     @DisplayName("system conv in another workspace: non-member rejected (#344)")
     void systemConvCrossWorkspaceRejected() {
         when(conversationMapper.selectOne(any())).thenReturn(conv(SYSTEM_CONV, "system", WS_TENANT_A));
-        // Bob is not a member of tenant A.
-        when(workspaceService.hasPermissionCached(WS_TENANT_A, BOB_USER_ID, "viewer"))
-                .thenReturn(false);
 
         assertThat(service.isConversationOwner(SYSTEM_CONV, "bob")).isFalse();
+        verify(workspaceService, never()).hasPermissionCached(anyLong(), anyLong(), anyString());
     }
 
     // ------------------------------------------------------------------
@@ -189,12 +187,11 @@ class ConversationServiceOwnershipWorkspaceTest {
     @DisplayName("webchat conv: invisible to a JWT user even when they share the workspace")
     void webchatConvInvisibleToJwtUser() {
         when(conversationMapper.selectOne(any())).thenReturn(conv(WEBCHAT_CONV, "webchat:vA", WS_TENANT_A));
-        when(workspaceService.hasPermissionCached(WS_TENANT_A, ALICE_USER_ID, "viewer"))
-                .thenReturn(true);
 
-        // Alice is a member of the conv's workspace, but the conv is owned by
-        // "webchat:vA" — not "system" — so the final OR-clause returns false.
+        // Alice may be a member of the conv's workspace, but the conv is owned
+        // by "webchat:vA" and workspace membership is not ownership.
         assertThat(service.isConversationOwner(WEBCHAT_CONV, "alice")).isFalse();
+        verify(workspaceService, never()).hasPermissionCached(anyLong(), anyLong(), anyString());
     }
 
     @Test
@@ -219,15 +216,12 @@ class ConversationServiceOwnershipWorkspaceTest {
     }
 
     @Test
-    @DisplayName("system conv + same-workspace member that the workspace service lost track of: rejected")
+    @DisplayName("system conv + ordinary member: rejected without membership lookup (#616)")
     void systemConvMemberCacheMiss() {
         when(conversationMapper.selectOne(any())).thenReturn(conv(SYSTEM_CONV, "system", WS_TENANT_A));
-        // Membership cache returns false even though we'd expect this user to
-        // be a member — defense in depth: when in doubt, deny.
-        when(workspaceService.hasPermissionCached(eq(WS_TENANT_A), eq(ALICE_USER_ID), eq("viewer")))
-                .thenReturn(false);
 
         assertThat(service.isConversationOwner(SYSTEM_CONV, "alice")).isFalse();
+        verify(workspaceService, never()).hasPermissionCached(anyLong(), anyLong(), anyString());
     }
 
     // ------------------------------------------------------------------

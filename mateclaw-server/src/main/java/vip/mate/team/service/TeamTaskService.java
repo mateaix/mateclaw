@@ -559,6 +559,13 @@ public class TeamTaskService {
         if (deliverables == null) {
             deliverables = new JSONArray();
         }
+        for (Object item : deliverables) {
+            if (item instanceof JSONObject existing
+                    && trimmedUrl.equals(existing.getStr("url"))) {
+                log.debug("Team task {} deliverable already attached: {}", taskId, trimmedUrl);
+                return;
+            }
+        }
         if (deliverables.size() >= MAX_DELIVERABLES) {
             throw new IllegalStateException("task #" + task.getTaskNumber() + " already has "
                     + MAX_DELIVERABLES + " deliverables; consolidate outputs instead of adding more");

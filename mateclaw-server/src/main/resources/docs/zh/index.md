@@ -20,12 +20,15 @@ hero:
       link: https://github.com/mateaix/mateclaw
 
 features:
+  - icon: ⚙️
+    title: 员工 Runtime，不只一种 Agent Loop
+    details: 2.2.0 用统一 Runtime Contract 把员工身份与推理引擎解耦。Native 与 DeepSeek Harness 共用会话、工作空间、工具治理和事件投影；持久目标跨请求与后端重启恢复，A2A 连接外部 Agent。
   - icon: 🧑‍💼
     title: 数字员工，不是聊天机器人
     details: 你雇佣同事，不是开聊天框。每位有角色 / 目标 / 背景故事、像素艺术头像与专属配色——6 个内置模板开箱可用。ReAct + Plan-and-Execute 双模式，员工之间并行委派。
   - icon: 🤝
     title: 团队，不是单打独斗
-    details: 一次团队请求对应一个 Team Run：目标、任务 DAG、成员执行、最终汇总与交付物统一追踪。Chat 交付成果、Agents 观察实时运行、Teams 管理历史与审批——2.1.0 起，一轮协作就是一份完整工作记录。
+    details: 一次团队请求对应一个 Team Run：目标、任务 DAG、成员执行、最终汇总与交付物统一追踪。Chat 交付成果、Agents 观察实时运行、Teams 管理历史与审批；2.2.0 进一步加固 checkpoint 恢复与交付物完成门。
   - icon: 🧩
     title: 技能是骨架，不是插件
     details: 一份 SKILL.md + 一份 LESSONS.md（用得越多越聪明）。8 个起步模板，向导 5 步出包，安装前自动 Pre-flight 检查。MCP / ACP 双桥接，连 Claude Code、Codex 都能进来当员工。

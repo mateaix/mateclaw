@@ -27,8 +27,10 @@ import vip.mate.workspace.conversation.model.ConversationEntity;
 import vip.mate.workspace.conversation.repository.ConversationMapper;
 
 import java.util.List;
+import java.util.Locale;
 import java.time.Duration;
 import java.util.Map;
+import java.nio.file.Path;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -70,6 +72,9 @@ public class AgentService {
     @Autowired(required = false)
     private vip.mate.agent.runtime.RunningConversationRegistry runningConversationRegistry;
 
+    @Autowired
+    private vip.mate.agent.runtime.ConversationTurnGate turnGate = new vip.mate.agent.runtime.ConversationTurnGate();
+
     /**
      * Optional — clears leftover auto-recorded ledger entries when a new
      * user turn starts. Field-injected so existing test constructors of
@@ -77,6 +82,13 @@ public class AgentService {
      */
     @Autowired(required = false)
     private ProgressLedgerService progressLedgerService;
+
+    /** Runtime SPI coordinator. Native agents remain the default. */
+    @Autowired(required = false)
+    private vip.mate.agent.runtime.contract.AgentRuntimeCoordinator runtimeCoordinator;
+
+    @Autowired(required = false)
+    private vip.mate.agent.runtime.dsh.DshRuntimeService dshRuntimeService;
 
     /**
      * Runtime Agent instance cache. Keyed first by agentId, then by a model
@@ -132,6 +144,16 @@ public class AgentService {
         if (agent.getAgentType() == null) {
             agent.setAgentType("react");
         }
+        if (!StringUtils.hasText(agent.getRuntimeType())) {
+            agent.setRuntimeType("native");
+        } else {
+            agent.setRuntimeType(agent.getRuntimeType().trim().toLowerCase(Locale.ROOT));
+        }
+        if (!"native".equals(agent.getRuntimeType()) && !"dsh".equals(agent.getRuntimeType())) {
+            throw new MateClawException("err.agent.runtime_unsupported", 400,
+                    "Unsupported runtime provider: " + agent.getRuntimeType());
+        }
+        validateDshConfiguration(agent);
         requireUniqueName(agent, null);
         agentMapper.insert(agent);
         publishLifecycle(agent, "spawned");
@@ -155,6 +177,9 @@ public class AgentService {
                 agent.setWorkspaceId(prior.getWorkspaceId());
             }
             requireUniqueName(agent, agent.getId());
+        }
+        if ("dsh".equalsIgnoreCase(agent.getRuntimeType())) {
+            validateDshConfiguration(agent);
         }
         agentMapper.updateById(agent);
         agentInstances.remove(agent.getId());
@@ -275,6 +300,8 @@ public class AgentService {
      * work already done before the pause.
      */
     private void clearAutoRecordedForNewTurn(String conversationId) {
+        // Autonomous segments resume the same objective; retain authoritative tool progress.
+        if (vip.mate.agent.context.GoalContinuationContext.active()) return;
         if (progressLedgerService == null || conversationId == null || conversationId.isBlank()) {
             return;
         }
@@ -299,6 +326,10 @@ public class AgentService {
     public String chat(Long agentId, String message, String conversationId, ChatOrigin origin) {
         clearAutoRecordedForNewTurn(conversationId);
         memoryRecallTracker.trackRecalls(agentId, message);
+        if (isDshAgent(agentId)) {
+            return collectChatResult(chatStructuredStream(agentId, message, conversationId,
+                    "", null, origin != null ? origin : ChatOrigin.EMPTY)).content();
+        }
         BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
         ChatOriginHolder.set(origin != null ? origin : ChatOrigin.EMPTY);
         try {
@@ -336,6 +367,12 @@ public class AgentService {
     public Flux<String> chatStream(Long agentId, String message, String conversationId, ChatOrigin origin) {
         clearAutoRecordedForNewTurn(conversationId);
         memoryRecallTracker.trackRecalls(agentId, message);
+        if (isDshAgent(agentId)) {
+            return chatStructuredStream(agentId, message, conversationId, "", null,
+                    origin != null ? origin : ChatOrigin.EMPTY)
+                    .filter(delta -> delta.content() != null)
+                    .map(StreamDelta::content);
+        }
         BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
         // Capture the origin into a request-scoped holder; cleared on Flux
         // termination so the next reactive subscriber doesn't inherit stale state.
@@ -373,6 +410,19 @@ public class AgentService {
                                                    ChatOrigin origin) {
         clearAutoRecordedForNewTurn(conversationId);
         memoryRecallTracker.trackRecalls(agentId, message);
+        if (isDshAgent(agentId)) {
+            AgentEntity dshAgent = getAgent(agentId);
+            return withLifecycleFlux(agentId, message, conversationId,
+                    (msg, convId) -> Flux.using(
+                            () -> runtimeCoordinator.start(dshAgent, convId, convId,
+                                    dshAgent.getModelName(), dshWorkingDirectory(dshAgent),
+                                    dshWorkingDirectory(dshAgent)),
+                            connection -> vip.mate.agent.runtime.RuntimeEventStreamAdapter.adapt(
+                                    connection.prompt(msg)),
+                            connection -> connection.close()),
+                    StreamDelta::content)
+                    .doFinally(signal -> ThinkingLevelHolder.clear());
+        }
         BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
 
         // 设置请求级思考深度（通过 ThreadLocal 传递到 StateGraph 执行）
@@ -618,6 +668,13 @@ public class AgentService {
      */
     private String withLifecycleSync(Long agentId, String message, String conversationId,
                                      java.util.function.BiFunction<String, String, String> invoke) {
+        try (var permit = acquireTurn(conversationId)) {
+            return invokeWithLifecycleSync(agentId,message,conversationId,invoke);
+        }
+    }
+
+    private String invokeWithLifecycleSync(Long agentId, String message, String conversationId,
+                                     java.util.function.BiFunction<String, String, String> invoke) {
         safeRegister(conversationId, agentId);
         try {
             if (!memoryProperties.isLifecycleMediatorEnabled()) {
@@ -646,11 +703,26 @@ public class AgentService {
     private <T> Flux<T> withLifecycleFlux(Long agentId, String message, String conversationId,
                                           java.util.function.BiFunction<String, String, Flux<T>> invoke,
                                           Function<T, String> contentExtractor) {
+        return Flux.using(() -> acquireTurn(conversationId),
+                permit -> invokeWithLifecycleFlux(agentId,message,conversationId,invoke,contentExtractor),
+                vip.mate.agent.runtime.ConversationTurnGate.Permit::close);
+    }
+
+    private vip.mate.agent.runtime.ConversationTurnGate.Permit acquireTurn(String conversationId) {
+        var permit = turnGate.tryAcquire(conversationId);
+        if (permit == null) throw new MateClawException("err.agent.conversation_busy",409,"Conversation is already running");
+        return permit;
+    }
+
+    private <T> Flux<T> invokeWithLifecycleFlux(Long agentId, String message, String conversationId,
+                                          java.util.function.BiFunction<String, String, Flux<T>> invoke,
+                                          Function<T, String> contentExtractor) {
+        boolean goalContinuation = vip.mate.agent.context.GoalContinuationContext.active();
         safeRegister(conversationId, agentId);
         try {
             if (!memoryProperties.isLifecycleMediatorEnabled()) {
                 return invoke.apply(message, conversationId)
-                        .doFinally(s -> safeUnregister(conversationId));
+                        .doFinally(s -> safeUnregister(conversationId, goalContinuation));
             }
             String ownerKey = memoryOwnerResolver.resolve(ChatOriginHolder.get());
             TurnContext ctx = new TurnContext(agentId, conversationId, conversationId, 0, message, ownerKey);
@@ -666,11 +738,11 @@ public class AgentService {
                     })
                     .doOnComplete(() -> lifecycleMediator.afterLlmCall(ctx, reply.toString()))
                     .doOnError(e -> log.debug("[Memory] Stream error, skipping afterLlmCall: {}", e.getMessage()))
-                    .doFinally(s -> safeUnregister(conversationId));
+                    .doFinally(s -> safeUnregister(conversationId, goalContinuation));
         } catch (Exception e) {
             // If invoke.apply() throws before the Flux is constructed, the
             // doFinally above never runs — clean up here.
-            safeUnregister(conversationId);
+            safeUnregister(conversationId, goalContinuation);
             throw e;
         }
     }
@@ -684,9 +756,41 @@ public class AgentService {
 
     /** C5 helper — null-safe unregister so tests without the registry don't NPE. */
     private void safeUnregister(String conversationId) {
+        safeUnregister(conversationId, vip.mate.agent.context.GoalContinuationContext.active());
+    }
+
+    private void safeUnregister(String conversationId, boolean goalContinuation) {
         if (runningConversationRegistry != null) {
             runningConversationRegistry.unregister(conversationId);
         }
+        if (events != null && !goalContinuation) events.publishEvent(new vip.mate.goal.service.GoalExecutionSignal.TurnFinished(conversationId));
+    }
+
+    private boolean isDshAgent(Long agentId) {
+        if (runtimeCoordinator == null || agentId == null) return false;
+        AgentEntity entity = getAgent(agentId);
+        return "dsh".equalsIgnoreCase(entity.getRuntimeType());
+    }
+
+    private void validateDshConfiguration(AgentEntity agent) {
+        if (!"dsh".equalsIgnoreCase(agent.getRuntimeType())) return;
+        if (dshRuntimeService == null) {
+            throw new MateClawException("err.agent.runtime_unavailable", 503,
+                    "DSH runtime provider is unavailable");
+        }
+        try {
+            dshRuntimeService.validateAgentConfiguration(agent);
+        } catch (IllegalArgumentException error) {
+            throw new MateClawException("err.agent.runtime_invalid", 400, error.getMessage());
+        }
+    }
+
+    private Path dshWorkingDirectory(AgentEntity agent) {
+        String configured = System.getenv().getOrDefault("DSH_CWD", System.getProperty("user.dir"));
+        if (agent.getWorkspaceBasePath() != null && !agent.getWorkspaceBasePath().isBlank()) {
+            configured = agent.getWorkspaceBasePath().trim();
+        }
+        return Path.of(configured).toAbsolutePath().normalize();
     }
 
     /**

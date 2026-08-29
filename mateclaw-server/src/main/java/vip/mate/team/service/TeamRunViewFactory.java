@@ -191,11 +191,9 @@ final class TeamRunViewFactory {
                         task.getId(), message == null ? task.getSubject() : message, task.getUpdateTime()));
             }
         }
-        String quality = outcomeQuality(run, tasks);
-        if ("fallback".equals(quality) || "partial".equals(quality)) {
-            items.add(new TeamRunView.AttentionItem("run:" + run.getId() + ":synthesis", "synthesis",
-                    "warning", 10, null, "Final synthesis used a degraded outcome", run.getUpdateTime()));
-        }
+        // Synthesis quality is already exposed as outcomeQuality. A fallback
+        // summary is informative but has no user action, so it must not inflate
+        // the board's "needs attention" count.
         if (text(run.getStopReason()) != null) {
             items.add(new TeamRunView.AttentionItem("run:" + run.getId() + ":stopped", "stopped",
                     "warning", 10, null, run.getStopReason(), run.getUpdateTime()));

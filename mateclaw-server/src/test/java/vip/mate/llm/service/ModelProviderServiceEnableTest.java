@@ -14,6 +14,7 @@ import vip.mate.llm.failover.AvailableProviderPool;
 import vip.mate.llm.failover.ProviderHealthProperties;
 import vip.mate.llm.failover.ProviderHealthTracker;
 import vip.mate.llm.failover.ProviderInitProbe;
+import vip.mate.llm.model.CreateCustomProviderRequest;
 import vip.mate.llm.model.EnableResult;
 import vip.mate.llm.model.ModelConfigEntity;
 import vip.mate.llm.model.ModelProviderEntity;
@@ -110,6 +111,36 @@ class ModelProviderServiceEnableTest {
         assertFalse(result.defaultSwitched());
         verify(providerMapper, never()).updateById(any(ModelProviderEntity.class));
         verify(eventPublisher, never()).publishEvent(any());
+    }
+
+    @Test
+    @DisplayName("createCustomProvider with an existing disabled custom row re-enables and updates it")
+    void createCustomProviderReEnablesDisabledCustomProvider() {
+        ModelProviderEntity existing = providerEntity("custom-openai", false);
+        existing.setIsCustom(true);
+        existing.setName("Old name");
+        when(providerMapper.selectById("custom-openai")).thenReturn(existing);
+        when(modelConfigService.listModelsByProvider("custom-openai")).thenReturn(new ArrayList<>());
+
+        CreateCustomProviderRequest request = new CreateCustomProviderRequest();
+        request.setId("custom-openai");
+        request.setName("New name");
+        request.setDefaultBaseUrl("https://new.example.com/v1");
+        request.setApiKeyPrefix("mk-");
+        request.setProtocol("openai-compatible");
+        request.setRequireApiKey(true);
+
+        service.createCustomProvider(request);
+
+        assertTrue(existing.getEnabled(), "disabled custom provider should be visible again");
+        assertEquals("New name", existing.getName());
+        assertEquals("https://new.example.com/v1", existing.getBaseUrl());
+        assertEquals("mk-", existing.getApiKeyPrefix());
+        verify(providerMapper).updateById(existing);
+        verify(providerMapper, never()).insert(any(ModelProviderEntity.class));
+        ArgumentCaptor<ModelConfigChangedEvent> evtCap = ArgumentCaptor.forClass(ModelConfigChangedEvent.class);
+        verify(eventPublisher).publishEvent(evtCap.capture());
+        assertEquals("provider-enabled", evtCap.getValue().reason());
     }
 
     @Test

@@ -28,7 +28,7 @@ import java.util.Map;
  * an objective that spans multiple turns — the runtime then tracks
  * progress across the entire conversation.
  *
- * <p>All four tool names are added to
+ * <p>All goal tool names are added to
  * {@code DelegateAgentTool.DEFAULT_CHILD_DENIED_TOOLS} so a child agent
  * cannot mutate the parent conversation's goal. Goal ownership is bound
  * to the parent conversation, period.
@@ -56,7 +56,7 @@ public class GoalManagementTool {
                     required = false) String description,
             @ToolParam(description = "Exit criteria the evaluator scores against (e.g. 'tests pass + deployed').",
                     required = false) String exitCriteria,
-            @ToolParam(description = "Max evaluation turns before exhaustion. Default 20.",
+            @ToolParam(description = "Optional evaluation-turn cap. Persistent goals default to unlimited (0); positive values pause execution at the cap. Legacy goals default to 20.",
                     required = false) Integer turnBudget,
             @ToolParam(description = "If true, the agent may auto-followup when progress is incomplete. "
                     + "Omit to use the system default.",
@@ -209,6 +209,44 @@ public class GoalManagementTool {
         out.put("progressSummary", goal.getProgressSummary());
         out.put("autoFollowupEnabled", goal.getAutoFollowupEnabled());
         return successJson(out);
+    }
+
+    @Tool(description = """
+            Pause the current persistent goal only when essential user input or permission \
+            is missing after inspecting available state, files, and existing async handles. \
+            Give the precise missing information or authorization and what was checked; \
+            ask the user once, then wait for explicit resume. Do not use this because of \
+            difficulty, elapsed time, incomplete work, or a transient error. This pauses \
+            the goal without marking it complete.""")
+    public String waitForGoalInput(
+            @ToolParam(description = "Precise essential input or permission missing, why it is necessary, "
+                    + "and which available state was checked first.") String reason,
+            @Nullable ToolContext ctx) {
+        if (!properties.isEnabled()) return errorJson("Goal subsystem is disabled");
+        if (reason == null || reason.isBlank()) {
+            return errorJson("A precise reason describing the missing input or permission is required");
+        }
+        ChatOrigin origin = ChatOrigin.from(ctx);
+        if (origin == null || origin.conversationId() == null || origin.conversationId().isBlank()) {
+            return errorJson("waitForGoalInput requires a bound conversation context");
+        }
+        GoalEntity goal = resolveActive(ctx);
+        if (goal == null || goal.getStatus() != GoalStatus.ACTIVE
+                || !origin.conversationId().equals(goal.getConversationId())) {
+            return errorJson("No active goal on this conversation");
+        }
+        if (!Boolean.TRUE.equals(goal.getPersistentExecution())) {
+            return errorJson("Waiting for input requires a persistent goal");
+        }
+        try {
+            GoalEntity paused = goalService.waitForInput(goal.getId(), reason.trim(), resolveUsername(ctx));
+            broadcastGoalEvent(paused.getConversationId(), "goal_updated", paused);
+            return successJson(Map.of("goalId", String.valueOf(paused.getId()),
+                    "status", paused.getStatus().getValue(), "waitingForInput", true,
+                    "reason", paused.getProgressSummary() == null ? "" : paused.getProgressSummary()));
+        } catch (MateClawException error) {
+            return errorJson(error.getMessage());
+        }
     }
 
     // ==================== Internals ====================

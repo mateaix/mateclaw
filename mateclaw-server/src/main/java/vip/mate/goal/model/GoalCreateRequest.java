@@ -8,8 +8,8 @@ import java.util.List;
  * Request body for {@code POST /api/v1/goals}.
  *
  * <p>Only {@code conversationId}, {@code agentId}, {@code workspaceId} and
- * {@code title} are mandatory. Budgets default to the values in
- * {@link vip.mate.goal.config.GoalProperties}.
+ * {@code title} are mandatory. Persistent goals default to unlimited budgets
+ * (zero); legacy goals use {@link vip.mate.goal.config.GoalProperties} defaults.
  *
  * <p>ID fields stay as {@code Long} on the wire (Jackson accepts both
  * numeric and string forms via the project's default coercion), but the
@@ -27,6 +27,9 @@ public class GoalCreateRequest {
     private String description;
     private String exitCriteria;
     private String successCheckPrompt;
+
+    /** Opts into durable continuation; zero budgets mean unlimited only in this mode. */
+    private Boolean persistentExecution;
 
     private Integer turnBudget;
     private Integer llmCallBudget;

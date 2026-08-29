@@ -442,10 +442,10 @@ const customRenderer = {
     // download-only link. render_html_image / image generation return
     // `[cover.png](/api/v1/files/generated/<id>)`; without this the chat only
     // offers a download and the user can never *see* the picture. The
-    // generated-file endpoint is permitAll, so a same-origin <img src> loads
-    // without an auth header. Detection is by the link label's extension
-    // (the URL itself carries only a UUID). Clicking the image opens it
-    // full-size in a new tab (see useGlobalFileDownloadClick).
+    // generated-file endpoint requires auth, so useGlobalGeneratedImageBlob
+    // swaps the src for an authenticated blob URL after v-html mounts.
+    // Detection is by the link label's extension (the URL itself carries only
+    // a UUID). Clicking the image opens it full-size in a new tab.
     const labelText = innerHtml.replace(/<[^>]*>/g, '').trim()
     const isFileApi = /^\/api\/v1\/(files|chat\/files)\//.test(safeHref)
     if (isFileApi && /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(labelText)) {

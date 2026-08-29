@@ -64,6 +64,8 @@ public final class MateClawStateKeys {
 
     /** 最终回答草稿（由 summarizing 或 limitExceeded 节点生成） */
     public static final String FINAL_ANSWER_DRAFT = "final_answer_draft";
+    /** Accumulated visible body for an explicit long-form generation request. */
+    public static final String LONG_FORM_DRAFT = "long_form_draft";
 
     /** 是否需要进入 summarizing 阶段 */
     public static final String SHOULD_SUMMARIZE = "should_summarize";

@@ -18,6 +18,9 @@ public class GoalUpdateRequest {
     private String exitCriteria;
     private String successCheckPrompt;
 
+    /** Opts into durable continuation; zero budgets mean unlimited only in this mode. */
+    private Boolean persistentExecution;
+
     private Integer turnBudget;
     private Integer llmCallBudget;
     private Boolean autoFollowupEnabled;

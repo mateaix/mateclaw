@@ -55,6 +55,7 @@ class GoalServiceTest {
     @Mock private AuditEventService auditEventService;
 
     private GoalServiceImpl service;
+    private GoalProperties properties;
 
     @BeforeAll
     static void initTableInfo() {
@@ -68,7 +69,7 @@ class GoalServiceTest {
 
     @BeforeEach
     void setUp() {
-        GoalProperties properties = new GoalProperties();
+        properties = new GoalProperties();
         service = new GoalServiceImpl(goalMapper, eventMapper, properties,
                 auditEventService, new ObjectMapper());
     }
@@ -122,8 +123,9 @@ class GoalServiceTest {
         assertNotNull(created);
         assertEquals("alice", created.getCreatedBy());
         assertEquals(GoalStatus.ACTIVE, created.getStatus());
-        assertEquals(20, created.getTurnBudget());
-        assertEquals(200, created.getLlmCallBudget());
+        assertTrue(created.getPersistentExecution());
+        assertEquals(0, created.getTurnBudget());
+        assertEquals(0, created.getLlmCallBudget());
         verify(eventMapper, times(1)).insert(any(GoalEventEntity.class));
         verify(auditEventService).record(eq("goal.created"), eq("goal"),
                 anyString(), anyString(), anyString(), any());
@@ -162,10 +164,233 @@ class GoalServiceTest {
     @Test
     void create_rejectsNonPositiveBudget() {
         GoalCreateRequest r = validReq();
+        r.setPersistentExecution(false);
         r.setTurnBudget(0);
         MateClawException ex = assertThrows(MateClawException.class,
                 () -> service.create(r, "alice"));
         assertEquals(400, ex.getCode());
+    }
+
+    @Test
+    void create_persistenceDefaultCanBeDisabled_andExplicitOptInWins() {
+        properties.setDefaultPersistentExecution(false);
+        GoalEntity legacy = service.create(validReq(), "alice");
+        assertFalse(legacy.getPersistentExecution());
+        assertEquals(20, legacy.getTurnBudget());
+        assertEquals(200, legacy.getLlmCallBudget());
+        GoalCreateRequest req = validReq();
+        req.setPersistentExecution(true);
+        GoalEntity persistent = service.create(req, "alice");
+        assertTrue(persistent.getPersistentExecution());
+        assertEquals(0, persistent.getTurnBudget());
+        assertEquals(0, persistent.getLlmCallBudget());
+        assertTrue(service.toResponse(persistent).getPersistentExecution());
+    }
+
+    @Test
+    void create_explicitLegacyRetainsDefaults() {
+        GoalCreateRequest req = validReq();
+        req.setPersistentExecution(false);
+        GoalEntity goal = service.create(req, "alice");
+        assertFalse(goal.getPersistentExecution());
+        assertEquals(20, goal.getTurnBudget());
+        assertEquals(200, goal.getLlmCallBudget());
+    }
+
+    @Test
+    void create_persistentAcceptsZero_andHonorsPositiveBudgets() {
+        GoalCreateRequest req = validReq();
+        req.setTurnBudget(0);
+        req.setLlmCallBudget(7);
+        GoalEntity goal = service.create(req, "alice");
+        assertEquals(0, goal.getTurnBudget());
+        assertEquals(7, goal.getLlmCallBudget());
+        req.setTurnBudget(-1);
+        assertEquals(400, assertThrows(MateClawException.class,
+                () -> service.create(req, "alice")).getCode());
+        req.setTurnBudget(1);
+        req.setLlmCallBudget(-1);
+        assertEquals(400, assertThrows(MateClawException.class,
+                () -> service.create(req, "alice")).getCode());
+    }
+
+    @Test
+    void persistentZeroBudgetsAreUnlimited_butLegacyZeroIsExhausted() {
+        GoalEntity goal = persisted(1L, GoalStatus.ACTIVE);
+        goal.setPersistentExecution(true);
+        goal.setTurnBudget(0);
+        goal.setLlmCallBudget(0);
+        goal.setTurnsUsed(999);
+        goal.setAgentLlmCallsUsed(999);
+        assertFalse(service.isBudgetExhausted(goal));
+        goal.setPersistentExecution(false);
+        assertTrue(service.isBudgetExhausted(goal));
+    }
+
+    @Test
+    void persistentPositiveBudgetsRemainBinding() {
+        GoalEntity goal = persisted(1L, GoalStatus.ACTIVE);
+        goal.setPersistentExecution(true);
+        goal.setTurnBudget(0);
+        goal.setLlmCallBudget(10);
+        goal.setAgentLlmCallsUsed(9);
+        assertFalse(service.isBudgetExhausted(goal));
+        goal.setEvalLlmCallsUsed(1);
+        assertTrue(service.isBudgetExhausted(goal));
+        assertEquals("llm_call_budget", service.exhaustionReason(goal));
+        goal.setTurnBudget(3);
+        goal.setTurnsUsed(3);
+        assertEquals("turn_budget", service.exhaustionReason(goal));
+    }
+
+    @Test
+    void persistentBudgetExhaustionPauses_withResumableReason() {
+        GoalEntity goal = persisted(1L, GoalStatus.ACTIVE);
+        goal.setPersistentExecution(true);
+        goal.setTurnsUsed(20);
+        when(goalMapper.selectById(1L)).thenReturn(goal, statusFlipped(goal, GoalStatus.PAUSED));
+        when(goalMapper.update(any(), any(LambdaUpdateWrapper.class))).thenReturn(1);
+        GoalEntity result = service.markExhausted(1L, "turn_budget");
+        assertEquals(GoalStatus.PAUSED, result.getStatus());
+        ArgumentCaptor<GoalEventEntity> event = ArgumentCaptor.forClass(GoalEventEntity.class);
+        verify(eventMapper).insert(event.capture());
+        assertEquals("paused", event.getValue().getEventType());
+        assertTrue(event.getValue().getDetailJson().contains("turn_budget"));
+        ArgumentCaptor<LambdaUpdateWrapper> update = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(goalMapper).update(any(), update.capture());
+        assertTrue(update.getValue().getSqlSet().contains("progress_summary"));
+        assertTrue(update.getValue().getParamNameValuePairs().values().stream()
+                .anyMatch(value -> String.valueOf(value).contains("turn_budget")));
+    }
+
+    @Test
+    void resumePersistentRequiresBudgetHeadroom_andAllowsRaisedBudget() {
+        GoalEntity goal = persisted(1L, GoalStatus.PAUSED);
+        goal.setPersistentExecution(true);
+        goal.setTurnsUsed(20);
+        when(goalMapper.selectById(1L)).thenReturn(goal);
+        assertEquals(409, assertThrows(MateClawException.class,
+                () -> service.resume(1L, "alice")).getCode());
+        verify(goalMapper, never()).update(any(), any(LambdaUpdateWrapper.class));
+        goal.setTurnBudget(21);
+        when(goalMapper.selectById(1L)).thenReturn(goal, statusFlipped(goal, GoalStatus.ACTIVE));
+        when(goalMapper.update(any(), any(LambdaUpdateWrapper.class))).thenReturn(1);
+        assertEquals(GoalStatus.ACTIVE, service.resume(1L, "alice").getStatus());
+    }
+
+    @Test
+    void updateUsesFreshMode_forZeroBudget_andDoesNotReplaceOmittedBudgets() {
+        GoalEntity goal = persisted(1L, GoalStatus.ACTIVE);
+        goal.setPersistentExecution(true);
+        when(goalMapper.selectById(1L)).thenReturn(goal);
+        when(goalMapper.update(any(), any(LambdaUpdateWrapper.class))).thenReturn(1);
+        GoalUpdateRequest req = new GoalUpdateRequest();
+        req.setTurnBudget(0);
+        service.update(1L, req, "alice");
+        ArgumentCaptor<LambdaUpdateWrapper> update = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(goalMapper).update(any(), update.capture());
+        assertTrue(setsProperty(update.getValue(), "turnBudget"), update.getValue().getSqlSet());
+        assertFalse(setsProperty(update.getValue(), "llmCallBudget"));
+        assertFalse(setsProperty(update.getValue(), "persistentExecution"));
+    }
+
+    @Test
+    void updateModeValidatesCombinedState_beforeWriting() {
+        GoalEntity goal = persisted(1L, GoalStatus.ACTIVE);
+        goal.setPersistentExecution(true);
+        goal.setTurnBudget(0);
+        goal.setLlmCallBudget(0);
+        when(goalMapper.selectById(1L)).thenReturn(goal);
+        GoalUpdateRequest req = new GoalUpdateRequest();
+        req.setPersistentExecution(false);
+        assertEquals(400, assertThrows(MateClawException.class,
+                () -> service.update(1L, req, "alice")).getCode());
+        verify(goalMapper, never()).update(any(), any(LambdaUpdateWrapper.class));
+        req.setTurnBudget(10);
+        req.setLlmCallBudget(100);
+        when(goalMapper.update(any(), any(LambdaUpdateWrapper.class))).thenReturn(1);
+        service.update(1L, req, "alice");
+        ArgumentCaptor<LambdaUpdateWrapper> update = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(goalMapper).update(any(), update.capture());
+        assertTrue(setsProperty(update.getValue(), "persistentExecution"), update.getValue().getSqlSet());
+    }
+
+    @Test
+    void persistentCompletionRequiresFreshPassedCriteriaWithEvidence() {
+        GoalEntity goal = persisted(1L, GoalStatus.ACTIVE);
+        goal.setPersistentExecution(true);
+        when(goalMapper.selectById(1L)).thenReturn(goal);
+        for (String criteria : new String[]{null, "[]",
+                "[{\"id\":\"C1\",\"text\":\"deploy\",\"passed\":false,\"evidence\":\"attempted\"}]",
+                "[{\"id\":\"C1\",\"text\":\"deploy\",\"passed\":true,\"evidence\":\"  \"}]"}) {
+            goal.setCriteria(criteria);
+            MateClawException error = assertThrows(MateClawException.class,
+                    () -> service.markCompleted(1L, null));
+            assertEquals(409, error.getCode());
+        }
+        verify(goalMapper, never()).update(any(), any(LambdaUpdateWrapper.class));
+    }
+
+    @Test
+    void persistentCompletionCannotOverridePause() {
+        GoalEntity goal = verifiedPersistentGoal(GoalStatus.PAUSED);
+        when(goalMapper.selectById(1L)).thenReturn(goal);
+        assertEquals(409, assertThrows(MateClawException.class,
+                () -> service.markCompleted(1L, null)).getCode());
+        verify(goalMapper, never()).update(any(), any(LambdaUpdateWrapper.class));
+    }
+
+    @Test
+    void persistentCompletionPreservesVerifiedChecklist() {
+        GoalEntity goal = verifiedPersistentGoal(GoalStatus.ACTIVE);
+        when(goalMapper.selectById(1L)).thenReturn(goal, statusFlipped(goal, GoalStatus.COMPLETED));
+        when(goalMapper.update(any(), any(LambdaUpdateWrapper.class))).thenReturn(1);
+        assertEquals(GoalStatus.COMPLETED, service.markCompleted(1L, null).getStatus());
+        ArgumentCaptor<LambdaUpdateWrapper> update = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(goalMapper).update(any(), update.capture());
+        assertFalse(update.getValue().getSqlSet().contains("criteria="));
+    }
+
+    @Test
+    void persistentCompletionRechecksEvidenceAfterCasMiss() {
+        GoalEntity old = verifiedPersistentGoal(GoalStatus.ACTIVE);
+        GoalEntity fresh = verifiedPersistentGoal(GoalStatus.ACTIVE);
+        fresh.setVersion(1);
+        fresh.setCriteria("[{\"id\":\"C1\",\"text\":\"new requirement\",\"passed\":false,\"evidence\":\"\"}]");
+        when(goalMapper.selectById(1L)).thenReturn(old, fresh);
+        when(goalMapper.update(any(), any(LambdaUpdateWrapper.class))).thenReturn(0);
+        assertEquals(409, assertThrows(MateClawException.class,
+                () -> service.markCompleted(1L, null)).getCode());
+        verify(goalMapper, times(1)).update(any(), any(LambdaUpdateWrapper.class));
+    }
+
+    @Test
+    void persistentResumePublishesSignalOnlyAfterSuccessfulTransition() {
+        var publisher = org.mockito.Mockito.mock(org.springframework.context.ApplicationEventPublisher.class);
+        service.setApplicationEventPublisher(publisher);
+        GoalEntity goal = verifiedPersistentGoal(GoalStatus.PAUSED);
+        goal.setTurnsUsed(20);
+        when(goalMapper.selectById(1L)).thenReturn(goal);
+        assertThrows(MateClawException.class, () -> service.resume(1L, "alice"));
+        verify(publisher, never()).publishEvent(any(Object.class));
+        goal.setTurnBudget(21);
+        when(goalMapper.selectById(1L)).thenReturn(goal, statusFlipped(goal, GoalStatus.ACTIVE));
+        when(goalMapper.update(any(), any(LambdaUpdateWrapper.class))).thenReturn(1);
+        service.resume(1L, "alice");
+        verify(publisher).publishEvent(new GoalExecutionSignal.Resume(1L));
+    }
+
+    private boolean setsProperty(LambdaUpdateWrapper<?> update, String property) {
+        String column = TableInfoHelper.getTableInfo(GoalEntity.class).getFieldList().stream()
+                .filter(field -> property.equals(field.getProperty())).findFirst().orElseThrow().getColumn();
+        return update.getSqlSet().contains(column + "=");
+    }
+
+    private GoalEntity verifiedPersistentGoal(GoalStatus status) {
+        GoalEntity goal = persisted(1L, status);
+        goal.setPersistentExecution(true);
+        goal.setCriteria("[{\"id\":\"C1\",\"text\":\"deploy\",\"passed\":true,\"evidence\":\"HTTP 200 verified\"}]");
+        return goal;
     }
 
     // ==================== state transitions ====================
@@ -454,6 +679,7 @@ class GoalServiceTest {
         copy.setCreatedBy(g.getCreatedBy());
         copy.setTitle(g.getTitle());
         copy.setStatus(newStatus);
+        copy.setPersistentExecution(g.getPersistentExecution());
         copy.setTurnBudget(g.getTurnBudget());
         copy.setTurnsUsed(g.getTurnsUsed());
         copy.setLlmCallBudget(g.getLlmCallBudget());
@@ -464,5 +690,91 @@ class GoalServiceTest {
         copy.setCreateTime(g.getCreateTime());
         copy.setUpdateTime(LocalDateTime.now());
         return copy;
+    }
+    @Test
+    void waitForInputPausesActivePersistentGoal_andRecordsReason() {
+        GoalEntity goal = verifiedPersistentGoal(GoalStatus.ACTIVE);
+        when(goalMapper.selectById(1L)).thenReturn(goal, statusFlipped(goal, GoalStatus.PAUSED));
+        when(goalMapper.update(any(), any(LambdaUpdateWrapper.class))).thenReturn(1);
+        GoalEntity paused = service.waitForInput(1L, "  Need production hostname from the owner  ", "alice");
+        assertEquals(GoalStatus.PAUSED, paused.getStatus());
+        ArgumentCaptor<LambdaUpdateWrapper> update = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(goalMapper).update(any(), update.capture());
+        assertTrue(setsProperty(update.getValue(), "progressSummary"));
+        assertTrue(update.getValue().getParamNameValuePairs().containsValue(
+                "Waiting for input: Need production hostname from the owner"));
+        assertTrue(update.getValue().getParamNameValuePairs().containsValue(GoalStatus.PAUSED));
+        ArgumentCaptor<GoalEventEntity> event = ArgumentCaptor.forClass(GoalEventEntity.class);
+        verify(eventMapper).insert(event.capture());
+        assertEquals("paused", event.getValue().getEventType());
+        assertTrue(event.getValue().getDetailJson().contains("Need production hostname from the owner"));
+        verify(auditEventService).record(eq("goal.waiting_input"), eq("goal"), eq("1"),
+                anyString(), anyString(), any());
+    }
+
+    @Test
+    void waitForInputRejectsBlankReasonBeforeAccessingGoal() {
+        for (String reason : new String[]{null, "", "  "}) {
+            assertEquals(400, assertThrows(MateClawException.class,
+                    () -> service.waitForInput(1L, reason, "alice")).getCode());
+        }
+        verify(goalMapper, never()).selectById(any());
+    }
+
+    @Test
+    void waitForInputRechecksActiveStateAfterCasConflict() {
+        GoalEntity active = verifiedPersistentGoal(GoalStatus.ACTIVE);
+        GoalEntity paused = statusFlipped(active, GoalStatus.PAUSED);
+        when(goalMapper.selectById(1L)).thenReturn(active, paused);
+        when(goalMapper.update(any(), any(LambdaUpdateWrapper.class))).thenReturn(0);
+        assertEquals(409, assertThrows(MateClawException.class,
+                () -> service.waitForInput(1L, "Need deployment approval", "alice")).getCode());
+        verify(goalMapper, times(1)).update(any(), any(LambdaUpdateWrapper.class));
+        verify(eventMapper, never()).insert(any(GoalEventEntity.class));
+    }
+
+    @Test
+    void waitForInputRejectsLegacyAndTerminalGoals() {
+        GoalEntity goal = persisted(1L, GoalStatus.ACTIVE);
+        when(goalMapper.selectById(1L)).thenReturn(goal);
+        assertEquals(409, assertThrows(MateClawException.class,
+                () -> service.waitForInput(1L, "Need deployment approval", "alice")).getCode());
+        goal.setPersistentExecution(true);
+        goal.setStatus(GoalStatus.COMPLETED);
+        assertEquals(409, assertThrows(MateClawException.class,
+                () -> service.waitForInput(1L, "Need deployment approval", "alice")).getCode());
+        verify(goalMapper, never()).update(any(), any(LambdaUpdateWrapper.class));
+    }
+
+    @Test
+    void waitForInputBoundsPersistedReason() {
+        GoalEntity goal = verifiedPersistentGoal(GoalStatus.ACTIVE);
+        when(goalMapper.selectById(1L)).thenReturn(goal, statusFlipped(goal, GoalStatus.PAUSED));
+        when(goalMapper.update(any(), any(LambdaUpdateWrapper.class))).thenReturn(1);
+        service.waitForInput(1L, "Missing permission: " + "x".repeat(10000), "alice");
+        ArgumentCaptor<LambdaUpdateWrapper> update = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(goalMapper).update(any(), update.capture());
+        update.getValue().getSqlSet();
+        String summary = ((java.util.Map<?, ?>) update.getValue().getParamNameValuePairs()).values().stream()
+                .filter(value -> value instanceof String && ((String) value).startsWith("Waiting for input: "))
+                .map(String::valueOf).findFirst().orElseThrow();
+        assertTrue(summary.length() <= 2048);
+    }
+
+    @Test
+    void lateEvaluationAccountsUsageWithoutOverwritingPersistentPauseReason() {
+        GoalEntity active = verifiedPersistentGoal(GoalStatus.ACTIVE);
+        GoalEntity paused = statusFlipped(active, GoalStatus.PAUSED);
+        paused.setProgressSummary("Waiting for input: Need deployment approval");
+        when(goalMapper.selectById(1L)).thenReturn(active, paused, paused);
+        when(goalMapper.update(any(), any(LambdaUpdateWrapper.class))).thenReturn(1);
+        GoalEvaluationResult evaluation = new GoalEvaluationResult(0.4, "More work needed",
+                GoalEvaluationResult.DECISION_CONTINUE, false, "stub", 1, 0, java.util.List.of(), null);
+        service.recordEvaluation(1L, evaluation, 3, 1);
+        ArgumentCaptor<LambdaUpdateWrapper> update = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(goalMapper).update(any(), update.capture());
+        assertFalse(setsProperty(update.getValue(), "progressSummary"));
+        assertTrue(update.getValue().getSqlSet().contains("agent_llm_calls_used = agent_llm_calls_used + 3"));
+        assertTrue(update.getValue().getSqlSet().contains("eval_llm_calls_used = eval_llm_calls_used + 1"));
     }
 }

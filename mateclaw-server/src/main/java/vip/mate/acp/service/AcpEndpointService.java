@@ -36,6 +36,9 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class AcpEndpointService {
 
+    public static final int DEFAULT_PROMPT_TIMEOUT_SECONDS = 300;
+    public static final int MAX_PROMPT_TIMEOUT_SECONDS = 3600;
+
     private final AcpEndpointMapper mapper;
     private final ObjectMapper objectMapper;
     private final ApplicationEventPublisher eventPublisher;
@@ -91,6 +94,7 @@ public class AcpEndpointService {
         if (input.getStdioBufferLimitBytes() == null || input.getStdioBufferLimitBytes() <= 0) {
             input.setStdioBufferLimitBytes(50L * 1024L * 1024L);
         }
+        input.setPromptTimeoutSeconds(normalizePromptTimeoutSeconds(input.getPromptTimeoutSeconds()));
         if (input.getWorkspaceId() == null) input.setWorkspaceId(1L);
         mapper.insert(input);
         log.info("Created ACP endpoint: {}", input.getName());
@@ -117,6 +121,9 @@ public class AcpEndpointService {
         if (patch.getEnabled() != null) existing.setEnabled(patch.getEnabled());
         if (patch.getStdioBufferLimitBytes() != null && patch.getStdioBufferLimitBytes() > 0) {
             existing.setStdioBufferLimitBytes(patch.getStdioBufferLimitBytes());
+        }
+        if (patch.getPromptTimeoutSeconds() != null) {
+            existing.setPromptTimeoutSeconds(normalizePromptTimeoutSeconds(patch.getPromptTimeoutSeconds()));
         }
         mapper.updateById(existing);
         publish(existing, AcpEndpointChangedEvent.Type.UPDATED);
@@ -178,6 +185,13 @@ public class AcpEndpointService {
                     ep.getName(), e.getMessage());
             return Map.of();
         }
+    }
+
+    public static int normalizePromptTimeoutSeconds(Integer seconds) {
+        if (seconds == null || seconds <= 0) {
+            return DEFAULT_PROMPT_TIMEOUT_SECONDS;
+        }
+        return Math.min(seconds, MAX_PROMPT_TIMEOUT_SECONDS);
     }
 
     private List<String> parseStringList(String json) {

@@ -3,14 +3,18 @@ package vip.mate.tool.builtin;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
+import vip.mate.i18n.I18nService;
+import vip.mate.tool.ConcurrencyUnsafe;
+import vip.mate.tool.guard.WorkspacePathGuard;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 
 /**
  * 内置工具：写入文件
@@ -31,15 +35,16 @@ import java.nio.file.Paths;
 @lombok.RequiredArgsConstructor
 public class WriteFileTool {
 
-    private final vip.mate.i18n.I18nService i18n;
+    private final I18nService i18n;
 
-    @vip.mate.tool.ConcurrencyUnsafe("file write — must serialize with reads/writes on overlapping paths")
+    @ConcurrencyUnsafe("file write — must serialize with reads/writes on overlapping paths")
     @Tool(description = "Write content to a file. Overwrites if exists, creates if not (auto-creates parent directories). "
             + "Returns structured JSON with filePath, bytesWritten. "
             + "May require user approval when security rules flag the write.")
     public String write_file(
             @ToolParam(description = "Absolute or relative file path") String filePath,
-            @ToolParam(description = "Content to write to the file") String content) {
+            @ToolParam(description = "Content to write to the file") String content,
+            @Nullable ToolContext ctx) {
 
         JSONObject result = new JSONObject();
         result.set("filePath", filePath);
@@ -54,7 +59,7 @@ public class WriteFileTool {
 
             Path path;
             try {
-                path = vip.mate.tool.guard.WorkspacePathGuard.validatePath(filePath);
+                path = WorkspacePathGuard.validatePath(filePath, ctx);
             } catch (IllegalArgumentException e) {
                 return errorResult(filePath, e.getMessage());
             }

@@ -296,6 +296,24 @@ class TeamTasksToolTest {
     }
 
     @Test
+    @DisplayName("file-producing create task records a required deliverable contract")
+    void createInfersRequiredDeliverableFromDescription() {
+        callerIs(LEAD_ID);
+        when(runService.requireRun(RUN_ID, WORKSPACE_ID))
+                .thenReturn(run(TEAM_ID, CONV, TeamRunStatus.PLANNING));
+        when(taskService.createTask(any())).thenReturn(task(53L, TeamTaskStatus.PENDING));
+
+        tool.team_tasks("create", null, String.valueOf(RUN_ID), null, null,
+                "生成报告", "请生成最终 DOCX 文件", String.valueOf(MEMBER_ID), null, null,
+                null, null, null, null, null, null, null, null, null);
+
+        ArgumentCaptor<TeamTaskCreateCommand> captor =
+                ArgumentCaptor.forClass(TeamTaskCreateCommand.class);
+        verify(taskService).createTask(captor.capture());
+        assertTrue(captor.getValue().getMetadata().contains("\"deliverableRequired\":true"));
+    }
+
+    @Test
     @DisplayName("create requires an explicit run id")
     void createRequiresRunId() {
         callerIs(LEAD_ID);

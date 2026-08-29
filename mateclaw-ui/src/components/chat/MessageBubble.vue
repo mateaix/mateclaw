@@ -197,12 +197,6 @@
         </div>
 
 
-        <!-- 停止指示器 -->
-        <div v-if="status === 'stopped' || status === 'interrupted'" class="stopped-indicator">
-          <el-icon><CloseBold /></el-icon>
-          <span>{{ status === 'interrupted' ? $t('chat.interrupted') : $t('chat.stopped') }}</span>
-        </div>
-
         <!-- parse_error content block -->
         <div v-if="parseErrorText" class="parse-error-card">
           <el-icon class="parse-error-card__icon"><WarningFilled /></el-icon>
@@ -227,6 +221,18 @@
         </div>
 
         </template><!-- /传统合并渲染模式 -->
+
+        <!-- Stopped/interrupted status lives outside the rendering fork so
+             segmented history turns with only thinking/tool output still make
+             the manual stop visible. -->
+        <div
+          v-if="status === 'stopped' || status === 'interrupted'"
+          class="stopped-indicator"
+          :class="status === 'interrupted' ? 'stopped-indicator--interrupted' : 'stopped-indicator--stopped'"
+        >
+          <el-icon><CloseBold /></el-icon>
+          <span>{{ status === 'interrupted' ? $t('chat.interrupted') : $t('chat.stopped') }}</span>
+        </div>
 
         <!--
           INCOMPLETE banner: graph emitted finishReason=incomplete after
@@ -2256,12 +2262,30 @@ watch(isGenerating, (generating) => {
 
 /* 状态指示器 */
 .stopped-indicator {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 0 2px;
+  margin-top: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--mc-border, #e2e8f0);
+  border-radius: 8px;
+  background: var(--mc-bg-sunken, #f8fafc);
   font-size: 12px;
-  color: var(--mc-text-tertiary, #94a3b8);
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--mc-text-secondary, #64748b);
+}
+
+.stopped-indicator--stopped {
+  border-color: color-mix(in srgb, var(--mc-danger, #dc2626) 24%, transparent);
+  background: color-mix(in srgb, var(--mc-danger, #dc2626) 8%, transparent);
+  color: var(--mc-danger, #dc2626);
+}
+
+.stopped-indicator--interrupted {
+  border-color: color-mix(in srgb, #d97706 26%, transparent);
+  background: color-mix(in srgb, #d97706 8%, transparent);
+  color: #b45309;
 }
 
 /* 错误卡片 */

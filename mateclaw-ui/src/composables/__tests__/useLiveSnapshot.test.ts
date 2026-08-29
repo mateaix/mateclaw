@@ -75,6 +75,28 @@ describe('useLiveSnapshot', () => {
 
     history.resolve()
   })
+
+  it('re-enters loading when retrying before the first snapshot', async () => {
+    const retry = deferred<unknown>()
+    const live = useLiveSnapshot({
+      load: vi.fn()
+        .mockRejectedValueOnce(new Error('offline'))
+        .mockReturnValueOnce(retry.promise),
+      refreshRuns: vi.fn().mockResolvedValue(undefined),
+    })
+
+    await live.refresh()
+    expect(live.loading.value).toBe(false)
+    expect(live.error.value).toBeInstanceOf(Error)
+
+    const request = live.refresh()
+    expect(live.loading.value).toBe(true)
+
+    retry.resolve({ data: snapshot('retry') })
+    await request
+    expect(live.loading.value).toBe(false)
+    expect(live.snapshot.value?.runs[0].conversationId).toBe('retry')
+  })
 })
 
 function deferred<T>() {

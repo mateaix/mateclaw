@@ -472,6 +472,7 @@ import {
   extractChannelFields,
   extractRenderConfig,
   parseConfigJson,
+  supportsChannelMessageFilter,
   type AccessControlValue,
   type RenderConfigValue,
 } from '@/utils/channelConfigJson'
@@ -633,13 +634,8 @@ const needsWebhookUrl = computed(() => {
   return true
 })
 
-// Browser-rendered channels stream structured message parts over SSE and let
-// the client decide what to draw (thinking panel, tool cards). They never go
-// through the adapter's outbound text render path, which is the only place the
-// message-filter config is read — so the controls would be inert there.
-const BROWSER_RENDERED_TYPES = ['web', 'webchat']
 const supportsMessageFilter = computed(
-  () => !BROWSER_RENDERED_TYPES.includes(form.value.channelType || ''),
+  () => supportsChannelMessageFilter(form.value.channelType),
 )
 
 const isLocalhost = computed(() => {

@@ -543,6 +543,22 @@ class TeamTaskServiceTest {
     }
 
     @Test
+    @DisplayName("addDeliverable is idempotent for the same generated URL")
+    void addDeliverableIgnoresDuplicateUrl() {
+        TeamTaskEntity running = task(5L, TeamTaskStatus.IN_PROGRESS);
+        running.setOwnerAgentId(MEMBER_ID);
+        running.setMetadata("{\"deliverables\":[{\"name\":\"report.docx\","
+                + "\"url\":\"/api/v1/files/generated/abc\"}]}");
+        when(taskMapper.selectById(5L)).thenReturn(running);
+
+        service.addDeliverable(5L, MEMBER_ID, "report-again.docx",
+                "/api/v1/files/generated/abc");
+
+        verify(taskMapper, never()).update(isNull(), any());
+        verify(eventMapper, never()).insert(any(TeamTaskEventEntity.class));
+    }
+
+    @Test
     @DisplayName("deliverable guards: external URL, non-owner, terminal task and overflow are rejected")
     void addDeliverableGuards() {
         TeamTaskEntity running = task(5L, TeamTaskStatus.IN_PROGRESS);

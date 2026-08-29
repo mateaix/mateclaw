@@ -8,6 +8,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import vip.mate.audit.service.AuditEventService;
@@ -54,6 +55,7 @@ public class GoalServiceImpl implements GoalService {
     private final GoalProperties properties;
     private final AuditEventService auditEventService;
     private final ObjectMapper objectMapper;
+    private ApplicationEventPublisher applicationEventPublisher;
 
     /**
      * Optional — only set when the memory subsystem is wired. On goal
@@ -79,6 +81,11 @@ public class GoalServiceImpl implements GoalService {
     @Autowired(required = false)
     public void setMemoryManager(vip.mate.memory.spi.MemoryManager memoryManager) {
         this.memoryManager = memoryManager;
+    }
+
+    @Autowired(required = false)
+    public void setApplicationEventPublisher(ApplicationEventPublisher publisher) {
+        this.applicationEventPublisher = publisher;
     }
 
     // ==================== CRUD ====================
@@ -108,11 +115,13 @@ public class GoalServiceImpl implements GoalService {
         entity.setExitCriteria(req.getExitCriteria());
         entity.setSuccessCheckPrompt(req.getSuccessCheckPrompt());
         entity.setStatus(GoalStatus.ACTIVE);
+        boolean persistent = persistentOnCreate(req);
+        entity.setPersistentExecution(persistent);
         entity.setTurnBudget(req.getTurnBudget() != null
-                ? req.getTurnBudget() : properties.getDefaultTurnBudget());
+                ? req.getTurnBudget() : persistent ? 0 : properties.getDefaultTurnBudget());
         entity.setTurnsUsed(0);
         entity.setLlmCallBudget(req.getLlmCallBudget() != null
-                ? req.getLlmCallBudget() : properties.getDefaultLlmCallBudget());
+                ? req.getLlmCallBudget() : persistent ? 0 : properties.getDefaultLlmCallBudget());
         entity.setAgentLlmCallsUsed(0);
         entity.setEvalLlmCallsUsed(0);
         // Three-state default: explicit true/false is honored; null falls
@@ -143,6 +152,7 @@ public class GoalServiceImpl implements GoalService {
 
         writeEvent(entity.getId(), GoalEventType.CREATED, null, Map.of(
                 "title", entity.getTitle(),
+                "persistentExecution", persistent,
                 "turnBudget", entity.getTurnBudget(),
                 "llmCallBudget", entity.getLlmCallBudget(),
                 "by", username));
@@ -193,16 +203,22 @@ public class GoalServiceImpl implements GoalService {
     @Override
     @Transactional
     public GoalEntity update(Long id, GoalUpdateRequest req, String username) {
-        // Pre-validate constant fields once; the actual not-terminal check
-        // happens inside the builder against the fresh entity so a status
-        // flip between this method's entry and a CAS retry is honoured.
-        if (req.getTurnBudget() != null) validateBudget(req.getTurnBudget(), "turnBudget");
-        if (req.getLlmCallBudget() != null) validateBudget(req.getLlmCallBudget(), "llmCallBudget");
-
+        // Validate mode and budgets together against each freshly read CAS row.
         GoalEntity updated = retryOptimistic(id, "update", fresh -> {
             ensureNotTerminal(fresh, "update");
+            boolean persistent = req.getPersistentExecution() != null
+                    ? req.getPersistentExecution() : Boolean.TRUE.equals(fresh.getPersistentExecution());
+            Integer turns = req.getTurnBudget() != null ? req.getTurnBudget() : fresh.getTurnBudget();
+            Integer calls = req.getLlmCallBudget() != null ? req.getLlmCallBudget() : fresh.getLlmCallBudget();
+            if (turns != null && (req.getTurnBudget() != null || req.getPersistentExecution() != null))
+                validateBudget(turns, "turnBudget", persistent);
+            if (calls != null && (req.getLlmCallBudget() != null || req.getPersistentExecution() != null))
+                validateBudget(calls, "llmCallBudget", persistent);
             LambdaUpdateWrapper<GoalEntity> w = baseLockedUpdate(fresh);
             boolean changed = false;
+            if (req.getPersistentExecution() != null) {
+                w.set(GoalEntity::getPersistentExecution, req.getPersistentExecution()); changed = true;
+            }
             if (req.getTitle() != null && !req.getTitle().isBlank()) {
                 w.set(GoalEntity::getTitle, req.getTitle().trim()); changed = true;
             }
@@ -257,9 +273,40 @@ public class GoalServiceImpl implements GoalService {
 
     @Override
     @Transactional
+    public GoalEntity waitForInput(Long id, String reason, String username) {
+        if (reason == null || reason.isBlank()) {
+            throw new MateClawException("err.goal.wait_reason_required", 400,
+                    "A precise reason describing the missing input or permission is required");
+        }
+        String trimmed = reason.trim();
+        String boundedReason = trimmed.length() <= 1000 ? trimmed : trimmed.substring(0, 997) + "...";
+        GoalEntity paused = retryOptimistic(id, "waitForInput", fresh -> {
+            if (fresh.getStatus() != GoalStatus.ACTIVE || !Boolean.TRUE.equals(fresh.getPersistentExecution())) {
+                throw new MateClawException("err.goal.wait_requires_active_persistent", 409,
+                        "Waiting for input requires an active persistent goal");
+            }
+            LambdaUpdateWrapper<GoalEntity> update = baseLockedUpdate(fresh)
+                    .set(GoalEntity::getStatus, GoalStatus.PAUSED)
+                    .set(GoalEntity::getProgressSummary, "Waiting for input: " + boundedReason);
+            bumpVersionAndTime(update);
+            return update;
+        });
+        Map<String, Object> detail = Map.of("by", username, "reason", boundedReason,
+                "state", "waiting_input", "from", "active", "to", "paused");
+        writeEvent(id, GoalEventType.PAUSED, null, detail);
+        recordAudit("goal.waiting_input", paused, detail);
+        return paused;
+    }
+
+    @Override
+    @Transactional
     public GoalEntity resume(Long id, String username) {
-        return flipStatus(id, GoalStatus.PAUSED, GoalStatus.ACTIVE,
+        GoalEntity resumed = flipStatus(id, GoalStatus.PAUSED, GoalStatus.ACTIVE,
                 GoalEventType.RESUMED, "goal.resumed", username);
+        if (Boolean.TRUE.equals(resumed.getPersistentExecution()) && applicationEventPublisher != null) {
+            applicationEventPublisher.publishEvent(new GoalExecutionSignal.Resume(id));
+        }
+        return resumed;
     }
 
     @Override
@@ -283,17 +330,23 @@ public class GoalServiceImpl implements GoalService {
     public GoalEntity markCompleted(Long id, GoalEvaluationResult result) {
         GoalEntity g = retryOptimistic(id, "markCompleted", fresh -> {
             if (fresh.getStatus().isTerminal()) return null; // idempotent
+            boolean persistent = Boolean.TRUE.equals(fresh.getPersistentExecution());
+            List<GoalCriterion> existing = GoalCriteriaCodec.parse(fresh.getCriteria(), objectMapper);
+            if (persistent && (fresh.getStatus() != GoalStatus.ACTIVE || existing.isEmpty()
+                    || existing.stream().anyMatch(c -> c == null || !c.passed()
+                            || c.evidence() == null || c.evidence().isBlank()))) {
+                throw new MateClawException("err.goal.completion_not_verified", 409,
+                        "Persistent completion requires an active goal and evidence for every current criterion");
+            }
             LambdaUpdateWrapper<GoalEntity> w = baseLockedUpdate(fresh)
                     .set(GoalEntity::getStatus, GoalStatus.COMPLETED);
             if (result != null) {
                 w.set(GoalEntity::getCompletionScore, result.score())
                  .set(GoalEntity::getProgressSummary, result.gap());
             }
-            // Snapshot the checklist as fully satisfied. Idempotent for the
-            // auto path (recordEvaluation already merged all-passed); required
-            // for manual completion, which has no preceding verdict.
-            List<GoalCriterion> existing = GoalCriteriaCodec.parse(fresh.getCriteria(), objectMapper);
-            if (!existing.isEmpty()) {
+            // Preserve verified persistent evidence verbatim. Legacy manual
+            // completion retains its historical force-passed checklist snapshot.
+            if (!persistent && !existing.isEmpty()) {
                 List<GoalCriterion> allPassed = existing.stream()
                         .map(c -> c.passed() ? c : new GoalCriterion(c.id(), c.text(), true,
                                 c.evidence() == null || c.evidence().isBlank()
@@ -337,8 +390,14 @@ public class GoalServiceImpl implements GoalService {
     public GoalEntity markExhausted(Long id, String reason) {
         GoalEntity g = retryOptimistic(id, "markExhausted", fresh -> {
             if (fresh.getStatus().isTerminal()) return null;
+            boolean persistent = Boolean.TRUE.equals(fresh.getPersistentExecution());
             LambdaUpdateWrapper<GoalEntity> w = baseLockedUpdate(fresh)
-                    .set(GoalEntity::getStatus, GoalStatus.EXHAUSTED);
+                    .set(GoalEntity::getStatus, persistent ? GoalStatus.PAUSED : GoalStatus.EXHAUSTED);
+            if (persistent) {
+                w.set(GoalEntity::getProgressSummary, "Paused: "
+                        + (reason != null ? reason : "budget limit")
+                        + ". Increase the budget and resume to continue.");
+            }
             bumpVersionAndTime(w);
             return w;
         });
@@ -347,8 +406,9 @@ public class GoalServiceImpl implements GoalService {
         detail.put("turnsUsed", g.getTurnsUsed());
         detail.put("agentLlmCallsUsed", g.getAgentLlmCallsUsed());
         detail.put("evalLlmCallsUsed", g.getEvalLlmCallsUsed());
-        writeEvent(id, GoalEventType.EXHAUSTED, null, detail);
-        recordAudit("goal.exhausted", g, detail);
+        boolean persistent = Boolean.TRUE.equals(g.getPersistentExecution());
+        writeEvent(id, persistent ? GoalEventType.PAUSED : GoalEventType.EXHAUSTED, null, detail);
+        recordAudit(persistent ? "goal.paused" : "goal.exhausted", g, detail);
         return g;
     }
 
@@ -375,7 +435,10 @@ public class GoalServiceImpl implements GoalService {
                     .setSql("agent_llm_calls_used = agent_llm_calls_used + " + agentDelta)
                     .setSql("eval_llm_calls_used = eval_llm_calls_used + " + evalDelta)
                     .set(GoalEntity::getLastEvaluationAt, LocalDateTime.now());
-            if (result != null) {
+            // Late model results still consume usage, but cannot overwrite a
+            // persistent pause/input boundary established while the call ran.
+            if (result != null && (!Boolean.TRUE.equals(fresh.getPersistentExecution())
+                    || fresh.getStatus() == GoalStatus.ACTIVE)) {
                 w.set(GoalEntity::getCompletionScore, result.score())
                  .set(GoalEntity::getProgressSummary, result.gap());
                 // Persist the checklist by carrier: bootstrap writes the fresh
@@ -431,16 +494,18 @@ public class GoalServiceImpl implements GoalService {
     public boolean isBudgetExhausted(GoalEntity goal) {
         int turns = goal.getTurnsUsed() != null ? goal.getTurnsUsed() : 0;
         int turnBudget = goal.getTurnBudget() != null ? goal.getTurnBudget() : Integer.MAX_VALUE;
-        if (turns >= turnBudget) return true;
+        boolean persistent = Boolean.TRUE.equals(goal.getPersistentExecution());
+        if ((!persistent || turnBudget != 0) && turns >= turnBudget) return true;
         int callBudget = goal.getLlmCallBudget() != null ? goal.getLlmCallBudget() : Integer.MAX_VALUE;
-        return goal.totalLlmCallsUsed() >= callBudget;
+        return (!persistent || callBudget != 0) && goal.totalLlmCallsUsed() >= callBudget;
     }
 
     @Override
     public String exhaustionReason(GoalEntity goal) {
         int turns = goal.getTurnsUsed() != null ? goal.getTurnsUsed() : 0;
         int turnBudget = goal.getTurnBudget() != null ? goal.getTurnBudget() : Integer.MAX_VALUE;
-        if (turns >= turnBudget) return "turn_budget";
+        if ((!Boolean.TRUE.equals(goal.getPersistentExecution()) || turnBudget != 0)
+                && turns >= turnBudget) return "turn_budget";
         return "llm_call_budget";
     }
 
@@ -544,6 +609,7 @@ public class GoalServiceImpl implements GoalService {
         r.setExitCriteria(e.getExitCriteria());
         r.setSuccessCheckPrompt(e.getSuccessCheckPrompt());
         r.setStatus(e.getStatus());
+        r.setPersistentExecution(Boolean.TRUE.equals(e.getPersistentExecution()));
         r.setTurnBudget(e.getTurnBudget());
         r.setTurnsUsed(e.getTurnsUsed());
         r.setLlmCallBudget(e.getLlmCallBudget());
@@ -591,14 +657,20 @@ public class GoalServiceImpl implements GoalService {
         if (req.getTitle().length() > 255) {
             throw new MateClawException("err.goal.bad_request", 400, "title too long (>255)");
         }
-        if (req.getTurnBudget() != null) validateBudget(req.getTurnBudget(), "turnBudget");
-        if (req.getLlmCallBudget() != null) validateBudget(req.getLlmCallBudget(), "llmCallBudget");
+        boolean persistent = persistentOnCreate(req);
+        if (req.getTurnBudget() != null) validateBudget(req.getTurnBudget(), "turnBudget", persistent);
+        if (req.getLlmCallBudget() != null) validateBudget(req.getLlmCallBudget(), "llmCallBudget", persistent);
     }
 
-    private static void validateBudget(int v, String name) {
-        if (v <= 0) {
+    private boolean persistentOnCreate(GoalCreateRequest req) {
+        return req.getPersistentExecution() != null
+                ? req.getPersistentExecution() : properties.isDefaultPersistentExecution();
+    }
+
+    private static void validateBudget(int v, String name, boolean persistent) {
+        if (v < 0 || (!persistent && v == 0)) {
             throw new MateClawException("err.goal.invalid_budget", 400,
-                    name + " must be > 0, got " + v);
+                    name + (persistent ? " must be >= 0, got " : " must be > 0, got ") + v);
         }
     }
 
@@ -679,6 +751,11 @@ public class GoalServiceImpl implements GoalService {
             if (fresh.getStatus() != from) {
                 throw new MateClawException("err.goal.bad_transition", 409,
                         "Cannot transition " + fresh.getStatus().getValue() + " -> " + to.getValue());
+            }
+            if (to == GoalStatus.ACTIVE && Boolean.TRUE.equals(fresh.getPersistentExecution())
+                    && isBudgetExhausted(fresh)) {
+                throw new MateClawException("err.goal.budget_exhausted", 409,
+                        "Increase the exhausted budget before resuming: " + exhaustionReason(fresh));
             }
             LambdaUpdateWrapper<GoalEntity> w = baseLockedUpdate(fresh)
                     .set(GoalEntity::getStatus, to);

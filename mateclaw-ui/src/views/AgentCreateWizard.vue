@@ -99,6 +99,18 @@
                   <option value="plan_execute">{{ t('agents.types.planExecute') }}</option>
                 </select>
               </div>
+              <div class="wiz-field">
+                <label>{{ t('agents.fields.runtime') }}</label>
+                <select v-model="draft.runtimeType" class="wiz-control">
+                  <option value="native">{{ t('agents.runtime.native') }}</option>
+                  <option value="dsh">{{ t('agents.runtime.dsh') }}</option>
+                </select>
+              </div>
+              <div v-if="draft.runtimeType === 'dsh'" class="wiz-field wiz-full">
+                <label>{{ t('agents.fields.runtimeConfig') }}</label>
+                <textarea v-model="draft.runtimeConfig" class="wiz-control runtime-config-editor" rows="4" spellcheck="false" placeholder="{}"></textarea>
+                <small class="wiz-field-hint">{{ t('agents.fields.runtimeConfigHint') }}</small>
+              </div>
               <div class="wiz-field wiz-full">
                 <label>{{ t('agents.wizard.fields.description') }}</label>
                 <input v-model="draft.description" class="wiz-control" />
@@ -234,6 +246,8 @@ interface Draft {
   icon: string
   description: string
   agentType: string
+  runtimeType: 'native' | 'dsh'
+  runtimeConfig: string | null
   systemPrompt: string
   role?: string
   goal?: string
@@ -308,6 +322,8 @@ async function generate() {
       icon: d.icon || '🤖',
       description: d.description || '',
       agentType: d.agentType || 'react',
+      runtimeType: d.runtimeType === 'dsh' ? 'dsh' : 'native',
+      runtimeConfig: d.runtimeConfig || null,
       systemPrompt: d.systemPrompt || '',
       role: d.role,
       goal: d.goal,
@@ -343,6 +359,8 @@ async function confirmCreate() {
       icon: draft.value.icon,
       description: draft.value.description,
       agentType: draft.value.agentType,
+      runtimeType: draft.value.runtimeType,
+      runtimeConfig: draft.value.runtimeType === 'dsh' ? (draft.value.runtimeConfig || '{}') : null,
       systemPrompt: draft.value.systemPrompt,
       tags,
       enabled: true,
@@ -457,6 +475,8 @@ function goRoster() {
 .wiz-field.wiz-full { grid-column: 1 / -1; }
 .wiz-field > label { font-size: 13px; font-weight: 600; color: var(--mc-text-secondary); margin-bottom: 6px; }
 .wiz-field .req { color: var(--mc-primary); }
+.wiz-field-hint { margin-top: 5px; color: var(--mc-text-tertiary); font-size: 12px; line-height: 1.45; }
+.runtime-config-editor { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; line-height: 1.5; }
 .wiz-control { width: 100%; box-sizing: border-box; padding: 9px 12px; border: 1px solid var(--mc-border);
   border-radius: 10px; background: var(--mc-input-bg); font-size: 14px; color: var(--mc-text-primary);
   font-family: inherit; outline: none; }

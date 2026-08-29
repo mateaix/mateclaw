@@ -10,6 +10,7 @@ import vip.mate.team.model.TeamTaskEntity;
 import vip.mate.team.model.TeamTaskCommentEntity;
 import vip.mate.team.model.TeamTaskStatus;
 import vip.mate.workspace.conversation.ConversationService;
+import vip.mate.workspace.conversation.model.MessageEntity;
 
 import java.util.List;
 
@@ -19,6 +20,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.startsWith;
+import static org.mockito.ArgumentCaptor.forClass;
 import static org.mockito.Mockito.*;
 
 /**
@@ -174,6 +176,26 @@ class TeamDispatchServiceTest {
     }
 
     @Test
+    @DisplayName("a clarifying question is requeued instead of being reported as completed")
+    void settleClarifyingQuestionRequeues() {
+        TeamTaskEntity running = task(1L, MEMBER_A);
+        running.setStatus(TeamTaskStatus.IN_PROGRESS);
+        running.setDispatchCount(1);
+        when(taskService.getTask(1L)).thenReturn(running);
+        when(taskService.requeueUnusableResult(1L,
+                "member asked for clarification instead of producing a result"))
+                .thenReturn(true);
+
+        service.settleOutcome(running, "您希望我如何处理？");
+
+        verify(taskService).requeueUnusableResult(1L,
+                "member asked for clarification instead of producing a result");
+        verify(taskService, never()).completeTask(any(), any(), anyString());
+        verify(announceService, never()).announceTaskSettled(any());
+        verify(eventChannel).publishTaskEvent(any(), eq("team_task_retrying"), any());
+    }
+
+    @Test
     @DisplayName("an unusable third result fails instead of bypassing the circuit breaker")
     void settleFallbackFailsAfterDispatchBudget() {
         TeamTaskEntity running = task(1L, MEMBER_A);
@@ -194,6 +216,40 @@ class TeamDispatchServiceTest {
     }
 
     @Test
+    @DisplayName("a second empty member result fails without starting a third long run")
+    void settleEmptyResultFailsAfterSingleRecoveryAttempt() {
+        TeamTaskEntity running = task(1L, MEMBER_A);
+        running.setStatus(TeamTaskStatus.IN_PROGRESS);
+        running.setDispatchCount(TeamDispatchService.MAX_RESPONSE_FAILURE_DISPATCHES);
+        TeamTaskEntity failed = task(1L, MEMBER_A);
+        failed.setStatus(TeamTaskStatus.FAILED);
+        failed.setReason("member produced no result");
+        when(taskService.getTask(1L)).thenReturn(running, failed);
+        when(taskService.failTask(1L, "member produced no result")).thenReturn(true);
+
+        service.settleOutcome(running, "");
+
+        verify(taskService, never()).requeueUnusableResult(any(), anyString());
+        verify(taskService).failTask(1L, "member produced no result");
+        verify(eventChannel).publishTaskEvent(any(), eq("team_task_failed"), any());
+        verify(announceService).announceTaskSettled(failed);
+    }
+
+    @Test
+    @DisplayName("automatic retry tells the worker why its previous attempt was rejected")
+    void retryDispatchContentIncludesPreviousFailure() {
+        TeamTaskEntity retry = task(1L, MEMBER_A);
+        retry.setDispatchCount(2);
+        retry.setReason("member produced no result");
+
+        String content = service.buildDispatchContent(retry);
+
+        assertTrue(content.contains("[Retry feedback]"));
+        assertTrue(content.contains("member produced no result"));
+        assertTrue(content.contains("do not repeat the same empty or fallback response"));
+    }
+
+    @Test
     @DisplayName("a declared deliverable task without an attachment is requeued")
     void settleMissingDeliverableRequeues() {
         TeamTaskEntity running = task(1L, MEMBER_A);
@@ -209,6 +265,28 @@ class TeamDispatchServiceTest {
 
         verify(taskService).requeueUnusableResult(1L, "required deliverable was not attached");
         verify(taskService, never()).completeTask(any(), any(), anyString());
+    }
+
+    @Test
+    @DisplayName("a returnDirect generated-file link satisfies a declared deliverable task")
+    void settleGeneratedFileLinkAttachesDeliverable() {
+        TeamTaskEntity running = task(1L, MEMBER_A);
+        running.setStatus(TeamTaskStatus.IN_PROGRESS);
+        running.setMetadata("{\"deliverableRequired\":true}");
+        TeamTaskEntity completed = task(1L, MEMBER_A);
+        completed.setStatus(TeamTaskStatus.COMPLETED);
+        when(taskService.getTask(1L)).thenReturn(running, completed);
+        when(taskService.listDeliverables(running)).thenReturn(List.of());
+        when(taskService.completeTask(eq(1L), isNull(), anyString())).thenReturn(List.of());
+
+        String reply = "文档已生成：[report.docx](/api/v1/files/generated/file-123)（链接 7 天内有效）。";
+        service.settleOutcome(running, reply);
+
+        verify(taskService).addDeliverable(1L, MEMBER_A, "report.docx",
+                "/api/v1/files/generated/file-123");
+        verify(taskService, never()).requeueUnusableResult(any(), anyString());
+        verify(taskService).completeTask(1L, null, reply);
+        verify(announceService).announceTaskSettled(completed);
     }
 
     @Test
@@ -313,6 +391,35 @@ class TeamDispatchServiceTest {
                 eq(WORKSPACE_ID),
                 eq("lead-conv"),
                 eq("team_worker"));
+    }
+
+    @Test
+    @DisplayName("member dispatch envelope carries lead conversation upload paths")
+    void runTaskCarriesLeadConversationUploadPaths() {
+        TeamTaskEntity assigned = task(1L, MEMBER_A);
+        assigned.setDescription("请根据刚上传的需求.docx拆解任务");
+        assigned.setStatus(TeamTaskStatus.IN_PROGRESS);
+        TeamTaskEntity done = task(1L, MEMBER_A);
+        done.setStatus(TeamTaskStatus.COMPLETED);
+        MessageEntity uploadTurn = new MessageEntity();
+        uploadTurn.setRole("user");
+        uploadTurn.setContentParts("[{\"type\":\"file\"}]");
+        when(conversationService.listRecentMessages("lead-conv", TeamDispatchService.LEAD_ATTACHMENT_CONTEXT_MESSAGES))
+                .thenReturn(List.of(uploadTurn));
+        when(conversationService.renderMessageContent(uploadTurn, true))
+                .thenReturn("请看附件\n[附件] 需求.docx（路径: /workspace/uploads/lead-conv/需求.docx）");
+        when(taskService.getTask(1L)).thenReturn(assigned, done, done);
+        when(taskService.completeTask(eq(1L), isNull(), anyString())).thenReturn(List.of());
+        when(agentService.chatWithUsage(eq(MEMBER_A), anyString(), anyString()))
+                .thenReturn(AgentService.ChatResult.contentOnly("all done"));
+
+        service.runTask(TEAM_ID, assigned);
+
+        var prompt = forClass(String.class);
+        verify(agentService).chatWithUsage(eq(MEMBER_A), prompt.capture(), startsWith("team-task-"));
+        assertTrue(prompt.getValue().contains("[Lead conversation attachments]"));
+        assertTrue(prompt.getValue().contains("需求.docx"));
+        assertTrue(prompt.getValue().contains("/workspace/uploads/lead-conv/需求.docx"));
     }
 
     @Test

@@ -67,7 +67,10 @@ public class GoalEntity {
      */
     private GoalStatus status;
 
-    /** Maximum evaluation turns before exhaustion. */
+    /** Opts into durable continuation; zero budgets mean unlimited only in this mode. */
+    private Boolean persistentExecution;
+
+    /** Maximum evaluation turns; zero is unlimited only for persistent execution. */
     private Integer turnBudget;
 
     /** Cumulative turns evaluated; bumped by GoalEvaluationNode. */

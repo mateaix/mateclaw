@@ -82,6 +82,22 @@ class WikiPageTypeProfileServiceTest {
     }
 
     @Test
+    void normalizePageType_rejectsReservedProfileTypesEvenWhenPersisted() {
+        WikiPageTypeProfileEntity row = new WikiPageTypeProfileEntity();
+        row.setKbId(1L);
+        row.setEnabled(1);
+        row.setConfigJson("{\"fallbackType\":\"synthesis\",\"pageTypes\":{"
+                + "\"system\":{\"label\":\"System\"},"
+                + "\"synthesis\":{\"label\":\"Synthesis\"},"
+                + "\"concept\":{\"label\":\"Concept\"}}}");
+        when(mapper.selectOne(any())).thenReturn(row);
+
+        assertEquals("concept", service.normalizePageType(1L, "system"));
+        assertEquals("concept", service.normalizePageType(1L, "synthesis"));
+        assertEquals("concept", service.normalizePageType(1L, "unknown"));
+    }
+
+    @Test
     void describeForPrompt_defaultProfile_listsBuiltInTypes() {
         when(mapper.selectOne(any())).thenReturn(null);
         String fragment = service.describeForPrompt(1L);

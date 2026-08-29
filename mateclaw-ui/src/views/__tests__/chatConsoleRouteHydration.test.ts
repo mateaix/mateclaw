@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildChatRouteQuery,
+  decideConversationResume,
   readLegacyWorkerRouteContext,
   readTeamRunRouteQuery,
   resolveConversationAgentSelection,
@@ -132,5 +133,46 @@ describe('legacy worker route context', () => {
   it('does not project ordinary or incomplete routes as worker context', () => {
     expect(readLegacyWorkerRouteContext('ordinary', fullQuery)).toBeNull()
     expect(readLegacyWorkerRouteContext('team-task-legacy', { taskId: fullQuery.taskId })).toBeNull()
+  })
+})
+
+describe('decideConversationResume', () => {
+  it('refreshes history when returning to the same inactive conversation', () => {
+    expect(decideConversationResume({
+      currentConversationId: 'conv-long-task',
+      targetConversationId: 'conv-long-task',
+      snapshotStreamStatus: 'idle',
+      liveStreamStatus: 'idle',
+    })).toEqual({
+      shouldResetLocalStream: false,
+      shouldRefreshMessages: true,
+      shouldReconnectStream: false,
+    })
+  })
+
+  it('refreshes persisted history before reconnecting a running conversation', () => {
+    expect(decideConversationResume({
+      currentConversationId: 'conv-long-task',
+      targetConversationId: 'conv-long-task',
+      snapshotStreamStatus: 'idle',
+      liveStreamStatus: 'running',
+    })).toEqual({
+      shouldResetLocalStream: false,
+      shouldRefreshMessages: true,
+      shouldReconnectStream: true,
+    })
+  })
+
+  it('trusts live idle status over a stale running sidebar snapshot', () => {
+    expect(decideConversationResume({
+      currentConversationId: 'conv-long-task',
+      targetConversationId: 'conv-long-task',
+      snapshotStreamStatus: 'running',
+      liveStreamStatus: 'idle',
+    })).toEqual({
+      shouldResetLocalStream: false,
+      shouldRefreshMessages: true,
+      shouldReconnectStream: false,
+    })
   })
 })

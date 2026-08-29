@@ -33,6 +33,13 @@ public class WikiPageTypeProfileService {
     private final WikiPageTypeProfileMapper profileMapper;
     private final ObjectMapper objectMapper;
 
+    /**
+     * Reserved page types are internal control-plane types. User profiles must
+     * never route business pages into them, because downstream list/search and
+     * cleanup paths intentionally treat them specially.
+     */
+    private static final Set<String> RESERVED_PAGE_TYPES = Set.of("system", "synthesis");
+
     /** Parsed once at startup; immutable thereafter. */
     private WikiPageTypeProfile defaultProfile;
 
@@ -209,10 +216,9 @@ public class WikiPageTypeProfileService {
      * @throws IllegalArgumentException when {@code configJson} does not parse
      */
     public void saveProfile(Long kbId, String name, String configJson) {
-        try {
-            objectMapper.readValue(configJson, WikiPageTypeProfile.class);
-        } catch (Exception e) {
-            throw new IllegalArgumentException("Invalid profile config JSON: " + e.getMessage());
+        java.util.List<String> issues = validateProfileJson(configJson);
+        if (!issues.isEmpty()) {
+            throw new IllegalArgumentException(String.join("; ", issues));
         }
         WikiPageTypeProfileEntity existing = findEnabledRow(kbId);
         if (existing != null) {
@@ -262,6 +268,16 @@ public class WikiPageTypeProfileService {
             issues.add("Profile declares no pageTypes");
             return issues;
         }
+        profile.getPageTypes().keySet().forEach(typeName -> {
+            String normalized = normalizeTypeName(typeName);
+            if (RESERVED_PAGE_TYPES.contains(normalized)) {
+                issues.add(typeName + ": reserved pageType is not allowed in user profiles");
+            }
+        });
+        String fallback = normalizeTypeName(profile.getFallbackType());
+        if (RESERVED_PAGE_TYPES.contains(fallback)) {
+            issues.add("reserved fallbackType is not allowed: " + fallback);
+        }
         java.util.Set<String> validTypes = java.util.Set.of(
                 "string", "number", "boolean", "date", "enum", "string_array");
         profile.getPageTypes().forEach((typeName, def) -> {
@@ -283,15 +299,40 @@ public class WikiPageTypeProfileService {
 
     /**
      * Normalise a routed/created pageType against the KB profile: a declared
-     * type is returned as-is (lowercase); an unknown type is downgraded to the
-     * profile's {@code fallbackType}. Never returns null.
+     * type is returned as-is (lowercase); an unknown or reserved type is
+     * downgraded to a safe fallback. Never returns null.
      */
     public String normalizePageType(Long kbId, String pageType) {
         WikiPageTypeProfile profile = resolveProfile(kbId);
-        if (pageType != null && profile.hasPageType(pageType)) {
-            return pageType.trim().toLowerCase();
+        String normalized = normalizeTypeName(pageType);
+        if (normalized != null && !RESERVED_PAGE_TYPES.contains(normalized)
+                && profile.hasPageType(normalized)) {
+            return normalized;
         }
-        String fallback = profile.getFallbackType();
-        return fallback == null ? "concept" : fallback.trim().toLowerCase();
+        return safeFallbackType(profile);
+    }
+
+    private static String safeFallbackType(WikiPageTypeProfile profile) {
+        String fallback = profile == null ? null : normalizeTypeName(profile.getFallbackType());
+        if (profile != null && fallback != null && !RESERVED_PAGE_TYPES.contains(fallback)
+                && profile.hasPageType(fallback)) {
+            return fallback;
+        }
+        if (profile != null && profile.hasPageType("concept")) {
+            return "concept";
+        }
+        return profile == null ? "concept" : profile.getPageTypes().keySet().stream()
+                .map(WikiPageTypeProfileService::normalizeTypeName)
+                .filter(type -> type != null && !RESERVED_PAGE_TYPES.contains(type))
+                .findFirst()
+                .orElse("concept");
+    }
+
+    private static String normalizeTypeName(String type) {
+        if (type == null) {
+            return null;
+        }
+        String normalized = type.trim().toLowerCase();
+        return normalized.isEmpty() ? null : normalized;
     }
 }

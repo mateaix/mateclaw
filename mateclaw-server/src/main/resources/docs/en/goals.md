@@ -9,6 +9,14 @@ head:
 
 # Persistent Goals
 
+## Continuous execution (v1)
+
+New goals default to `persistentExecution=true`; omitted `turnBudget` and `llmCallBudget` become `0` (no cumulative limit). Explicit positive budgets still apply. Existing goals retain legacy mode and do not start automatically after an upgrade.
+
+A durable queue and background supervisor schedule persistent goals across bounded graph segments. A graph limit ends a segment, not the goal. Queued work, cooldowns, retries and expired leases survive server restarts. Completion requires all persisted criteria to pass with nonblank evidence. Stop, essential missing input, approval denial and budget exhaustion pause execution until an explicit resume.
+
+`GET /api/v1/goals/{id}/execution` exposes the latest scheduling state, reason and due time; the goal API remains authoritative for current goal status. Streams broadcast scheduling changes through `goal_continuation`. V1 supports a single backend instance and the native runtime. External tool effects are not guaranteed exactly once; recovery must check existing artifacts and async handles. Budgets are checked at segment boundaries, not as per-request spending caps.
+
 > **You used to repeat the context every turn. Now you set a goal once, the worker follows.**
 
 You say "deploy this blog to fly.io" in one turn, the worker answers, and stops. Next turn you have to remember to ask "is DNS set? cert signed? tests run?" — you're keeping the goal in your head, not the worker.
@@ -109,6 +117,8 @@ After every turn, a backend evaluator node runs:
 
 ### Auto-followup
 
+Persistent mode schedules a fresh graph segment through the durable supervisor. The graph-local injection below applies only to legacy goals (`persistentExecution=false`).
+
 When `autoFollowupEnabled=true` and this turn's evaluator decision is "continue", the backend:
 
 1. Writes a `followup_injected` event to the timeline
@@ -198,9 +208,9 @@ The evaluation logic implements Spring AI's `Evaluator` interface: it does goal-
 
 ---
 
-## Four built-in tools (worker-callable)
+## Built-in goal tools (worker-callable)
 
-These four ship as agent-wide system tools — no binding setup needed:
+These tools ship as agent-wide system tools — no binding setup needed:
 
 | Tool | Purpose | Prompt example |
 |---|---|---|
@@ -208,6 +218,7 @@ These four ship as agent-wide system tools — no binding setup needed:
 | **addGoalCriterion** | Append a sub-criterion to the active goal | "Add: must support IPv6" |
 | **completeGoal** | Explicitly mark done | "All items done — call completeGoal" |
 | **getGoalStatus** | Inspect current state | "How are we doing?" |
+| **waitForGoalInput** | Pause a persistent goal for essential missing input | "Wait for the user to supply the deployment domain" |
 
 On completion (`completeGoal`, or the evaluator judging **every criterion passed**), the worker forwards a summary to its [long-term memory](./memory) so future conversations can recall it.
 
@@ -215,7 +226,7 @@ On completion (`completeGoal`, or the evaluator judging **every criterion passed
 
 ## Sub-agents cannot mutate the parent's goal
 
-In [multi-agent collaboration](./agents) a parent worker can delegate to a child worker. Children **don't see** the four goal tools — the goal is the parent conversation's state, the child is a stateless executor.
+In [multi-agent collaboration](./agents) a parent worker can delegate to a child worker. Children **don't see** the goal tools — the goal is the parent conversation's state, the child is a stateless executor.
 
 > This is intentional. Children do work for the parent, but the goal stays owned by the parent.
 
@@ -227,7 +238,7 @@ In [multi-agent collaboration](./agents) a parent worker can delegate to a child
 turnsUsed >= turnBudget  OR  (agentLlmCallsUsed + evalLlmCallsUsed) >= llmCallBudget
 ```
 
-Either one hit → goal status flips to **exhausted**, no more evaluations, no more follow-ups, ring turns red-orange. The last turn's assistant reply still goes through.
+Persistent mode checks positive budgets only; `0` means unlimited. Reaching a budget pauses the goal with scheduling state **budget_limited**; increase the budget and resume. Legacy goals still enter terminal **exhausted** and require a new goal to continue. The current segment's reply is still saved.
 
 Your options:
 
@@ -247,7 +258,8 @@ Your options:
 
  active ──all criteria passed / completeGoal──→ completed (terminal)
    ↓
- active ──turns_used / llm_calls exhausted ────→ exhausted (terminal)
+ active ──positive budget reached (persistent) → paused
+ active ──budget reached (legacy) ────────────→ exhausted (terminal)
    ↓
  active ──user abandon ────────────────────────→ abandoned (terminal)
 ```
@@ -300,9 +312,18 @@ mateclaw:
     default-auto-followup: true
     # Runtime master switch; when off, no goal injects a followup regardless of its per-goal flag.
     allow-auto-followup: true
-    # Default turn budget when the user doesn't override.
+    # Persistent goal segments that may execute concurrently in one backend instance.
+    max-concurrent-segments: 4
+    # Global minimum delay in seconds before an ordinary segment continues.
+    minimum-continuation-interval-seconds: 1
+    # Pause new claims after a retryable provider/evaluator failure (seconds; 0 disables it).
+    provider-failure-global-backoff-seconds: 30
+    # New goals run persistently; omitted budgets mean unlimited (0).
+    default-persistent-execution: true
+    supervisor-poll-ms: 5000
+    # Legacy default turn budget.
     default-turn-budget: 20
-    # Default combined (agent + evaluator) LLM call budget.
+    # Legacy combined (agent + evaluator) LLM call budget.
     default-llm-call-budget: 200
     # Minimum seconds between two consecutive auto-followups.
     auto-followup-cooldown-seconds: 0
@@ -319,6 +340,13 @@ mateclaw:
     evaluator-context-messages: 8
 ```
 
+The effective continuation delay is the larger of
+`minimum-continuation-interval-seconds` and the goal's `followupCooldownSeconds`.
+The provider-wide backoff is instance-local; restart recovery continues to use the durable
+continuation `next_run_at` and per-goal failure count. For soak tests or constrained model
+capacity, start with concurrency `1`, a `300` second minimum interval, and a `300` second
+provider backoff, then increase load only after reviewing logs.
+
 ---
 
 ## Database
@@ -330,7 +358,7 @@ Two tables, all `mate_`-prefixed:
 | `mate_agent_goal` | Goal itself; status / budgets / dual LLM counters / auto-followup config |
 | `mate_agent_goal_event` | Append-only event log; powers the timeline view |
 
-Flyway migration `V120__agent_goal.sql` (H2 / MySQL / KingbaseES dialects).
+`mate_goal_continuation` stores durable scheduling, due times and leases. Flyway migrations `V120__agent_goal.sql` and `V188__goal_continuation.sql` (H2 / MySQL / KingbaseES dialects).
 
 ---
 

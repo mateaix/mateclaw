@@ -295,7 +295,7 @@ public class GzhPackageTool {
             // 1. Explicit generated-file id — trust only a live image entry.
             Matcher m = GeneratedFileCache.GENERATED_URL_PATTERN.matcher(r);
             if (m.find()) {
-                Optional<GeneratedFileCache.Entry> e = cache.get(m.group(1));
+                Optional<GeneratedFileCache.Entry> e = cache.getForWorkspace(m.group(1), workspaceFromContext(ctx));
                 if (e.isPresent() && isImage(e.get()) && hasBytes(e.get())) {
                     return new ResolvedCover(e.get().bytes(), cache.downloadUrl(m.group(1), ctx));
                 }
@@ -306,7 +306,7 @@ public class GzhPackageTool {
             if (name != null && !name.isBlank()) {
                 Optional<String> healed = cache.findIdByFilename(name, "image/");
                 if (healed.isPresent()) {
-                    Optional<GeneratedFileCache.Entry> e = cache.get(healed.get());
+                    Optional<GeneratedFileCache.Entry> e = cache.getForWorkspace(healed.get(), workspaceFromContext(ctx));
                     if (e.isPresent() && hasBytes(e.get())) {
                         log.info("[GzhPackage] cover ref '{}' healed to generated id {} by filename", r, healed.get());
                         return new ResolvedCover(e.get().bytes(), cache.downloadUrl(healed.get(), ctx));
@@ -379,7 +379,7 @@ public class GzhPackageTool {
     }
 
     private String store(byte[] bytes, String name, String mime, @Nullable ToolContext ctx) {
-        String id = cache.put(bytes, name, mime);
+        String id = cache.put(bytes, name, mime, ctx);
         return cache.downloadUrl(id, ctx);
     }
 

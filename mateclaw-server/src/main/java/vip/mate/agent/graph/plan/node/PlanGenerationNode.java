@@ -623,7 +623,9 @@ public class PlanGenerationNode implements NodeAction {
                                 + "相互独立的步骤请不要标注前置，以便并行执行。\n"
                                 + "3. 每个步骤描述必须自包含——执行成员看不到本对话，把所需的输入与要求写进步骤里。\n"
                                 + "4. 若用户要求编号轮次、检查点区间或连续跟踪，必须包含一个专门的共享跟踪步骤，"
-                                + "明确区间、证据格式和完成条件；不要只把轮次要求埋在普通交付步骤中。"));
+                                + "明确区间、证据格式和完成条件；不要只把轮次要求埋在普通交付步骤中。\n"
+                                + "5. 不要创建专门的‘最终汇总/总结/验收’成员步骤；系统会在所有任务结束后自动汇总。"
+                                + "把必要的自检和验收标准写进实际产出步骤，避免为了复述结果增加串行任务。"));
             } else {
                 List<AgentEntity> delegatable = listDelegatableAgents(chatOrigin.workspaceId(), agentId);
                 if (!delegatable.isEmpty()) {

@@ -310,10 +310,17 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
                         if (!streamed.isEmpty() && !streamed.equals(lastEmittedStreamedContent.get())) {
                             lastEmittedStreamedContent.set(streamed);
                             boolean completionRetry = output.state().value(CONTINUE_REASONING, false);
-                            addWithKindEvent(deltas, streamedContentDelta(isFinalAnswerTurn,
-                                    completionRetry || output.state().value(NEEDS_TOOL_CALL, false),
-                                    completionRetry ? 0 : output.state().value(TOOL_CALL_COUNT, 0),
-                                    streamed));
+                            boolean longFormAccumulation = !output.state()
+                                    .value(LONG_FORM_DRAFT, "").isEmpty();
+                            String resolvedFinalAnswer = isFinalAnswerTurn
+                                    ? extractFinalAnswer(output) : "";
+                            if (shouldEmitStreamedContent(isFinalAnswerTurn, longFormAccumulation,
+                                    streamed, resolvedFinalAnswer)) {
+                                addWithKindEvent(deltas, streamedContentDelta(isFinalAnswerTurn,
+                                        completionRetry || output.state().value(NEEDS_TOOL_CALL, false),
+                                        completionRetry ? 0 : output.state().value(TOOL_CALL_COUNT, 0),
+                                        streamed));
+                            }
                         }
 
                         if (isFinalAnswerTurn && finalAnswerEmitted.compareAndSet(false, true)) {
@@ -503,10 +510,17 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
                         if (!streamed.isEmpty() && !streamed.equals(lastEmittedStreamedContent.get())) {
                             lastEmittedStreamedContent.set(streamed);
                             boolean completionRetry = output.state().value(CONTINUE_REASONING, false);
-                            addWithKindEvent(deltas, streamedContentDelta(isFinalAnswerTurn,
-                                    completionRetry || output.state().value(NEEDS_TOOL_CALL, false),
-                                    completionRetry ? 0 : output.state().value(TOOL_CALL_COUNT, 0),
-                                    streamed));
+                            boolean longFormAccumulation = !output.state()
+                                    .value(LONG_FORM_DRAFT, "").isEmpty();
+                            String resolvedFinalAnswer = isFinalAnswerTurn
+                                    ? extractFinalAnswer(output) : "";
+                            if (shouldEmitStreamedContent(isFinalAnswerTurn, longFormAccumulation,
+                                    streamed, resolvedFinalAnswer)) {
+                                addWithKindEvent(deltas, streamedContentDelta(isFinalAnswerTurn,
+                                        completionRetry || output.state().value(NEEDS_TOOL_CALL, false),
+                                        completionRetry ? 0 : output.state().value(TOOL_CALL_COUNT, 0),
+                                        streamed));
+                            }
                         }
 
                         if (isFinalAnswerTurn && finalAnswerEmitted.compareAndSet(false, true)) {
@@ -633,6 +647,7 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
         inputs.put(TOOL_CALL_COUNT, 0);
         inputs.put(ERROR_COUNT, 0);
         inputs.put(SHOULD_SUMMARIZE, false);
+        inputs.put(LONG_FORM_DRAFT, "");
         inputs.put(LIMIT_EXCEEDED, false);
         inputs.put(CONTENT_STREAMED, false);
         inputs.put(THINKING_STREAMED, false);
@@ -772,6 +787,17 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
                 ? ContentKind.PRE_TOOL_NARRATION
                 : ContentKind.GROUNDED_NARRATION;
         return AgentService.StreamDelta.segmentOnly(streamed, null, kind);
+    }
+
+    static boolean shouldEmitStreamedContent(boolean isFinalAnswerTurn,
+                                             boolean longFormAccumulation,
+                                             String streamed,
+                                             String finalAnswer) {
+        if (longFormAccumulation) {
+            return false;
+        }
+        return !isFinalAnswerTurn || finalAnswer == null || streamed == null
+                || !finalAnswer.contains(streamed);
     }
 
     private boolean hasFinalAnswer(NodeOutput output) {

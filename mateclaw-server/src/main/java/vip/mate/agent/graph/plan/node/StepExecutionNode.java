@@ -18,6 +18,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import vip.mate.agent.AgentToolSet;
 import vip.mate.agent.GraphEventPublisher;
 import vip.mate.agent.graph.NodeStreamingChatHelper;
+import vip.mate.agent.graph.node.ActionNode;
 import vip.mate.agent.graph.plan.state.PlanStateAccessor;
 import vip.mate.agent.graph.plan.state.PlanStateKeys;
 import vip.mate.agent.graph.state.DirectToolOutput;
@@ -35,6 +36,7 @@ import vip.mate.tool.builtin.DelegationContext;
 import vip.mate.tool.builtin.ToolExecutionContext;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -195,6 +197,7 @@ public class StepExecutionNode implements NodeAction {
                         .orElse(vip.mate.agent.context.ChatOrigin.EMPTY);
         String runtimeModelName = state.value(MateClawStateKeys.RUNTIME_MODEL_NAME, "");
         String runtimeProviderId = state.value(MateClawStateKeys.RUNTIME_PROVIDER_ID, "");
+        Set<String> loadedSkills = new LinkedHashSet<>(accessor.loadedSkills());
 
         if (stepIndex >= steps.size()) {
             log.warn("[StepExecution] stepIndex {} >= steps.size() {}, skipping", stepIndex, steps.size());
@@ -202,6 +205,7 @@ public class StepExecutionNode implements NodeAction {
                     .currentStepResult("步骤索引越界")
                     .completedResults(formatStepResult(stepIndex, "步骤索引越界"))
                     .currentStepIndex(stepIndex + 1)
+                    .loadedSkills(Set.copyOf(loadedSkills))
                     .build();
         }
 
@@ -364,7 +368,8 @@ public class StepExecutionNode implements NodeAction {
                         } else {
                             // 非预批准工具走正常执行器
                             ToolExecutionExecutor.ToolExecutionResult execResult = executor.execute(
-                                    List.of(toolCall), conversationId, agentId, false, "", workspaceBasePath, chatOrigin);
+                                    List.of(toolCall), conversationId, agentId, false, "", workspaceBasePath,
+                                    chatOrigin, loadedSkills);
                             toolResponses.addAll(execResult.responses());
                             events.addAll(execResult.events());
                             if (execResult.hasDirectOutputs()) {
@@ -379,18 +384,26 @@ public class StepExecutionNode implements NodeAction {
                     }
                 } else {
                     // 正常路径：委托 ToolExecutionExecutor（支持并发执行 + 审批 barrier）
-                    ToolExecutionExecutor.ToolExecutionResult execResult = executor.execute(
-                            allToolCalls, conversationId, agentId, false, "", workspaceBasePath, chatOrigin);
-                    toolResponses.addAll(execResult.responses());
-                    events.addAll(execResult.events());
-                    if (execResult.hasDirectOutputs()) {
-                        stepDirectOutputs.addAll(execResult.directOutputs());
+                    if (!allToolCalls.isEmpty()) {
+                        ToolExecutionExecutor.ToolExecutionResult execResult = executor.execute(
+                                allToolCalls, conversationId, agentId, false, "", workspaceBasePath,
+                                chatOrigin, loadedSkills);
+                        toolResponses.addAll(execResult.responses());
+                        events.addAll(execResult.events());
+                        if (execResult.hasDirectOutputs()) {
+                            stepDirectOutputs.addAll(execResult.directOutputs());
+                        }
+                        if (execResult.awaitingApproval()) {
+                            approvalTriggered = true;
+                            approvalToolName = execResult.barrierToolName() != null
+                                    ? execResult.barrierToolName() : "unknown";
+                        }
                     }
-                    if (execResult.awaitingApproval()) {
-                        approvalTriggered = true;
-                        approvalToolName = execResult.barrierToolName() != null
-                                ? execResult.barrierToolName() : "unknown";
-                    }
+                }
+
+                Set<String> requestedSkills = ActionNode.extractLoadedSkillNames(allToolCalls);
+                if (!requestedSkills.isEmpty() && loadedSkills.addAll(requestedSkills)) {
+                    log.debug("[StepExecution] pinned loaded skills in plan state: {}", requestedSkills);
                 }
 
                 // 将工具响应追加到消息
@@ -450,6 +463,7 @@ public class StepExecutionNode implements NodeAction {
                         .currentPhase("awaiting_approval")
                         .contentStreamed(true)
                         .thinkingStreamed(!stepThinking.isEmpty())
+                        .loadedSkills(Set.copyOf(loadedSkills))
                         .addStepUsage(state, stepPromptTokens, stepCompletionTokens,
                                 stepCacheReadTokens, stepCacheWriteTokens, stepReasoningTokens)
                         .events(events)
@@ -486,6 +500,7 @@ public class StepExecutionNode implements NodeAction {
                         .contentStreamed(false)  // 由 StateGraphPlanExecuteAgent 经 finalSummary 推送
                         .put(MateClawStateKeys.RETURN_DIRECT_TRIGGERED, true)
                         .put(MateClawStateKeys.DIRECT_TOOL_OUTPUTS, List.copyOf(stepDirectOutputs))
+                        .loadedSkills(Set.copyOf(loadedSkills))
                         .addStepUsage(state, stepPromptTokens, stepCompletionTokens,
                                 stepCacheReadTokens, stepCacheWriteTokens, stepReasoningTokens)
                         .events(events)
@@ -536,6 +551,7 @@ public class StepExecutionNode implements NodeAction {
                         .currentStepTitle("")
                         .currentStepResult("")
                         .contentStreamed(false)
+                        .loadedSkills(Set.copyOf(loadedSkills))
                         .addStepUsage(state, stepPromptTokens, stepCompletionTokens,
                                 stepCacheReadTokens, stepCacheWriteTokens, stepReasoningTokens)
                         .events(events)
@@ -594,6 +610,7 @@ public class StepExecutionNode implements NodeAction {
                         .currentStepTitle("")
                         .currentStepResult("")
                         .contentStreamed(false)
+                        .loadedSkills(Set.copyOf(loadedSkills))
                         .addStepUsage(state, stepPromptTokens, stepCompletionTokens,
                                 stepCacheReadTokens, stepCacheWriteTokens, stepReasoningTokens)
                         .events(events)
@@ -610,6 +627,7 @@ public class StepExecutionNode implements NodeAction {
                     // FINAL_SUMMARY is the single persistence/broadcast channel.
                     .finalSummary(shortError)
                     .contentStreamed(false)
+                    .loadedSkills(Set.copyOf(loadedSkills))
                     .addStepUsage(state, stepPromptTokens, stepCompletionTokens,
                             stepCacheReadTokens, stepCacheWriteTokens, stepReasoningTokens)
                     .events(events)
@@ -654,6 +672,7 @@ public class StepExecutionNode implements NodeAction {
                 .currentPhase("step_completed")
                 .contentStreamed(true)
                 .thinkingStreamed(!stepThinking.isEmpty())
+                .loadedSkills(Set.copyOf(loadedSkills))
                 .addStepUsage(state, stepPromptTokens, stepCompletionTokens,
                         stepCacheReadTokens, stepCacheWriteTokens, stepReasoningTokens)
                 .events(events)
@@ -803,10 +822,9 @@ public class StepExecutionNode implements NodeAction {
                 """;
         messages.add(new SystemMessage(enhancedSystemPrompt));
         // Runtime skill catalog (rendered here instead of baked into the system
-        // prompt). The Plan path never pins per-run loads, so render with an
-        // empty loaded set — this reproduces the pre-disclosure DB ordering.
+        // prompt), ranked with skills already loaded during this graph run.
         if (skillCatalogRenderer != null) {
-            String skillCatalog = skillCatalogRenderer.render(java.util.Set.of());
+            String skillCatalog = skillCatalogRenderer.render(accessor.loadedSkills());
             if (skillCatalog != null && !skillCatalog.isBlank()) {
                 messages.add(new SystemMessage(skillCatalog));
             }

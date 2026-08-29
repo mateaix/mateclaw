@@ -96,6 +96,8 @@ export async function fetchAuthenticatedBlob(fileUrl: string): Promise<Blob> {
   const token = localStorage.getItem('token')
   const headers: Record<string, string> = {}
   if (token) headers.Authorization = `Bearer ${token}`
+  const workspaceId = localStorage.getItem('mc-workspace-id')
+  if (workspaceId) headers['X-Workspace-Id'] = workspaceId
   const response = await fetch(fileUrl, { headers })
   if (!response.ok) throw new Error(`Fetch failed: ${response.status}`)
   return response.blob()
@@ -204,7 +206,7 @@ export const conversationApi = {
    */
   page: (params: { page?: number; size?: number; keyword?: string }) =>
     http.get('/conversations/page', { params }),
-  listMessages: (conversationId: string, params?: { beforeId?: number; limit?: number }) =>
+  listMessages: (conversationId: string, params?: { beforeId?: number; limit?: number; runId?: string; taskId?: string }) =>
     http.get(`/conversations/${encId(conversationId)}/messages`, { params }),
   getStatus: (conversationId: string) =>
     http.get(`/conversations/${encId(conversationId)}/status`),
@@ -439,6 +441,7 @@ export interface LiveSnapshot {
 
 export const liveApi = {
   snapshot: () => http.get<{ data: LiveSnapshot }>('/admin/agent-runtime/snapshot'),
+  dshDiagnostics: () => http.get<{ data: Record<string, any> }>('/admin/agent-runtime/dsh/diagnostics'),
   stop: (conversationId: string) =>
     http.post(`/admin/agent-runtime/runs/${encodeURIComponent(conversationId)}/stop`),
   recycle: (conversationId: string) =>
@@ -521,8 +524,8 @@ export const toolApi = {
   list: () => http.get('/tools'),
   listEnabled: () => http.get('/tools/enabled'),
   /**
-   * Unified picker source for the agent edit tool tab — returns built-in
-   * tools plus every MCP-discovered tool grouped by server. The `name`
+   * Unified picker source for the agent edit tool tab — returns built-in,
+   * channel, plugin, and MCP-discovered tools. The `name`
    * field is what gets saved into mate_agent_tool.tool_name.
    */
   listAvailable: () => http.get('/tools/available'),
@@ -751,6 +754,17 @@ export const settingsApi = {
   updateSidecar: (data: { defaultVisionModelId: number | string | null; defaultVideoModelId: number | string | null }) =>
     http.put('/settings/sidecar', data),
   getSearchProviders: () => http.get('/settings/search-providers'),
+}
+
+// ==================== DeepSeek Harness runtime ====================
+export const dshApi = {
+  status: () => http.get('/admin/dsh/status'),
+  saveConfig: (data: Record<string, string>) => http.put('/admin/dsh/config', data),
+  install: () => http.post('/admin/dsh/install'),
+  verify: () => http.post('/admin/dsh/verify'),
+  testConnection: () => http.post('/admin/dsh/test-connection'),
+  enable: () => http.post('/admin/dsh/enable'),
+  disable: () => http.post('/admin/dsh/disable'),
 }
 
 // ==================== Global outbound proxy ====================
@@ -1775,6 +1789,8 @@ export interface Goal {
   description: string
   exitCriteria?: string | null
   status: 'active' | 'paused' | 'completed' | 'abandoned' | 'exhausted'
+  /** Durable continuation; zero budgets are unlimited only in this mode. */
+  persistentExecution?: boolean
   turnBudget: number
   turnsUsed: number
   llmCallBudget: number
@@ -1810,6 +1826,7 @@ export const goalApi = {
     title: string
     description?: string
     exitCriteria?: string
+    persistentExecution?: boolean
     turnBudget?: number
     llmCallBudget?: number
     autoFollowupEnabled?: boolean

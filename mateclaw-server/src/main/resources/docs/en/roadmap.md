@@ -156,15 +156,28 @@ Full story: [v2.0.0 release notes](./releases/2.0.0.md); user guide: [Agent Team
 
 Full story: [v2.1.0 release notes](./releases/2.1.0.md); guides: [Team Runs](./teams) and [Skills](./skills).
 
+### v2.2 — Replaceable runtimes, recoverable long work ✅ Released (2026-08-29)
+
+2.1 defined a complete run. 2.2 turns “what executes it, how it resumes after interruption, and how it collaborates with external agents” into infrastructure.
+
+- **Employee Runtime Contract**: provider registry, session factory, capability declarations, and normalized events let native and external runtimes share conversations, workspaces, tool governance, and UI projection
+- **DeepSeek Harness Runtime**: authenticated JSON-RPC process bridge, thinking/text/tool/lifecycle events, host tool policy, managed installation and configuration, and child-environment isolation
+- **Durable Goal execution**: bounded segments + database scheduler + supervisor + leases / attempts / accepted-input queue recover unfinished goals after backend restarts
+- **A2A interoperability**: MateClaw acts as both A2A server and client with Agent Cards, streamed tasks, get/cancel, and constrained outbound calls
+- **Runtime reliability and boundaries**: Team delivery gates, checkpoint recovery, long-form output, approval-time input, generated files, and workspace-scoped administration are hardened
+- Optional OfficeCLI, ACP prompt timeout, and plugin-tool discovery round out external-runtime operations
+
+Full story: [v2.2.0 release notes](./releases/2.2.0.md); guides: [DeepSeek Harness](./deepseek-harness), [Persistent Goals](./goals), and [A2A](./a2a).
+
 ---
 
-## Next: Agent Loop & Team follow-through
+## Next: Resident runtimes & Team follow-through
 
 > "Great things in business are never done by one person. They're done by a team of people."
 
-Look back along the line: v1.2 gave employees an identity, v1.3 made flows orchestratable, v1.4 made employees follow goals and spin up delegation trees, v1.7 made long tasks visible, v2.0 made teams a standing roster, and **v2.1 made every round deliverable, learnable, and governable**.
+Look back along the line: v1.2 gave employees an identity, v1.3 made flows orchestratable, v1.4 made employees follow goals and spin up delegation trees, v1.7 made long tasks visible, v2.0 made teams a standing roster, v2.1 made every round deliverable, learnable, and governable, and **v2.2 made execution engines replaceable, long goals recoverable across requests and restarts, and agents interoperable across systems**.
 
-One "stop" remains: **employees are reactive.** Goal auto-followup only lives **within a single run**; cron and triggers can wake an employee up, but every wake-up is an isolated response. No employee is truly **on duty** — continuously watching its area of responsibility and deciding for itself when to act.
+One “stop” remains: **durable Goals can continue, but employees still lack a general resident responsibility loop.** Cron and triggers can wake them, and the Goal supervisor can recover one objective, but there is no unified inbox, heartbeat, duty journal, or priority policy across objectives. The next step generalizes 2.2's runtime / queue / recovery foundation into a true on-duty state.
 
 ### Agent Team follow-through — the roster exists; now it grows skills
 
@@ -183,7 +196,7 @@ A new state for employees: **on duty**. Not waiting for you to speak, but cyclin
 
 - [ ] **Resident loop runtime**: an employee can be set "on duty," waking on a configurable heartbeat (minutes to days) to check its area of responsibility
 - [ ] **Task inbox**: channel messages, trigger events, delegations from other employees, to-dos you toss over — one queue, consumed by priority on each wake-up
-- [ ] **Cross-session goal continuation**: v1.4/v1.5 auto-followup lives inside a single run; the loop carries goals across sessions and across days until every criterion is checked
+- [x] **Cross-request and restart-safe Goal continuation (2.2)**: the Goal supervisor, durable queue, leases / attempts, and recovery carry goals across bounded execution segments and service restarts until the checklist passes or execution explicitly pauses
 - [ ] **Budgets and circuit breakers**: per-loop token / cost / turn budgets; consecutive failures trip the breaker into sleep pending your decision; ToolGuard approval gates still intercept sensitive actions — autonomy is not loss of control
 - [ ] **Loop journal**: what it did each wake-up, why it chose not to act, what it spent — human-readable and replayable, what DREAMS.md is to memory
 - [ ] **Pause / resume / clock-out**: controllable from the UI and from channel commands; the Run Overview sidebar shows every on-duty employee's loop state
@@ -239,7 +252,8 @@ A leader on a loop, members summoned on demand — that's a **self-running digit
 | **v1.8** | It does a whole job | Content Studio — one sentence to a publishable 公众号 / 小红书 post + browser ref interaction | ✅ Released |
 | **v2.0** | **It leads a team** | **Agent Teams + a shared task board — the lead decomposes and dispatches, members run in parallel, deliverables and full observability** | ✅ Released |
 | **v2.1** | **It turns collaboration into a run** | **Unified Team Runs + closed skill evolution + replayable reasoning trajectories + proactive channel delivery** | ✅ Released |
-| **Next** | **It's on duty** | **Agent Loop resident cycles + team follow-through (peer review / team goals / group binding / retrospectives) = a department that runs itself** | 📋 Planned |
+| **v2.2** | **It reshapes the runtime** | **Pluggable runtimes + DeepSeek Harness + durable Goal recovery + A2A interoperability** | ✅ Released |
+| **Next** | **It's on duty** | **Resident runtime (heartbeat / inbox / journal / circuit breakers) + team follow-through = a department that runs itself** | 📋 Planned |
 
 ---
 
@@ -251,7 +265,7 @@ We're building it because we believe one thing:
 
 **AI shouldn't be a chat box on a webpage. It should be your second brain.**
 
-It lives in your DingTalk, your Feishu, your Telegram. It's read every document you have. It remembers what you said three months ago. It uses your company's internal tools. It consolidates memory while you sleep. It runs an entire business flow on your behalf. **It can now deliver one complete round of team work and learn from it; next, that team stays on duty and watches over the things you can't get to.**
+It lives in your DingTalk, your Feishu, your Telegram. It's read every document you have. It remembers what you said three months ago. It uses your company's internal tools. It consolidates memory while you sleep. It runs an entire business flow on your behalf. **Its runtime is now replaceable, its long goals recoverable, and its external agents interoperable; next, that foundation becomes a digital department that stays on duty.**
 
 Someday, you'll forget it's a program.
 

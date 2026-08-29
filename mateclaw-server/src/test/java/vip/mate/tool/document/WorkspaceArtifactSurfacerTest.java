@@ -81,6 +81,22 @@ class WorkspaceArtifactSurfacerTest {
     }
 
     @Test
+    @DisplayName("Files modified before the run do not surface even when mtime is close to run start")
+    void ignoresFilesModifiedBeforeRunStart() throws Exception {
+        tmp = Files.createTempDirectory("artifacts-");
+        cacheDir = Files.createTempDirectory("cache-");
+        GeneratedFileCache cache = new GeneratedFileCache(cacheDir);
+
+        long runStart = System.currentTimeMillis();
+        Path foreign = Files.write(tmp.resolve("foreign.csv"), "tenant,secret\nb,1\n".getBytes());
+        Files.setLastModifiedTime(foreign, FileTime.fromMillis(runStart - 500L));
+
+        List<String> links = WorkspaceArtifactSurfacer.collect(cache, tmp, runStart, null);
+
+        assertTrue(links.isEmpty(), "pre-existing files from another run/workspace must not surface: " + links);
+    }
+
+    @Test
     @DisplayName("Null / non-existent working dir and null cache are safe no-ops")
     void edgeCasesAreSafe() throws Exception {
         cacheDir = Files.createTempDirectory("cache-");

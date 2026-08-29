@@ -13,6 +13,7 @@ import org.springframework.util.MimeType;
 import reactor.core.publisher.Flux;
 import vip.mate.agent.context.ChatOrigin;
 import vip.mate.agent.context.ChatOriginHolder;
+import vip.mate.agent.context.GoalContinuationContext;
 import vip.mate.approval.ApprovalPlaceholderUtil;
 import vip.mate.llm.model.ModelConfigEntity;
 import vip.mate.llm.routing.MediaCaptionService;
@@ -1264,6 +1265,12 @@ public abstract class BaseAgent {
      * the primary model can't already handle.
      */
     protected CurrentTurnUserMessage buildCurrentUserMessageWithRouting(String conversationId, String userMessageText) {
+        // Autonomous segments have no new persisted user row. Reconstructing
+        // from the last user would replace the continuation/recovery instruction.
+        // History is still loaded normally; queued user turns retain attachment routing.
+        if (GoalContinuationContext.explicitPrompt()) {
+            return new CurrentTurnUserMessage(new UserMessage(userMessageText), null);
+        }
         // Scheduled-job run (issue #142): the task text is the explicit
         // userMessageText argument. Never reconstruct it from the conversation
         // — a shared cron conversation under concurrent runs has no reliable

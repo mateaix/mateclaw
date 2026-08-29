@@ -1069,6 +1069,7 @@ public class AgentGraphBuilder {
                     // Summarizing
                     .addStrategy(MateClawStateKeys.SUMMARIZED_CONTEXT, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.FINAL_ANSWER_DRAFT, KeyStrategy.REPLACE)
+                    .addStrategy(MateClawStateKeys.LONG_FORM_DRAFT, KeyStrategy.REPLACE)
                     .addStrategy(MateClawStateKeys.SHOULD_SUMMARIZE, KeyStrategy.REPLACE)
                     // 终止控制
                     .addStrategy(MateClawStateKeys.FINISH_REASON, KeyStrategy.REPLACE)

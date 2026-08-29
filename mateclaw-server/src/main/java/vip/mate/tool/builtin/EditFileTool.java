@@ -3,14 +3,18 @@ package vip.mate.tool.builtin;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
+import vip.mate.i18n.I18nService;
+import vip.mate.tool.ConcurrencyUnsafe;
+import vip.mate.tool.guard.WorkspacePathGuard;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 
 /**
  * 内置工具：编辑文件（查找替换）
@@ -31,9 +35,9 @@ import java.nio.file.Paths;
 @lombok.RequiredArgsConstructor
 public class EditFileTool {
 
-    private final vip.mate.i18n.I18nService i18n;
+    private final I18nService i18n;
 
-    @vip.mate.tool.ConcurrencyUnsafe("in-place file edit — must not race with reads/writes on the same path")
+    @ConcurrencyUnsafe("in-place file edit — must not race with reads/writes on the same path")
     @Tool(description = "Edit file content via find-and-replace. Finds exact match of old_text and replaces with new_text. "
             + "Returns structured JSON with filePath, replacements count. "
             + "May require user approval when security rules flag the edit. "
@@ -42,7 +46,8 @@ public class EditFileTool {
             @ToolParam(description = "Absolute or relative file path") String filePath,
             @ToolParam(description = "Original text to find (exact match)") String oldText,
             @ToolParam(description = "Replacement text") String newText,
-            @ToolParam(description = "Replace all occurrences, default false (first only)", required = false) Boolean replaceAll) {
+            @ToolParam(description = "Replace all occurrences, default false (first only)", required = false) Boolean replaceAll,
+            @Nullable ToolContext ctx) {
 
         JSONObject result = new JSONObject();
         result.set("filePath", filePath);
@@ -63,7 +68,7 @@ public class EditFileTool {
 
             Path path;
             try {
-                path = vip.mate.tool.guard.WorkspacePathGuard.validatePath(filePath);
+                path = WorkspacePathGuard.validatePath(filePath, ctx);
             } catch (IllegalArgumentException e) {
                 return errorResult(filePath, e.getMessage());
             }

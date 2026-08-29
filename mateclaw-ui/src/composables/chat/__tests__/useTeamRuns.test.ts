@@ -184,6 +184,36 @@ describe('useTeamRuns', () => {
     scope.stop()
   })
 
+  it('performs a trailing detail refresh when a terminal event arrives in flight', async () => {
+    let onEvent: ((event: TeamBoardEvent) => void) | undefined
+    let resolveStale!: (value: { data: TeamRun }) => void
+    let resolveTerminal!: (value: { data: TeamRun }) => void
+    const staleDetail = new Promise<{ data: TeamRun }>(resolve => { resolveStale = resolve })
+    const terminalDetail = new Promise<{ data: TeamRun }>(resolve => { resolveTerminal = resolve })
+    const dependencies: TeamRunsDependencies = {
+      listByConversation: vi.fn().mockResolvedValue({ data: [run('10')] }),
+      getRun: vi.fn()
+        .mockReturnValueOnce(staleDetail)
+        .mockReturnValueOnce(terminalDetail),
+      subscribe: vi.fn((_teamId, callback) => { onEvent = callback; return vi.fn() }),
+    }
+    const scope = effectScope()
+    const state = scope.run(() => useTeamRuns(ref('lead'), { dependencies }))!
+    await flush()
+
+    onEvent!({ event: 'team_run_progress', data: { runId: '10' } })
+    onEvent!({ event: 'team_run_completed', data: { runId: '10', status: 'completed' } })
+    expect(dependencies.getRun).toHaveBeenCalledTimes(1)
+
+    resolveStale({ data: run('10') })
+    await flush()
+    expect(dependencies.getRun).toHaveBeenCalledTimes(2)
+    resolveTerminal({ data: run('10', 'team-1', 'completed') })
+    await flush()
+    expect(state.runs.value[0].status).toBe('completed')
+    scope.stop()
+  })
+
   it('ignores team events belonging to another lead conversation', async () => {
     let onEvent: ((event: TeamBoardEvent) => void) | undefined
     const dependencies: TeamRunsDependencies = {

@@ -139,7 +139,7 @@ public class SendFileTool {
     }
 
     private String stash(byte[] bytes, String displayName, String mimeType, @Nullable ToolContext ctx) {
-        String id = cache.put(bytes, displayName, mimeType);
+        String id = cache.put(bytes, displayName, mimeType, ctx);
         return cache.downloadUrl(id, ctx);
     }
 

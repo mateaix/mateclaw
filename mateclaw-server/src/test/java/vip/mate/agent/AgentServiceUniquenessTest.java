@@ -16,6 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
@@ -91,6 +92,36 @@ class AgentServiceUniquenessTest {
         assertNotNull(a.getId());
         assertNotNull(b.getId());
         assertNotEquals(a.getId(), b.getId());
+    }
+
+    @Test
+    @DisplayName("createAgent 默认使用 native runtime，兼容旧 Agent")
+    void createDefaultsToNativeRuntime() {
+        AgentEntity created = agentService.createAgent(newAgent("Native-default", workspaceA));
+
+        assertEquals("native", created.getRuntimeType());
+        assertEquals("native", agentService.getAgent(created.getId()).getRuntimeType());
+
+        created.setRuntimeConfig("{\"binary\":\"dsh\"}");
+        agentService.updateAgent(created);
+        assertEquals("{\"binary\":\"dsh\"}",
+                agentService.getAgent(created.getId()).getRuntimeConfig());
+
+        created.setRuntimeConfig(null);
+        agentService.updateAgent(created);
+        assertNull(agentService.getAgent(created.getId()).getRuntimeConfig());
+    }
+
+    @Test
+    @DisplayName("createAgent 拒绝未注册的 runtime provider")
+    void createRejectsUnknownRuntimeProvider() {
+        AgentEntity agent = newAgent("Unknown-runtime", workspaceA);
+        agent.setRuntimeType("unknown-provider");
+
+        MateClawException ex = assertThrows(MateClawException.class,
+                () -> agentService.createAgent(agent));
+        assertEquals(400, ex.getCode());
+        assertEquals("err.agent.runtime_unsupported", ex.getMsgKey());
     }
 
     @Test

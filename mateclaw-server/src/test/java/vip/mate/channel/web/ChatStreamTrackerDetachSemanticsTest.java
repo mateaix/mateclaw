@@ -34,6 +34,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class ChatStreamTrackerDetachSemanticsTest {
 
+    @Test
+    void stopPublishesDurableGoalControlEvenBetweenSegments() {
+        ChatStreamTracker tracker = newTracker();
+        var context = org.mockito.Mockito.mock(org.springframework.context.ApplicationContext.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(tracker,"applicationContext",context);
+        tracker.requestStop("idle-goal");
+        org.mockito.Mockito.verify(context).publishEvent(new vip.mate.goal.service.GoalExecutionSignal.Stop("idle-goal"));
+    }
+
     private ChatStreamTracker newTracker() {
         return new ChatStreamTracker(new ObjectMapper());
     }

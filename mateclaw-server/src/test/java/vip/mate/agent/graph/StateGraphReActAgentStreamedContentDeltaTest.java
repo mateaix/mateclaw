@@ -166,4 +166,27 @@ class StateGraphReActAgentStreamedContentDeltaTest {
         assertEquals(1, deltas.size());
         assertFalse(deltas.get(0).isEvent());
     }
+
+    @Test
+    @DisplayName("long-form chunks are not persisted separately from their combined final answer")
+    void longFormChunk_combinedFinalAnswerOwnsPersistence() {
+        assertFalse(StateGraphReActAgent.shouldEmitStreamedContent(
+                false, true, "chapter one", ""));
+        assertFalse(StateGraphReActAgent.shouldEmitStreamedContent(
+                true, true, "last chapter", "chapter one...last chapter"));
+    }
+
+    @Test
+    @DisplayName("terminal streamed text already contained in final answer is not duplicated")
+    void normalTerminalContent_finalAnswerOwnsPersistence() {
+        assertFalse(StateGraphReActAgent.shouldEmitStreamedContent(
+                true, false, "answer", "answer"));
+    }
+
+    @Test
+    @DisplayName("terminal body omitted from a warning-only final answer remains persistable")
+    void evidenceWarning_keepsSeparateBodyPersistence() {
+        assertTrue(StateGraphReActAgent.shouldEmitStreamedContent(
+                true, false, "unsupported answer body", "[证据不足] missing source"));
+    }
 }

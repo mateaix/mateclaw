@@ -18,6 +18,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ChatStreamTrackerEventIdTest {
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void continuationStateAfterSegmentCompletionIsAvailableOnReconnect(boolean fenced) {
+        ChatStreamTracker tracker = new ChatStreamTracker(new ObjectMapper());
+        var handle = tracker.register("goal-channel");
+        tracker.complete(handle);
+        if (fenced) tracker.broadcast(handle, "goal_continuation", "{\"state\":\"queued\"}");
+        else tracker.broadcastObject("goal-channel", "goal_continuation", java.util.Map.of("state", "queued"));
+        CapturingEmitter reconnected = new CapturingEmitter();
+        tracker.attach("goal-channel", reconnected);
+        assertTrue(reconnected.names.contains("goal_continuation"));
+    }
+
     @Test
     void eventIdsIncreaseAcrossChannelsAndRecreatedRunState() {
         ChatStreamTracker tracker = new ChatStreamTracker(new ObjectMapper());
@@ -107,11 +120,16 @@ class ChatStreamTrackerEventIdTest {
     private static final class CapturingEmitter extends SseEmitter {
 
         private final List<Long> ids = new ArrayList<>();
+        private final List<String> names = new ArrayList<>();
 
         @Override
         public void send(SseEventBuilder builder) throws IOException {
             Set<ResponseBodyEmitter.DataWithMediaType> entries = builder.build();
             for (ResponseBodyEmitter.DataWithMediaType entry : entries) {
+                if (entry.getData() instanceof String text) {
+                    text.lines().filter(line -> line.startsWith("event:"))
+                            .forEach(line -> names.add(line.substring(6).trim()));
+                }
                 if (entry.getData() instanceof String text && text.startsWith("id:")) {
                     int end = text.indexOf('\n');
                     ids.add(Long.parseLong(text.substring(3, end).trim()));

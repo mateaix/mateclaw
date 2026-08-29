@@ -48,18 +48,21 @@ import { ref, reactive, watch, onMounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { useWikiStore, type WikiKB } from '@/stores/useWikiStore'
-import { wikiApi } from '@/api/index'
+import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
+import { wikiApi, type WikiFailureItem } from '@/api/index'
 import { mcConfirm } from '@/components/common/useConfirm'
 import { mcToast } from '@/composables/useMcToast'
 import WikiLibrary from './components/WikiLibrary.vue'
 import WikiWorkspace from './components/WikiWorkspace.vue'
 import WikiFailureCenter from './components/WikiFailureCenter.vue'
+import { openWikiFailureItem } from './utils/failureOpen'
 
 const route = useRoute()
 const router = useRouter()
 
 const { t } = useI18n()
 const store = useWikiStore()
+const workspaceStore = useWorkspaceStore()
 
 // The cross-KB failure center spans every workspace, so it is admin-only —
 // mirrors the gate on the backing endpoint.
@@ -95,10 +98,8 @@ async function enterKB(id: number) {
   await store.selectKB(id, 'browse')
 }
 
-// The failure center emits a Snowflake kbId as a string — keep it a string end
-// to end (snowflake-precision-ok) and let the store cast satisfy its signature.
-async function openFromFailureCenter(kbId: string) {
-  await store.selectKB(kbId as unknown as number, 'browse')
+async function openFromFailureCenter(item: WikiFailureItem) {
+  await openWikiFailureItem(item, { workspaceStore, wikiStore: store })
 }
 
 async function enterKBManage(id: number) {

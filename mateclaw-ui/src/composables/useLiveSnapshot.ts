@@ -14,6 +14,7 @@ export function useLiveSnapshot({ load, refreshRuns }: Dependencies) {
 
   async function refresh() {
     const request = ++sequence
+    if (snapshot.value == null) loading.value = true
     try {
       const response = await load() as { data?: LiveSnapshot }
       if (request !== sequence) return false

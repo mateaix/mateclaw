@@ -3,6 +3,9 @@ package vip.mate.tool.service;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.tool.definition.ToolDefinition;
+import vip.mate.tool.ToolRegistry;
 import vip.mate.tool.mcp.model.McpServerEntity;
 import vip.mate.tool.mcp.runtime.McpToolNameResolver;
 import vip.mate.tool.mcp.service.McpServerService;
@@ -26,15 +29,18 @@ class AvailableToolServiceTest {
 
     private ToolService toolService;
     private McpServerService mcpServerService;
+    private ToolRegistry toolRegistry;
     private AvailableToolService service;
 
     @BeforeEach
     void setUp() {
         toolService = mock(ToolService.class);
         mcpServerService = mock(McpServerService.class);
-        service = new AvailableToolService(toolService, mcpServerService);
+        toolRegistry = mock(ToolRegistry.class);
+        service = new AvailableToolService(toolService, mcpServerService, toolRegistry);
         when(toolService.listEnabledTools()).thenReturn(List.of());
         when(mcpServerService.listEnabled()).thenReturn(List.of());
+        when(toolRegistry.listAvailablePluginTools()).thenReturn(List.of());
     }
 
     @Test
@@ -48,6 +54,27 @@ class AvailableToolServiceTest {
         assertEquals(2, out.size());
         Set<String> sources = out.stream().map(AvailableToolDTO::getSource).collect(Collectors.toSet());
         assertEquals(Set.of("builtin", "mcp"), sources);
+    }
+
+    @Test
+    @DisplayName("plugin-registered callbacks appear as bindable agent picker tools")
+    void includesPluginRegisteredCallbacks() {
+        ToolCallback pluginTool = pluginCallback("custom_invoice_lookup", "Look up invoices from a plugin");
+        when(toolRegistry.listAvailablePluginTools()).thenReturn(List.of(pluginTool));
+
+        List<AvailableToolDTO> out = service.listAvailable();
+
+        assertEquals(1, out.size());
+        AvailableToolDTO dto = out.get(0);
+        assertEquals("plugin", dto.getSource());
+        assertEquals("plugin#custom_invoice_lookup", dto.getRowId());
+        assertEquals("custom_invoice_lookup", dto.getName());
+        assertEquals("custom_invoice_lookup", dto.getRawName());
+        assertEquals("Look up invoices from a plugin", dto.getDescription());
+        assertEquals("Plugin tools", dto.getGroup());
+        assertEquals("plugin", dto.getGroupId());
+        assertTrue(dto.isAvailable());
+        assertFalse(dto.isStale());
     }
 
     @Test
@@ -220,5 +247,15 @@ class AvailableToolServiceTest {
         s.setLastStatus("connected");
         s.setToolsCacheJson(cacheJson);
         return s;
+    }
+
+    private static ToolCallback pluginCallback(String name, String description) {
+        ToolCallback callback = mock(ToolCallback.class);
+        when(callback.getToolDefinition()).thenReturn(ToolDefinition.builder()
+                .name(name)
+                .description(description)
+                .inputSchema("{}")
+                .build());
+        return callback;
     }
 }

@@ -29,6 +29,15 @@ export const defaultRenderConfig = (): RenderConfigValue => ({
   message_format: 'auto',
 })
 
+// Browser-rendered channels stream structured message parts over SSE and let
+// the client decide what to draw. They never go through the adapter's outbound
+// text render path, where message-filter config is read.
+const BROWSER_RENDERED_TYPES = new Set(['web', 'webchat'])
+
+export function supportsChannelMessageFilter(channelType?: string | null): boolean {
+  return !BROWSER_RENDERED_TYPES.has(channelType || '')
+}
+
 export function parseConfigJson(json?: string): Record<string, any> {
   if (!json) return {}
   try { return JSON.parse(json) } catch { return {} }

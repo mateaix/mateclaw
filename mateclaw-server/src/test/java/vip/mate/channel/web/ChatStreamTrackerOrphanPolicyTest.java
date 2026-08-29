@@ -377,6 +377,22 @@ class ChatStreamTrackerOrphanPolicyTest {
     }
 
     @Test
+    @DisplayName("A disposable registered after Stop is requested is cancelled immediately")
+    void lateDisposableIsCancelledWhenStopWonTheRace() {
+        ChatStreamTracker tracker = newTracker();
+        String cid = "late-stop-disposable";
+        ChatStreamTracker.RunHandle handle = tracker.register(cid);
+        tracker.incrementFlux(cid);
+
+        assertTrue(tracker.requestStop(cid));
+
+        RecordingDisposable lateDisposable = new RecordingDisposable();
+        tracker.setDisposable(handle, lateDisposable);
+
+        assertTrue(lateDisposable.isDisposed());
+    }
+
+    @Test
     @DisplayName("A throwing disposable cannot leave an evicting tombstone mapped")
     void throwingDisposableStillRemovesClaimedState() {
         ChatStreamTracker tracker = newTracker();

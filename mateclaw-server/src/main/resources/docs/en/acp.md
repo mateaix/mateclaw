@@ -198,7 +198,7 @@ Hints surface in the test panel and in the streamed error message your agent rec
 
 - `initialize` handshake: 15s
 - `session/new`: 10s
-- Whole `session/prompt` round-trip: 5 min
+- Whole `session/prompt` round-trip: 300s by default, configurable per endpoint up to 3600s
 - Stdio buffer cap: 50 MiB per call (configurable on the row via `stdio_buffer_limit_bytes`)
 
 ---
@@ -215,6 +215,7 @@ Hints surface in the test panel and in the streamed error message your agent rec
 | `args_json` | TEXT | NULL | CLI args (JSON array) |
 | `env_json` | TEXT | NULL | Env overrides (JSON object) |
 | `tool_parse_mode` | VARCHAR(32) | `call_title` | `call_title` / `call_detail` / `update_detail` |
+| `prompt_timeout_seconds` | INT | 300 | `session/prompt` call timeout, capped at 3600s |
 | `builtin` | BOOLEAN | FALSE | Built-in rows are write-protected |
 | `trusted` | BOOLEAN | TRUE | Auto-allow permission requests |
 | `enabled` | BOOLEAN | FALSE | Off until you opt in |

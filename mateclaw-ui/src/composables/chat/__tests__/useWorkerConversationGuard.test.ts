@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { nextTick, ref } from 'vue'
 import { useWorkerConversationGuard } from '../useWorkerConversationGuard'
 import type { VerifiedWorkerContext } from '@/utils/conversationGovernance'
@@ -18,6 +18,10 @@ const worker = (conversationId: string): VerifiedWorkerContext => ({
 })
 
 describe('useWorkerConversationGuard', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('fails closed while a worker-looking route is pending and after 403/500', async () => {
     const conversationId = ref('worker')
     const workerHint = ref(true)
@@ -90,5 +94,29 @@ describe('useWorkerConversationGuard', () => {
     await nextTick(); await Promise.resolve()
     expect(guard.state.value).toBe('error')
     expect(guard.readOnly.value).toBe(true)
+  })
+
+  it('retries an ordinary conversation after a transient backend outage', async () => {
+    vi.useFakeTimers()
+    let attempts = 0
+    const guard = useWorkerConversationGuard({
+      conversationId: ref('ordinary'),
+      workerHint: ref(false),
+      load: async () => {
+        attempts += 1
+        if (attempts === 1) throw new Error('backend restarting')
+        return null
+      },
+      retryDelayMs: 100,
+    })
+
+    await nextTick(); await Promise.resolve()
+    expect(guard.state.value).toBe('error')
+    expect(guard.readOnly.value).toBe(true)
+
+    await vi.advanceTimersByTimeAsync(100)
+    expect(attempts).toBe(2)
+    expect(guard.state.value).toBe('nonWorker')
+    expect(guard.readOnly.value).toBe(false)
   })
 })

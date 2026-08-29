@@ -6,12 +6,14 @@ import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.Message;
 import vip.mate.agent.context.ChatOrigin;
 import vip.mate.agent.context.ChatOriginHolder;
+import vip.mate.agent.context.GoalContinuationContext;
 import vip.mate.workspace.conversation.ConversationService;
 import vip.mate.workspace.conversation.model.MessageEntity;
 
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -96,6 +98,45 @@ class BaseAgentCronIsolationTest {
 
         assertEquals(2, history.size(),
                 "a normal turn keeps prior history (the trailing current user row is de-duplicated)");
+    }
+
+    @Test
+    void goalContinuation_keepsHistoryButUsesExplicitInstruction() {
+        ConversationService conv = mock(ConversationService.class);
+        List<MessageEntity> stored = List.of(user("Reply READY"), assistant("READY"));
+        when(conv.countMessages("goal_conv")).thenReturn((long) stored.size());
+        when(conv.listMessages("goal_conv")).thenReturn(stored);
+        stubRender(conv);
+        TestAgent agent = newAgent(conv);
+        ChatOriginHolder.set(ChatOrigin.web("goal_conv", "u1", 1L, null));
+
+        GoalContinuationContext.call(() -> {
+            assertEquals(2, agent.history("goal_conv", "Continue with checkpoint 1").size());
+            assertEquals("Continue with checkpoint 1",
+                    agent.currentMessage("goal_conv", "Continue with checkpoint 1"),
+                    "the durable continuation must not replay the last persisted user instruction");
+            return null;
+        });
+    }
+
+    @Test
+    void queuedUserTurn_reconstructsStoredContentAndRestoresContinuationScope() {
+        ConversationService conv = mock(ConversationService.class);
+        when(conv.listMessages("goal_conv")).thenReturn(List.of(user("Current user with attachment text")));
+        stubRender(conv);
+        TestAgent agent = newAgent(conv);
+
+        GoalContinuationContext.call(() -> {
+            GoalContinuationContext.call(false, () -> {
+                assertTrue(GoalContinuationContext.active());
+                assertEquals("Current user with attachment text", agent.currentMessage("goal_conv", "fallback"));
+                return null;
+            });
+            assertEquals("Continue after queued input", agent.currentMessage("goal_conv", "Continue after queued input"));
+            return null;
+        });
+        assertFalse(GoalContinuationContext.active());
+        assertFalse(GoalContinuationContext.explicitPrompt());
     }
 
     // ---------- scaffold ----------

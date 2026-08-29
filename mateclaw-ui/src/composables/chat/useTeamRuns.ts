@@ -66,6 +66,7 @@ export function useTeamRuns(
   const loadingMore = ref(false)
   const subscriptions = new Map<string, () => void>()
   const inFlight = new Map<string, Promise<void>>()
+  const trailingRefresh = new Set<string>()
   let generation = 0
   let stopped = false
 
@@ -91,11 +92,14 @@ export function useTeamRuns(
     ensureSubscriptions()
   }
 
-  const refreshRun = (runId: string): Promise<void> => {
+  const refreshRun = (runId: string, requireTrailing = false): Promise<void> => {
     const activeGeneration = generation
     const requestKey = `${activeGeneration}:${runId}`
     const existing = inFlight.get(requestKey)
-    if (existing) return existing
+    if (existing) {
+      if (requireTrailing) trailingRefresh.add(requestKey)
+      return existing
+    }
     const request = dependencies.getRun(runId)
       .then((result) => {
         if (!stopped && activeGeneration === generation) replaceRun(dataOf(result))
@@ -103,7 +107,12 @@ export function useTeamRuns(
       .catch((cause) => {
         if (!stopped && activeGeneration === generation) error.value = cause
       })
-      .finally(() => { inFlight.delete(requestKey) })
+      .finally(() => {
+        inFlight.delete(requestKey)
+        if (!stopped && activeGeneration === generation && trailingRefresh.delete(requestKey)) {
+          void refreshRun(runId)
+        }
+      })
     inFlight.set(requestKey, request)
     return request
   }
@@ -127,7 +136,10 @@ export function useTeamRuns(
         ? { ...current, status, progress }
         : run)
     }
-    void refreshRun(runId)
+    const terminalEvent = ['completed', 'failed', 'cancelled', 'stopped'].includes(
+      typeof event.data.status === 'string' ? event.data.status : '',
+    ) || ['team_run_completed', 'team_run_failed', 'team_run_cancelled', 'team_run_stopped'].includes(event.event)
+    void refreshRun(runId, terminalEvent)
   }
 
   const refresh = async () => {
@@ -136,6 +148,7 @@ export function useTeamRuns(
     loadingMore.value = false
     cleanupSubscriptions()
     inFlight.clear()
+    trailingRefresh.clear()
     loading.value = true
     error.value = null
     try {
@@ -194,6 +207,7 @@ export function useTeamRuns(
     generation += 1
     stopWatch()
     cleanupSubscriptions()
+    trailingRefresh.clear()
   }
   if (getCurrentScope()) onScopeDispose(stop)
 

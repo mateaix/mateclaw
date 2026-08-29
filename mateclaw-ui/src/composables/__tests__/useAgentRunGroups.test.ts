@@ -76,6 +76,20 @@ describe('projectAgentRunGroups', () => {
 describe('useAgentRunGroups hydration priority', () => {
   beforeEach(() => vi.resetAllMocks())
 
+  it('skips team-run pagination when the live snapshot is empty', async () => {
+    vi.mocked(teamApi.list).mockResolvedValue({ data: [{ team: { id: '10' } }] } as never)
+    vi.mocked(teamRunApi.listByTeamPage).mockResolvedValue({ data: { items: [run('running', [])], nextCursor: null } } as never)
+    const groups = useAgentRunGroups(ref(snapshot([])))
+
+    await groups.refreshForSnapshot()
+
+    expect(teamApi.list).not.toHaveBeenCalled()
+    expect(teamRunApi.listByTeamPage).not.toHaveBeenCalled()
+    expect(groups.runs.value).toEqual([])
+    expect(groups.loading.value).toBe(false)
+    expect(groups.error.value).toBeNull()
+  })
+
   it('keeps an explicit route run when a later snapshot refresh completes first', async () => {
     const routeDetail = deferred<unknown>()
     vi.mocked(teamApi.list).mockResolvedValue({ data: [{ team: { id: '10' } }] } as never)
@@ -170,7 +184,7 @@ describe('useAgentRunGroups hydration priority', () => {
     vi.mocked(teamRunApi.listByTeamPage)
       .mockResolvedValueOnce({ data: { items: firstPage, nextCursor: 'cursor-2' } } as never)
       .mockResolvedValueOnce({ data: { items: [finalRun], nextCursor: null } } as never)
-    const groups = useAgentRunGroups(ref(snapshot([])))
+    const groups = useAgentRunGroups(ref(snapshot([live('lead-conv')])))
 
     await groups.refreshForSnapshot()
 
@@ -189,7 +203,7 @@ describe('useAgentRunGroups hydration priority', () => {
     vi.mocked(teamRunApi.listByTeamPage)
       .mockResolvedValueOnce({ data: { items: [run('running', [])], nextCursor: 'loop' } } as never)
       .mockResolvedValueOnce({ data: { items: [], nextCursor: 'loop' } } as never)
-    const groups = useAgentRunGroups(ref(snapshot([])))
+    const groups = useAgentRunGroups(ref(snapshot([live('lead-conv')])))
 
     await expect(groups.refreshForSnapshot()).rejects.toThrow('cursor')
 
@@ -210,7 +224,7 @@ describe('useAgentRunGroups hydration priority', () => {
       if (teamId === '11') return pending.promise as never
       return Promise.resolve({ data: { items: [], nextCursor: null } }) as never
     })
-    const groups = useAgentRunGroups(ref(snapshot([])))
+    const groups = useAgentRunGroups(ref(snapshot([live('lead-conv')])))
 
     const first = groups.refreshForSnapshot()
     let settled = false
@@ -237,7 +251,7 @@ describe('useAgentRunGroups hydration priority', () => {
     const page = deferred<unknown>()
     vi.mocked(teamApi.list).mockResolvedValue({ data: [{ team: { id: '10' } }] } as never)
     vi.mocked(teamRunApi.listByTeamPage).mockReturnValue(page.promise as never)
-    const groups = useAgentRunGroups(ref(snapshot([])))
+    const groups = useAgentRunGroups(ref(snapshot([live('lead-conv')])))
 
     const refresh = groups.refreshForSnapshot()
     await vi.waitFor(() => expect(teamRunApi.listByTeamPage).toHaveBeenCalledTimes(1))

@@ -191,6 +191,8 @@ export interface SendMessageOptions {
    * row is inserted and `content` is ignored server-side.
    */
   regenerate?: boolean
+  /** Exact approval selected by the user when several pendings coexist. */
+  pendingApprovalId?: string
 }
 
 export function buildChatStreamRequestBody(content: string, options: SendMessageOptions): Record<string, any> {
@@ -209,6 +211,9 @@ export function buildChatStreamRequestBody(content: string, options: SendMessage
   }
   if (options.regenerate) {
     body.regenerate = true
+  }
+  if (options.pendingApprovalId) {
+    body.pendingApprovalId = options.pendingApprovalId
   }
   return body
 }

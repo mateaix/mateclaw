@@ -119,6 +119,10 @@ public final class MateClawStateAccessor {
         return state.value(FINAL_ANSWER_DRAFT, "");
     }
 
+    public String longFormDraft() {
+        return state.value(LONG_FORM_DRAFT, "");
+    }
+
     public boolean limitExceeded() {
         return state.value(LIMIT_EXCEEDED, false);
     }
@@ -451,6 +455,10 @@ public final class MateClawStateAccessor {
 
         public OutputBuilder finalAnswerDraft(String draft) {
             return put(FINAL_ANSWER_DRAFT, draft);
+        }
+
+        public OutputBuilder longFormDraft(String draft) {
+            return put(LONG_FORM_DRAFT, draft);
         }
 
         // ---- 终止 ----

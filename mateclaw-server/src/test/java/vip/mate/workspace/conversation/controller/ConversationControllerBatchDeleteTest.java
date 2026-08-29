@@ -8,6 +8,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.core.Authentication;
 import vip.mate.channel.web.ChatStreamTracker;
 import vip.mate.common.result.R;
+import vip.mate.team.service.TeamWorkerConversationGovernanceService;
 import vip.mate.workspace.conversation.ConversationService;
 
 import java.util.ArrayList;
@@ -25,13 +26,14 @@ class ConversationControllerBatchDeleteTest {
 
     @Mock private ConversationService conversationService;
     @Mock private ChatStreamTracker streamTracker;
+    @Mock private TeamWorkerConversationGovernanceService teamWorkerGovernanceService;
     @Mock private Authentication authentication;
 
     private ConversationController controller;
 
     @BeforeEach
     void setUp() {
-        controller = new ConversationController(conversationService, streamTracker);
+        controller = new ConversationController(conversationService, streamTracker, teamWorkerGovernanceService);
         when(authentication.getName()).thenReturn("alice");
     }
 

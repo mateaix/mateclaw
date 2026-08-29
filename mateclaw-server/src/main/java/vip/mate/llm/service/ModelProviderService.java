@@ -175,7 +175,11 @@ public class ModelProviderService {
             throw new MateClawException("err.llm.provider_id_invalid",
                     "Provider id 仅允许字母/数字及 . _ -（不允许斜杠或空格），首字符必须是字母或数字，长度 1-64: " + request.getId());
         }
-        if (modelProviderMapper.selectById(request.getId()) != null) {
+        ModelProviderEntity existing = modelProviderMapper.selectById(request.getId());
+        if (existing != null && canRestoreCustomProvider(existing)) {
+            return restoreCustomProvider(existing, request);
+        }
+        if (existing != null) {
             throw new MateClawException("err.llm.provider_exists", "Provider 已存在: " + request.getId());
         }
         ModelProtocol protocol = ModelProtocol.resolve(request.getProtocol(), request.getChatModel());
@@ -208,6 +212,32 @@ public class ModelProviderService {
             }
         }
         eventPublisher.publishEvent(new ModelConfigChangedEvent("provider-created"));
+        return toProviderInfo(provider, modelConfigService.listModelsByProvider(request.getId()));
+    }
+
+    private boolean canRestoreCustomProvider(ModelProviderEntity provider) {
+        return Boolean.TRUE.equals(provider.getIsCustom()) && !Boolean.TRUE.equals(provider.getEnabled());
+    }
+
+    private ProviderInfoDTO restoreCustomProvider(ModelProviderEntity provider, CreateCustomProviderRequest request) {
+        ModelProtocol protocol = ModelProtocol.resolve(request.getProtocol(), request.getChatModel());
+        provider.setName(request.getName());
+        provider.setApiKeyPrefix(request.getApiKeyPrefix());
+        provider.setChatModel(protocol.getChatModelClass());
+        provider.setBaseUrl(request.getDefaultBaseUrl());
+        provider.setIsCustom(true);
+        provider.setIsLocal(false);
+        provider.setEnabled(true);
+        provider.setSupportModelDiscovery(protocol.supportsSelfConfiguredDiscovery());
+        provider.setRequireApiKey(request.getRequireApiKey() == null || Boolean.TRUE.equals(request.getRequireApiKey()));
+        modelProviderMapper.updateById(provider);
+        if (request.getModels() != null) {
+            for (ModelInfoDTO model : request.getModels()) {
+                modelConfigService.addModelToProvider(request.getId(), model.getId(), model.getName(), false);
+            }
+        }
+        tryAutoActivateModel(request.getId(), provider);
+        eventPublisher.publishEvent(new ModelConfigChangedEvent("provider-enabled"));
         return toProviderInfo(provider, modelConfigService.listModelsByProvider(request.getId()));
     }
 

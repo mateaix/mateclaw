@@ -77,6 +77,28 @@ public class ToolRegistry {
         log.info("Plugin tool unregistered: {}", toolName);
     }
 
+    /**
+     * Snapshot plugin callbacks that are currently available to the runtime.
+     * Used by the agent tool picker so plugin tools can be bound per agent
+     * through the same {@code mate_agent_tool.tool_name} path as other tools.
+     */
+    public List<ToolCallback> listAvailablePluginTools() {
+        List<ToolCallback> out = new ArrayList<>();
+        for (PluginToolEntry entry : pluginTools) {
+            try {
+                if (entry.callback() != null && Boolean.TRUE.equals(entry.availabilityCheck().get())) {
+                    out.add(entry.callback());
+                }
+            } catch (Exception e) {
+                String name = entry.callback() != null && entry.callback().getToolDefinition() != null
+                        ? entry.callback().getToolDefinition().name()
+                        : "<unknown>";
+                log.warn("Plugin tool availability check failed for {}: {}", name, e.getMessage());
+            }
+        }
+        return List.copyOf(out);
+    }
+
     public void invalidateEnabledToolSetCache(String reason) {
         enabledToolSetCache = null;
         log.debug("Enabled AgentToolSet cache invalidated: {}", reason);

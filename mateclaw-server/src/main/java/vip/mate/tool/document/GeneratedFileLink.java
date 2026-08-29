@@ -59,7 +59,7 @@ public final class GeneratedFileLink {
 
     private static String stash(byte[] bytes, String displayName, String mimeType,
                                 GeneratedFileCache cache, @Nullable ToolContext ctx) {
-        String id = cache.put(bytes, displayName, mimeType);
+        String id = cache.put(bytes, displayName, mimeType, ctx);
         return cache.downloadUrl(id, ctx);
     }
 }

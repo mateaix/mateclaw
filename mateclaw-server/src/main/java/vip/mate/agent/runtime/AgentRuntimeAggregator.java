@@ -10,6 +10,7 @@ import vip.mate.channel.web.ChatStreamTracker;
 import vip.mate.channel.web.ChatStreamTracker.RunSnapshot;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -116,18 +117,26 @@ public class AgentRuntimeAggregator {
     ) {}
 
     public RuntimeSnapshot snapshot() {
+        return snapshot(null);
+    }
+
+    public RuntimeSnapshot snapshot(Long workspaceId) {
         List<RunSnapshot> rawRuns = streamTracker.getAllSnapshot();
         Set<Long> agentIds = rawRuns.stream()
                 .map(RunSnapshot::agentId)
                 .filter(java.util.Objects::nonNull)
                 .collect(Collectors.toSet());
-        for (var rec : subagentRegistry.allActive()) {
+        Collection<SubagentRegistry.SubagentRecord> rawSubagents = subagentRegistry.allActive();
+        for (var rec : rawSubagents) {
             if (rec.agentId() != null) agentIds.add(rec.agentId());
         }
         Map<Long, AgentEntity> agentInfo = resolveAgents(agentIds);
 
         Map<String, Long> subagentCountByParent = new HashMap<>();
-        for (var rec : subagentRegistry.allActive()) {
+        for (var rec : rawSubagents) {
+            if (!belongsToWorkspace(rec.agentId(), agentInfo, workspaceId)) {
+                continue;
+            }
             String parent = rec.parentConversationId();
             if (parent != null) {
                 subagentCountByParent.merge(parent, 1L, Long::sum);
@@ -141,6 +150,7 @@ public class AgentRuntimeAggregator {
         int runningCount = 0;
         for (RunSnapshot s : rawRuns) {
             if (s.done()) continue;
+            if (!belongsToWorkspace(s.agentId(), agentInfo, workspaceId)) continue;
             runningCount++;
             String stuckReason = computeStuckReason(s);
             boolean orphan = s.subscriberCount() == 0;
@@ -181,7 +191,8 @@ public class AgentRuntimeAggregator {
             return Long.compare(b.msSinceLastEvent(), a.msSinceLastEvent());
         });
 
-        List<SubagentCard> subCards = subagentRegistry.allActive().stream()
+        List<SubagentCard> subCards = rawSubagents.stream()
+                .filter(rec -> belongsToWorkspace(rec.agentId(), agentInfo, workspaceId))
                 .map(rec -> {
                     long now = System.currentTimeMillis();
                     AgentEntity ag = rec.agentId() == null ? null : agentInfo.get(rec.agentId());
@@ -216,6 +227,33 @@ public class AgentRuntimeAggregator {
         return new RuntimeSnapshot(summary, cards, subCards, System.currentTimeMillis());
     }
 
+    public boolean runBelongsToWorkspace(String conversationId, Long workspaceId) {
+        if (conversationId == null || workspaceId == null) {
+            return false;
+        }
+        List<RunSnapshot> rawRuns = streamTracker.getAllSnapshot();
+        for (RunSnapshot run : rawRuns) {
+            if (run.done() || !conversationId.equals(run.conversationId())) {
+                continue;
+            }
+            AgentEntity agent = resolveAgent(run.agentId());
+            return agent != null && workspaceId.equals(agent.getWorkspaceId());
+        }
+        return false;
+    }
+
+    public boolean subagentBelongsToWorkspace(String subagentId, Long workspaceId) {
+        if (subagentId == null || workspaceId == null) {
+            return false;
+        }
+        return subagentRegistry.get(subagentId)
+                .map(rec -> {
+                    AgentEntity agent = resolveAgent(rec.agentId());
+                    return agent != null && workspaceId.equals(agent.getWorkspaceId());
+                })
+                .orElse(false);
+    }
+
     /**
      * Returns null when the run looks healthy. The returned tag is a stable
      * machine-readable code (not a translated label) so the frontend can
@@ -243,5 +281,26 @@ public class AgentRuntimeAggregator {
             }
         }
         return out;
+    }
+
+    private AgentEntity resolveAgent(Long id) {
+        if (id == null) {
+            return null;
+        }
+        try {
+            return agentService.getAgent(id);
+        } catch (Exception e) {
+            log.debug("agent lookup failed for id={}: {}", id, e.getMessage());
+            return null;
+        }
+    }
+
+    private static boolean belongsToWorkspace(Long agentId, Map<Long, AgentEntity> agentInfo,
+                                              Long workspaceId) {
+        if (workspaceId == null) {
+            return true;
+        }
+        AgentEntity agent = agentId == null ? null : agentInfo.get(agentId);
+        return agent != null && workspaceId.equals(agent.getWorkspaceId());
     }
 }

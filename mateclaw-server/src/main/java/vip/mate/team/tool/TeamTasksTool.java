@@ -31,6 +31,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.regex.Pattern;
 
 /**
  * Shared team task board exposed to the LLM. One multi-action tool (rather
@@ -47,6 +48,10 @@ import java.util.Optional;
 @RequiredArgsConstructor
 @Slf4j
 public class TeamTasksTool {
+
+    private static final Pattern DELIVERABLE_REQUEST = Pattern.compile(
+            "(?i)(交付物|生成.{0,8}(文件|文档)|文档成稿|报告成稿|"
+                    + "docx|xlsx|pptx|pdf|deliverable|document|spreadsheet|presentation)");
 
     private final TeamService teamService;
     private final TeamTaskService taskService;
@@ -201,6 +206,7 @@ public class TeamTasksTool {
                 .blockedBy(parseIdList(blockedBy))
                 .requireApproval(Boolean.TRUE.equals(requireApproval))
                 .leadConversationId(conversationId)
+                .metadata(deliverableMetadata(subject, description))
                 .build());
         eventChannel.publishTaskEvent(task, "team_task_created", Map.of());
         return "✓ Created task #" + task.getTaskNumber() + " (id: " + task.getId()
@@ -209,6 +215,17 @@ public class TeamTasksTool {
                 + (TeamTaskStatus.BLOCKED.equals(task.getStatus())
                         ? " (starts automatically once its prerequisites finish)." : ".")
                 + " Seal the run after all tasks are staged.";
+    }
+
+    private String deliverableMetadata(String subject, String description) {
+        String taskText = (subject == null ? "" : subject) + "\n"
+                + (description == null ? "" : description);
+        if (!DELIVERABLE_REQUEST.matcher(taskText).find()) {
+            return null;
+        }
+        return new cn.hutool.json.JSONObject()
+                .set("deliverableRequired", true)
+                .toString();
     }
 
     private String sealRun(AgentTeamEntity team, boolean isLead, Long workspaceId,

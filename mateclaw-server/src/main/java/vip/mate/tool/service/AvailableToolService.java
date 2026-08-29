@@ -5,7 +5,9 @@ import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.ai.tool.ToolCallback;
 import org.springframework.stereotype.Service;
+import vip.mate.tool.ToolRegistry;
 import vip.mate.tool.mcp.model.McpServerEntity;
 import vip.mate.tool.mcp.runtime.McpHashCollisionDetector;
 import vip.mate.tool.mcp.service.McpServerService;
@@ -19,8 +21,9 @@ import java.util.List;
  * Aggregator behind {@code GET /api/v1/tools/available}.
  *
  * <p>Returns one DTO per atomic tool the agent edit picker can offer:
- * built-in tools (from {@link ToolService#listEnabledTools()}) plus every
- * MCP tool persisted in {@link McpServerEntity#getToolsCacheJson()}.
+ * built-in tools (from {@link ToolService#listEnabledTools()}), plugin
+ * callbacks registered in {@link ToolRegistry}, plus every MCP tool
+ * persisted in {@link McpServerEntity#getToolsCacheJson()}.
  *
  * <p>Reads the cache rather than making a live MCP {@code listTools()}
  * roundtrip so the picker stays fast and stable through brief upstream
@@ -33,17 +36,11 @@ import java.util.List;
  * this, the user could save a {@code mate_agent_tool.tool_name} that
  * resolves to nothing at chat time.
  *
- * <p><b>Scope</b>: this aggregator covers the two tool sources users can
- * bind from the agent edit screen — built-in {@code @Tool} beans
- * (persisted in {@code mate_tool}) and MCP-discovered tools (cached on
- * the server row). Plugin-registered {@code ToolCallback} beans surfaced
- * by other parts of the runtime are intentionally NOT listed here: those
- * are not user-bindable from the agent picker today, and the picker's
- * "saved name == runtime callback key" contract only needs to hold for
- * the rows the picker actually emits. If plugin tools later become
- * user-bindable, extend this aggregator (or accept that they go through
- * a separate config path) — see {@code AgentBindingService}'s
- * {@code SYSTEM_LEVEL_TOOLS} carve-out for the same reasoning.
+ * <p><b>Scope</b>: this aggregator covers the tool sources users can bind
+ * from the agent edit screen. Every emitted {@code name} must match the
+ * runtime callback key accepted by {@code AgentToolSet}; otherwise the UI
+ * could persist a {@code mate_agent_tool.tool_name} row that resolves to
+ * nothing at chat time.
  */
 @Slf4j
 @Service
@@ -52,10 +49,12 @@ public class AvailableToolService {
 
     private final ToolService toolService;
     private final McpServerService mcpServerService;
+    private final ToolRegistry toolRegistry;
 
     public List<AvailableToolDTO> listAvailable() {
         List<AvailableToolDTO> out = new ArrayList<>();
         appendBuiltinTools(out);
+        appendPluginTools(out);
         appendMcpTools(out);
         return out;
     }
@@ -70,6 +69,30 @@ public class AvailableToolService {
                 out.add(AvailableToolDTO.fromChannel(t));
             } else {
                 out.add(AvailableToolDTO.fromBuiltin(t));
+            }
+        }
+    }
+
+    private void appendPluginTools(List<AvailableToolDTO> out) {
+        List<ToolCallback> callbacks;
+        try {
+            callbacks = toolRegistry.listAvailablePluginTools();
+        } catch (Exception e) {
+            log.warn("AvailableToolService: listAvailable plugin tools failed: {}", e.getMessage());
+            return;
+        }
+        for (ToolCallback callback : callbacks) {
+            try {
+                if (callback == null || callback.getToolDefinition() == null) {
+                    continue;
+                }
+                String name = callback.getToolDefinition().name();
+                if (name == null || name.isBlank()) {
+                    continue;
+                }
+                out.add(AvailableToolDTO.fromPlugin(name, callback.getToolDefinition().description()));
+            } catch (Exception e) {
+                log.warn("AvailableToolService: skipping plugin tool due to: {}", e.getMessage());
             }
         }
     }

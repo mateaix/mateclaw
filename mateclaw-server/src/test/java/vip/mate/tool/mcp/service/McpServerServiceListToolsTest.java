@@ -7,6 +7,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.event.ContextClosedEvent;
 import vip.mate.exception.MateClawException;
 import vip.mate.tool.mcp.model.McpServerEntity;
 import vip.mate.tool.mcp.model.McpToolDescriptor;
@@ -50,6 +52,9 @@ class McpServerServiceListToolsTest {
 
     @Mock
     private McpClientManager mcpClientManager;
+
+    @Mock
+    private ApplicationEventPublisher eventPublisher;
 
     @InjectMocks
     private McpServerService service;
@@ -134,5 +139,17 @@ class McpServerServiceListToolsTest {
         // null description survives; DTO @JsonInclude(NON_NULL) drops it from
         // the wire payload but the Java value is preserved through the mapping.
         assertTrue(result.get(0).description() == null);
+    }
+
+    @Test
+    @DisplayName("application shutdown ignores MCP process-exit reconnect events")
+    void shutdownDoesNotReconnectExitedStdioServer() {
+        service.onContextClosed(org.mockito.Mockito.mock(ContextClosedEvent.class));
+
+        service.onConnectionLost(new vip.mate.tool.mcp.event.McpConnectionLostEvent(
+                7L, "stdio-process-exited"));
+
+        verify(mcpServerMapper, never()).selectById(7L);
+        verify(mcpClientManager, never()).replace(org.mockito.ArgumentMatchers.any());
     }
 }

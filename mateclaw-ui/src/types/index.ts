@@ -37,6 +37,8 @@ export interface Agent {
   name: string
   description?: string
   agentType: 'react' | 'plan_execute'
+  runtimeType?: 'native' | 'dsh' | string
+  runtimeConfig?: string | null
   systemPrompt?: string
   modelName?: string
   maxIterations: number
@@ -671,6 +673,7 @@ export const CHANNEL_FIELD_DEFS: Record<string, ChannelFieldDef[]> = {
     { key: 'bot_id', label: '机器人 ID', placeholder: 'bot_xxxxxxxxxx', required: true, type: 'text', tooltip: '企业微信智能机器人的 Bot ID（在企业微信后台创建智能机器人后获取）' },
     { key: 'secret', label: 'Secret', placeholder: 'xxxxxxxxxxxxxxxx', required: true, sensitive: true, type: 'password', tooltip: '企业微信智能机器人的 Secret' },
     { key: 'welcome_text', label: '欢迎消息', placeholder: '你好！我是你的 AI 助手', type: 'text', tooltip: '用户首次进入对话时自动发送的欢迎消息（留空则不发送）' },
+    { key: 'stream_progress', label: '执行轨迹', placeholder: '', type: 'switch', defaultValue: true, tooltip: '展示处理期间的实时进度与阶段旁白；关闭后仅发送最终答复。原始思考和工具名称仍受下方过滤开关控制' },
     { key: 'media_download_enabled', label: '媒体下载', placeholder: '', type: 'switch', defaultValue: false, tooltip: '下载消息中的图片和文件到本地并解密（需要本地磁盘空间）' },
     { key: 'media_dir', label: '媒体目录', placeholder: 'data/media', type: 'text', tooltip: '媒体文件保存目录（默认 data/media）' },
     { key: 'max_reconnect_attempts', label: '最大重连次数', placeholder: '-1 表示无限重连', type: 'number', defaultValue: -1, tooltip: 'WebSocket 断线后最大重连次数，-1 为无限重连' },
@@ -678,6 +681,7 @@ export const CHANNEL_FIELD_DEFS: Record<string, ChannelFieldDef[]> = {
   weixin: [
     { key: 'bot_token', label: 'Bot Token', placeholder: '扫码登录后自动获取', required: true, sensitive: true, type: 'password', tooltip: '微信 iLink Bot Token，通过扫描二维码登录获取' },
     { key: 'base_url', label: 'API 地址', placeholder: 'https://ilinkai.weixin.qq.com', type: 'text', defaultValue: 'https://ilinkai.weixin.qq.com', tooltip: 'iLink Bot API 基础地址（通常无需修改）' },
+    { key: 'stream_progress', label: '执行轨迹', placeholder: '', type: 'switch', defaultValue: true, tooltip: '展示处理期间的实时进度与阶段旁白；关闭后仅发送最终答复。原始思考和工具名称仍受下方过滤开关控制' },
     { key: 'media_download_enabled', label: '媒体下载', placeholder: '', type: 'switch', defaultValue: false, tooltip: '下载消息中的图片、文件、视频到本地并解密' },
     { key: 'media_dir', label: '媒体目录', placeholder: 'data/media', type: 'text', tooltip: '媒体文件保存目录（默认 data/media）' },
   ],

@@ -72,6 +72,15 @@ class ChatControllerPersistStatusTest {
     }
 
     @Test
+    @DisplayName("queued input stays durable while the current turn awaits approval")
+    void awaitingApprovalDoesNotDrainQueuedInput() {
+        assertThat(ChatController.shouldDrainQueuedInput("awaiting_approval", true, true)).isFalse();
+        assertThat(ChatController.shouldDrainQueuedInput("completed", true, true)).isFalse();
+        assertThat(ChatController.shouldDrainQueuedInput("completed", true, false)).isTrue();
+        assertThat(ChatController.shouldDrainQueuedInput("completed", false, false)).isFalse();
+    }
+
+    @Test
     @DisplayName("empty completed turns persist an explicit placeholder")
     void emptyCompletedTurnUsesPlaceholder() {
         assertThat(ChatController.emptyAssistantPlaceholder("completed"))

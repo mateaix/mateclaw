@@ -281,13 +281,14 @@ public class XhsPackageTool {
         Matcher m = GeneratedFileCache.GENERATED_URL_PATTERN.matcher(ref);
         if (m.find()) {
             String id = m.group(1);
-            Optional<GeneratedFileCache.Entry> entry = cache.get(id);
+            Long workspaceId = workspaceFromContext(ctx);
+            Optional<GeneratedFileCache.Entry> entry = cache.getForWorkspace(id, workspaceId);
             if (entry.isEmpty() || entry.get().bytes() == null || entry.get().bytes().length == 0) {
                 // Self-heal: the ref may point at the file's name, not its id.
                 Optional<String> healed = cache.findIdByFilename(lastSegment(ref), "image/");
                 if (healed.isPresent()) {
                     id = healed.get();
-                    entry = cache.get(id);
+                    entry = cache.getForWorkspace(id, workspaceId);
                 }
             }
             if (entry.isEmpty() || entry.get().bytes() == null || entry.get().bytes().length == 0) {
@@ -311,12 +312,12 @@ public class XhsPackageTool {
         }
         byte[] bytes = Files.readAllBytes(path);
         String ext = extFromUrl(ref);
-        String id = cache.put(bytes, path.getFileName().toString(), mimeFromExt(ext));
+        String id = cache.put(bytes, path.getFileName().toString(), mimeFromExt(ext), ctx);
         return new ResolvedImg(bytes, ext, cache.downloadUrl(id, ctx));
     }
 
     private String store(byte[] bytes, String name, String mime, @Nullable ToolContext ctx) {
-        return cache.downloadUrl(cache.put(bytes, name, mime), ctx);
+        return cache.downloadUrl(cache.put(bytes, name, mime, ctx), ctx);
     }
 
     private String guideText() {

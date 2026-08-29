@@ -60,6 +60,9 @@ public class AcpEndpointEntity {
     /** Stdio buffer ceiling in bytes; defaults to 50 MiB. */
     private Long stdioBufferLimitBytes;
 
+    /** Max wait for session/prompt, in seconds. Defaults to 300, capped at 3600. */
+    private Integer promptTimeoutSeconds;
+
     /** UNKNOWN / OK / ERROR — last test result. */
     private String lastStatus;
 

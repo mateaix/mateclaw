@@ -99,6 +99,9 @@ public class SystemSettingService {
      */
     private static final String WORKSPACE_STORAGE_ROOT_KEY = "workspace.storage_root";
 
+    /** Managed DeepSeek Harness runtime configuration. */
+    public static final String DSH_API_KEY_KEY = "dsh.api_key";
+
     private static final String ZHIPU_API_KEY_KEY = "zhipuApiKey";
     private static final String ZHIPU_BASE_URL_KEY = "zhipuBaseUrl";
     private static final String FAL_API_KEY_KEY = "falApiKey";
@@ -116,7 +119,7 @@ public class SystemSettingService {
     private static final Set<String> SENSITIVE_KEYS = Set.of(
             SERPER_API_KEY_KEY, TAVILY_API_KEY_KEY, WEIXINOA_APP_SECRET_KEY,
             ZHIPU_API_KEY_KEY, FAL_API_KEY_KEY, KLING_ACCESS_KEY_KEY, KLING_SECRET_KEY_KEY,
-            RUNWAY_API_KEY_KEY, MINIMAX_API_KEY_KEY);
+            RUNWAY_API_KEY_KEY, MINIMAX_API_KEY_KEY, DSH_API_KEY_KEY);
 
     private final SystemSettingMapper systemSettingMapper;
     private final SearchProviderRegistry searchProviderRegistry;
@@ -654,6 +657,11 @@ public class SystemSettingService {
     /** Persist a raw string setting. */
     public void saveString(String key, String value, String description) {
         saveValue(key, value, description);
+    }
+
+    /** Return a masked representation suitable for an admin status response. */
+    public String maskSecret(String value) {
+        return maskApiKey(value);
     }
 
     private String getValue(String key, String defaultValue) {

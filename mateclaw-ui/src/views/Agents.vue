@@ -22,10 +22,10 @@
                 :class="{ 'is-active': view === 'live' }"
                 @click="setView('live')"
               >
-                <span v-if="liveRunning > 0" class="seg-pulse"></span>
+                <span v-if="showLiveBadge" class="seg-pulse"></span>
                 {{ t('agents.views.live') }}
                 <span
-                  v-if="liveRunning > 0"
+                  v-if="showLiveBadge"
                   class="seg-count"
                   :class="{ warn: liveStuck > 0 }"
                 >{{ liveRunning }}</span>
@@ -114,6 +114,11 @@
                 <p class="agent-card__tagline">
                   {{ agentTagline(agent) || t('agents.messages.noTagline') }}
                 </p>
+                <span class="agent-runtime-badge" :class="{ 'agent-runtime-badge--dsh': agent.runtimeType === 'dsh' }">
+                  <svg v-if="agent.runtimeType === 'dsh'" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17l6-6 4 4 6-8"/><path d="M4 20h16"/></svg>
+                  <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg>
+                  {{ agent.runtimeType === 'dsh' ? t('agents.runtime.dsh') : t('agents.runtime.native') }}
+                </span>
                 <div v-if="agentTags(agent).length" class="agent-card__tags">
                   <span v-for="tag in agentTags(agent)" :key="tag" class="agent-card__tag"
                     :class="{ active: activeTags.includes(tag) }" @click="toggleTag(tag)">
@@ -293,8 +298,26 @@
               </select>
             </div>
             <div class="form-group">
+              <label class="form-label">{{ t('agents.fields.runtime') }}</label>
+              <select v-model="form.runtimeType" class="form-input">
+                <option value="native">{{ t('agents.runtime.native') }}</option>
+                <option value="dsh">{{ t('agents.runtime.dsh') }}</option>
+              </select>
+              <p class="form-hint">{{ form.runtimeType === 'dsh' ? t('agents.fields.runtimeDshHint') : t('agents.fields.runtimeNativeHint') }}</p>
+            </div>
+            <div v-if="form.runtimeType === 'dsh'" class="form-group full-width">
+              <label class="form-label">{{ t('agents.fields.runtimeConfig') }}</label>
+              <textarea v-model="form.runtimeConfig" class="form-textarea runtime-config-editor" rows="4" spellcheck="false" placeholder="{}"></textarea>
+              <p class="form-hint">{{ t('agents.fields.runtimeConfigHint') }}</p>
+              <p v-if="dshDiagnostics" class="form-hint runtime-diagnostics" :class="{ 'runtime-diagnostics--ready': dshDiagnostics.executableAvailable && dshDiagnostics.cordisConfigAvailable }">
+                {{ dshDiagnostics.executableAvailable && dshDiagnostics.cordisConfigAvailable
+                  ? t('agents.fields.runtimeReady')
+                  : t('agents.fields.runtimeUnavailable') }}
+              </p>
+            </div>
+            <div class="form-group">
               <label class="form-label">{{ t('agents.fields.maxIterations') }}</label>
-              <input v-model.number="form.maxIterations" type="number" min="1" max="50" class="form-input" />
+              <input v-model.number="form.maxIterations" type="number" min="1" max="150" class="form-input" />
             </div>
             <!-- RFC-03 Lane G1: per-Agent model override. Empty value falls
                  back to the global default in ModelConfigService.resolveModel. -->
@@ -718,19 +741,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, defineAsyncComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { mcToast } from '@/composables/useMcToast'
 import { mcConfirm } from '@/components/common/useConfirm'
 import { agentApi, agentBindingApi, modelApi, skillApi, toolApi, templateApi, liveApi, wikiApi } from '@/api/index'
 import type { Agent } from '@/types/index'
-import SkillIcon from '@/components/common/SkillIcon.vue'
-import SkillIconPicker from '@/components/common/SkillIconPicker.vue'
-import LivePanel from '@/components/live/LivePanel.vue'
 import { parseAgentsLiveRoute, type AgentsView } from '@/composables/agentsLiveRouteState'
-import PlanBoard from '@/components/agents/PlanBoard.vue'
-import AgentGuideEditor from './Agents/components/AgentGuideEditor.vue'
 import {
   emptyProfile,
   parsePrompt,
@@ -742,12 +760,18 @@ import {
 } from '@/utils/agentPromptProfile'
 import { agentIconColor } from '@/utils/agentIconColor'
 import { filterAgentBindingItems, filterAgentToolGroups } from '@/utils/agentBindingSearch'
+import { planAgentsPageLoads, shouldShowAgentsLiveBadge } from '@/utils/agentsPageLoading'
 import { useSkillName } from '@/composables/useSkillName'
 
 const router = useRouter()
 const route = useRoute()
 const { t } = useI18n()
 const { resolveSkillName } = useSkillName()
+const SkillIcon = defineAsyncComponent(() => import('@/components/common/SkillIcon.vue'))
+const SkillIconPicker = defineAsyncComponent(() => import('@/components/common/SkillIconPicker.vue'))
+const LivePanel = defineAsyncComponent(() => import('@/components/live/LivePanel.vue'))
+const PlanBoard = defineAsyncComponent(() => import('@/components/agents/PlanBoard.vue'))
+const AgentGuideEditor = defineAsyncComponent(() => import('./Agents/components/AgentGuideEditor.vue'))
 const agents = ref<Agent[]>([])
 const searchText = ref('')
 const activeFilter = ref('all')
@@ -960,6 +984,7 @@ const selectedProviderPrefs = ref<Array<{ providerId: string; modelId: string | 
 // global enabled-models list, blank value means "fall back to default".
 // id is a string (Snowflake serialised as string).
 const availableModels = ref<Array<{ id: string; name: string; provider: string; modelName: string }>>([])
+const dshDiagnostics = ref<Record<string, any> | null>(null)
 
 // Template selector state
 const showTemplateSelector = ref(false)
@@ -970,6 +995,7 @@ const filterTabs = [
   { key: 'agents.tabs.all', value: 'all' },
   { key: 'agents.tabs.react', value: 'react' },
   { key: 'agents.tabs.planExecute', value: 'plan_execute' },
+  { key: 'agents.tabs.dsh', value: 'dsh' },
   { key: 'agents.tabs.enabled', value: 'enabled' },
   { key: 'agents.tabs.disabled', value: 'disabled' },
 ]
@@ -978,6 +1004,8 @@ const defaultForm = (): Partial<Agent> & { name: string; defaultThinkingLevel: s
   name: '',
   description: '',
   agentType: 'react',
+  runtimeType: 'native',
+  runtimeConfig: null,
   systemPrompt: '',
   modelName: '', // RFC-03 G1 — empty means "use global default"
   maxIterations: 10,
@@ -1145,6 +1173,7 @@ const filteredAgents = computed(() => {
   }
   if (activeFilter.value === 'react') list = list.filter(a => a.agentType === 'react')
   else if (activeFilter.value === 'plan_execute') list = list.filter(a => a.agentType === 'plan_execute')
+  else if (activeFilter.value === 'dsh') list = list.filter(a => a.runtimeType === 'dsh')
   else if (activeFilter.value === 'enabled') list = list.filter(a => a.enabled)
   else if (activeFilter.value === 'disabled') list = list.filter(a => !a.enabled)
   // Tag filter: intersection — an agent must carry every selected tag.
@@ -1168,7 +1197,14 @@ const view = ref<AgentView>(
 )
 const liveRunning = ref(0)
 const liveStuck = ref(0)
+const showLiveBadge = computed(() => shouldShowAgentsLiveBadge({
+  view: view.value,
+  running: liveRunning.value,
+}))
 let livePollTimer: ReturnType<typeof setInterval> | null = null
+let agentsLoaded = false
+let modelOptionsLoaded = false
+let dshDiagnosticsLoaded = false
 
 function setView(next: AgentView) {
   view.value = next
@@ -1194,25 +1230,63 @@ async function refreshLiveCounts() {
   }
 }
 
-onMounted(() => {
-  loadAgents()
-  // RFC-03 G1: load models once for the per-Agent override dropdown.
-  // Failure is non-fatal — the dropdown just shows only "global default".
-  loadAvailableModels()
-  if (isAdminRole.value) {
-    refreshLiveCounts()
-    livePollTimer = setInterval(refreshLiveCounts, 10_000)
+async function loadDshDiagnostics() {
+  try {
+    const res: any = await liveApi.dshDiagnostics()
+    dshDiagnostics.value = res?.data ?? res
+    dshDiagnosticsLoaded = true
+  } catch {
+    dshDiagnostics.value = null
   }
+}
+
+onMounted(() => {
+  applyViewLoadPlan()
 })
 
 onBeforeUnmount(() => {
-  if (livePollTimer) clearInterval(livePollTimer)
+  stopLiveBadgePolling()
 })
+
+watch(view, () => applyViewLoadPlan())
+
+function applyViewLoadPlan() {
+  const plan = planAgentsPageLoads({ view: view.value, isAdmin: isAdminRole.value })
+  if (plan.loadRoster) ensureAgentsLoaded()
+  if (plan.loadAgentFormLookups) ensureAgentFormLookupsLoaded()
+  if (plan.pollLiveBadge) startLiveBadgePolling()
+  else stopLiveBadgePolling()
+}
+
+function startLiveBadgePolling() {
+  if (livePollTimer) return
+  refreshLiveCounts()
+  livePollTimer = setInterval(refreshLiveCounts, 10_000)
+}
+
+function stopLiveBadgePolling() {
+  if (!livePollTimer) return
+  clearInterval(livePollTimer)
+  livePollTimer = null
+}
+
+function ensureAgentsLoaded() {
+  if (agentsLoaded) return
+  loadAgents()
+}
+
+function ensureAgentFormLookupsLoaded() {
+  if (!dshDiagnosticsLoaded) loadDshDiagnostics()
+  // RFC-03 G1: load models once for the per-Agent override dropdown.
+  // Failure is non-fatal — the dropdown just shows only "global default".
+  if (!modelOptionsLoaded) loadAvailableModels()
+}
 
 async function loadAgents() {
   try {
     const res: any = await agentApi.list()
     agents.value = res.data || []
+    agentsLoaded = true
   } catch {
     mcToast.error(t('agents.messages.loadFailed'))
   }
@@ -1227,6 +1301,7 @@ async function loadAvailableModels() {
       provider: m.provider,
       modelName: m.modelName,
     }))
+    modelOptionsLoaded = true
   } catch {
     // Silent — the picker still works (empty list = only "default" option).
   }
@@ -1239,6 +1314,7 @@ function openCreateModal() {
 }
 
 function openBlankCreateModal() {
+  ensureAgentFormLookupsLoaded()
   showTemplateSelector.value = false
   editingAgent.value = null
   form.value = defaultForm()
@@ -1337,11 +1413,14 @@ async function applyTemplate(id: string) {
 }
 
 async function openEditModal(agent: Agent) {
+  ensureAgentFormLookupsLoaded()
   editingAgent.value = agent
   form.value = {
     name: agent.name,
     description: agent.description || '',
     agentType: agent.agentType,
+    runtimeType: agent.runtimeType || 'native',
+    runtimeConfig: agent.runtimeConfig || null,
     systemPrompt: agent.systemPrompt || '',
     modelName: agent.modelName || '',
     maxIterations: agent.maxIterations,
@@ -1369,8 +1448,8 @@ async function openEditModal(agent: Agent) {
       // RFC-042: /skills is now paginated; binding dropdown only needs enabled skills,
       // so listEnabled() is both semantically correct and shape-stable (returns array).
       skillApi.listEnabled(),
-      // /tools/available aggregates built-in tools + every MCP-discovered
-      // tool grouped by server, with stale/available flags so the picker
+      // /tools/available aggregates built-in, channel, plugin, and MCP-discovered
+      // tools, with stale/available flags so the picker
       // matches the runtime callback set exactly.
       toolApi.listAvailable(),
       // Options, not the full provider list: /models is admin-only, and a
@@ -1440,6 +1519,18 @@ function closeModal() {
 
 async function saveAgent() {
   try {
+    if (form.value.runtimeType === 'dsh') {
+      try {
+        const parsed = JSON.parse(form.value.runtimeConfig || '{}')
+        if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error('object')
+        form.value.runtimeConfig = JSON.stringify(parsed, null, 2)
+      } catch {
+        mcToast.error(t('agents.messages.runtimeConfigInvalid'))
+        return
+      }
+    } else {
+      form.value.runtimeConfig = null
+    }
     // Flatten the structured profile back to a single systemPrompt before
     // sending to the backend — the schema is unchanged, only the editor
     // exposes the H2 sections to the user.
@@ -1738,6 +1829,30 @@ html.dark .seg-count.warn {
   overflow: hidden;
   text-overflow: ellipsis;
   letter-spacing: -0.005em;
+}
+
+.agent-runtime-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: fit-content;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--mc-bg-sunken);
+  color: var(--mc-text-tertiary);
+  font-size: 11px;
+  font-weight: 600;
+}
+.agent-runtime-badge--dsh {
+  background: var(--mc-primary-bg);
+  color: var(--mc-primary-hover);
+}
+
+.runtime-config-editor {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
 }
 
 .agent-card__tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }

@@ -106,6 +106,28 @@ class ReasoningNodeOutputTest {
     }
 
     @Test
+    @DisplayName("plain long-form requests reject hallucinated artifact tool calls")
+    void plainLongFormArtifactToolCall_continuesWithoutExecutingTool() throws Exception {
+        AssistantMessage.ToolCall toolCall = new AssistantMessage.ToolCall(
+                "docx-1", "function", "renderDocx", "{\"filename\":\"novel\"}");
+        AssistantMessage assistant = AssistantMessage.builder()
+                .content("我将生成文档")
+                .toolCalls(List.of(toolCall))
+                .build();
+        NodeStreamingChatHelper.StreamResult result = new NodeStreamingChatHelper.StreamResult(
+                "我将生成文档", "", assistant, List.of(toolCall), true, 100, 50);
+        when(streamingHelper.streamCall(any(), any(), anyString(), anyString())).thenReturn(result);
+
+        Map<String, Object> state = baseStateMap();
+        state.put(USER_MESSAGE, "帮我写个 5000 字的玄幻短篇小说，角色和剧情都你自己编。");
+        Map<String, Object> output = createNode().apply(new OverAllState(state));
+
+        assertEquals(false, output.get(NEEDS_TOOL_CALL));
+        assertEquals(true, output.get(CONTINUE_REASONING));
+        assertEquals(List.of(), output.get(TOOL_CALLS));
+    }
+
+    @Test
     @DisplayName("action-required text-only candidate requests one reasoning continuation")
     void actionRequiredTextOnly_continuesOnce() throws Exception {
         NodeStreamingChatHelper.StreamResult result = new NodeStreamingChatHelper.StreamResult(
@@ -139,6 +161,134 @@ class ReasoningNodeOutputTest {
         assertEquals(false, output.get(CONTINUE_REASONING));
         assertEquals("action_unverified", output.get(FINISH_REASON));
         assertTrue(((String) output.get(FINAL_ANSWER)).contains("未观察到实际"));
+    }
+
+    @Test
+    @DisplayName("long-form text request continues when generated content is far below requested length")
+    void longFormTextRequest_continuesUntilRequestedLength() throws Exception {
+        String partial = "玄".repeat(1200);
+        NodeStreamingChatHelper.StreamResult result = new NodeStreamingChatHelper.StreamResult(
+                partial, "", new AssistantMessage(partial),
+                List.of(), false, 100, 900);
+        when(streamingHelper.streamCall(any(), any(), anyString(), anyString())).thenReturn(result);
+
+        Map<String, Object> state = baseStateMap();
+        state.put(USER_MESSAGE, "帮我写个 10000 字的玄幻小说，角色和剧情都你自己编。");
+        state.put(MAX_ITERATIONS, 100);
+        Map<String, Object> output = createNode().apply(new OverAllState(state));
+
+        assertEquals(true, output.get(CONTINUE_REASONING));
+        assertEquals("", output.get(FINAL_ANSWER));
+        assertEquals(1, output.get(CURRENT_ITERATION));
+        assertEquals(partial, output.get("long_form_draft"),
+                "Each continuation must retain the generated body for the terminal answer");
+        List<?> appended = (List<?>) output.get(MESSAGES);
+        assertEquals(2, appended.size());
+        assertTrue(appended.get(1) instanceof org.springframework.ai.chat.messages.UserMessage);
+        assertTrue(((org.springframework.ai.chat.messages.UserMessage) appended.get(1)).getText()
+                        .contains("继续写"),
+                "Continuation prompt should ask the model to keep writing instead of ending the run");
+    }
+
+    @Test
+    @DisplayName("long-form continuation persists all chunks as one final answer")
+    void longFormTextRequest_combinesContinuationChunksInFinalAnswer() throws Exception {
+        String firstChunk = "甲".repeat(6000);
+        String finalChunk = "乙".repeat(4000);
+        NodeStreamingChatHelper.StreamResult result = new NodeStreamingChatHelper.StreamResult(
+                finalChunk, "", new AssistantMessage(finalChunk),
+                List.of(), false, 100, 900);
+        when(streamingHelper.streamCall(any(), any(), anyString(), anyString())).thenReturn(result);
+
+        Map<String, Object> state = baseStateMap();
+        state.put(USER_MESSAGE, "帮我写个 10000 字的玄幻小说，角色和剧情都你自己编。");
+        state.put(MAX_ITERATIONS, 100);
+        state.put(CURRENT_ITERATION, 1);
+        state.put("long_form_draft", firstChunk);
+
+        Map<String, Object> output = createNode().apply(new OverAllState(state));
+
+        assertEquals(false, output.get(CONTINUE_REASONING));
+        assertEquals(firstChunk + finalChunk, output.get(FINAL_ANSWER));
+        assertEquals(true, output.get(CONTENT_STREAMED),
+                "The combined answer was already streamed chunk by chunk and must not be broadcast twice");
+    }
+
+    @Test
+    @DisplayName("configured max iterations stops long-form continuation at the configured boundary")
+    void longFormTextRequest_honorsConfiguredMaxIterations() throws Exception {
+        String partial = "玄".repeat(1200);
+        NodeStreamingChatHelper.StreamResult result = new NodeStreamingChatHelper.StreamResult(
+                partial, "", new AssistantMessage(partial),
+                List.of(), false, 100, 900);
+        when(streamingHelper.streamCall(any(), any(), anyString(), anyString())).thenReturn(result);
+
+        Map<String, Object> state = baseStateMap();
+        state.put(USER_MESSAGE, "帮我写个 10000 字的玄幻小说，角色和剧情都你自己编。");
+        state.put(MAX_ITERATIONS, 1);
+
+        Map<String, Object> output = createNode().apply(new OverAllState(state));
+
+        assertEquals(false, output.get(CONTINUE_REASONING));
+        assertEquals(partial, output.get(FINAL_ANSWER));
+    }
+
+    @Test
+    @DisplayName("long-form length parser accepts a grouped 10,000-character request")
+    void requestedLongFormChars_acceptsGroupedNumber() {
+        assertEquals(10_000, ReasoningNode.requestedLongFormChars("写一篇 10,000 字小说").orElseThrow());
+    }
+
+    @Test
+    @DisplayName("plain long-form writing stays inline and cannot terminate through artifact render tools")
+    void plainLongFormRequest_filtersArtifactDeliveryTools() {
+        ToolCallback renderDocx = mockTool("renderDocxFromFiles");
+        ToolCallback writeFile = mockTool("write_file");
+        ToolCallback progress = mockTool("progress_update");
+
+        List<ToolCallback> filtered = ReasoningNode.filterLongFormArtifactTools(
+                "帮我写个 10000 字的玄幻小说，角色和剧情都你自己编。",
+                List.of(renderDocx, writeFile, progress));
+
+        assertEquals(List.of(progress), filtered);
+    }
+
+    @Test
+    @DisplayName("explicit document delivery keeps artifact render tools available")
+    void explicitLongFormDocumentRequest_keepsArtifactDeliveryTools() {
+        ToolCallback renderDocx = mockTool("renderDocxFromFiles");
+
+        List<ToolCallback> filtered = ReasoningNode.filterLongFormArtifactTools(
+                "写一篇 10000 字小说并生成 Word 文档给我下载。",
+                List.of(renderDocx));
+
+        assertEquals(List.of(renderDocx), filtered);
+    }
+
+    @Test
+    @DisplayName("artifact words from injected memory do not override the current plain writing request")
+    void injectedMemoryArtifactPreference_doesNotKeepArtifactTools() {
+        ToolCallback writeFile = mockTool("write_file");
+        String augmentedMessage = """
+                <memory-context>
+                用户偏好 Word 文档、文件下载和保存到工作区。
+                </memory-context>
+                帮我写个 10000 字的玄幻小说，角色和剧情都你自己编。
+                """;
+
+        List<ToolCallback> filtered = ReasoningNode.filterLongFormArtifactTools(
+                augmentedMessage, List.of(writeFile));
+
+        assertTrue(filtered.isEmpty());
+    }
+
+    private static ToolCallback mockTool(String name) {
+        ToolCallback callback = mock(ToolCallback.class);
+        org.springframework.ai.tool.definition.ToolDefinition definition =
+                mock(org.springframework.ai.tool.definition.ToolDefinition.class);
+        when(definition.name()).thenReturn(name);
+        when(callback.getToolDefinition()).thenReturn(definition);
+        return callback;
     }
 
     @Test

@@ -4,10 +4,13 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import vip.mate.auth.model.UserEntity;
+import vip.mate.auth.service.AuthService;
 import vip.mate.team.model.TeamRunEntity;
 import vip.mate.team.model.TeamTaskEntity;
 import vip.mate.team.repository.TeamRunMapper;
 import vip.mate.team.repository.TeamTaskMapper;
+import vip.mate.workspace.core.service.WorkspaceService;
 import vip.mate.workspace.conversation.model.ConversationEntity;
 import vip.mate.workspace.conversation.repository.ConversationMapper;
 
@@ -21,6 +24,8 @@ class TeamWorkerConversationGovernanceServiceTest {
     @Mock private TeamTaskMapper taskMapper;
     @Mock private TeamRunMapper runMapper;
     @Mock private ConversationMapper conversationMapper;
+    @Mock private AuthService authService;
+    @Mock private WorkspaceService workspaceService;
 
     @Test
     void returnsVerifiedCanonicalContextOnlyWhenRequestedLinkageMatches() {
@@ -102,8 +107,39 @@ class TeamWorkerConversationGovernanceServiceTest {
         assertThat(service().resolve("team-task-legacy-no-parent", 77L, 501L)).isPresent();
     }
 
+    @Test
+    void allowsWorkspaceAdminToReadVerifiedWorkerTranscript() {
+        TeamTaskEntity task = task(501L, 77L, "worker-conversation");
+        when(conversationMapper.selectOne(any())).thenReturn(conversation(
+                "worker-conversation", 30L, 41L, "lead-conversation", "team_worker"));
+        when(taskMapper.selectOne(any())).thenReturn(task);
+        when(runMapper.selectById(77L)).thenReturn(run(77L, 20L, "lead-conversation"));
+        when(authService.findByUsername("workspace-admin")).thenReturn(user(900L, "user"));
+        when(workspaceService.hasPermissionCached(30L, 900L, "viewer")).thenReturn(true);
+
+        assertThat(service().canReadTranscript("worker-conversation", 77L, 501L,
+                "workspace-admin")).isTrue();
+    }
+
+    @Test
+    void rejectsWorkerTranscriptReadWhenRouteLinkageOrWorkspaceMembershipDoesNotMatch() {
+        TeamTaskEntity task = task(501L, 77L, "worker-conversation");
+        when(conversationMapper.selectOne(any())).thenReturn(conversation(
+                "worker-conversation", 30L, 41L, "lead-conversation", "team_worker"));
+        when(taskMapper.selectOne(any())).thenReturn(task);
+        when(runMapper.selectById(77L)).thenReturn(run(77L, 20L, "lead-conversation"));
+        when(authService.findByUsername("outsider")).thenReturn(user(901L, "user"));
+        when(workspaceService.hasPermissionCached(30L, 901L, "viewer")).thenReturn(false);
+
+        assertThat(service().canReadTranscript("worker-conversation", 88L, 501L,
+                "outsider")).isFalse();
+        assertThat(service().canReadTranscript("worker-conversation", 77L, 501L,
+                "outsider")).isFalse();
+    }
+
     private TeamWorkerConversationGovernanceService service() {
-        return new TeamWorkerConversationGovernanceService(taskMapper, runMapper, conversationMapper);
+        return new TeamWorkerConversationGovernanceService(taskMapper, runMapper, conversationMapper,
+                authService, workspaceService);
     }
 
     private static TeamTaskEntity task(Long id, Long runId, String conversationId) {
@@ -134,5 +170,12 @@ class TeamWorkerConversationGovernanceServiceTest {
         conversation.setParentConversationId(parentId);
         conversation.setConversationKind(kind);
         return conversation;
+    }
+
+    private static UserEntity user(long id, String role) {
+        UserEntity user = new UserEntity();
+        user.setId(id);
+        user.setRole(role);
+        return user;
     }
 }

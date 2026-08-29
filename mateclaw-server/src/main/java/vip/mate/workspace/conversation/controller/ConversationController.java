@@ -9,6 +9,7 @@ import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 import vip.mate.common.result.R;
 import vip.mate.channel.web.ChatStreamTracker;
+import vip.mate.team.service.TeamWorkerConversationGovernanceService;
 import vip.mate.workspace.conversation.ConversationService;
 import vip.mate.workspace.conversation.vo.ConversationVO;
 import vip.mate.workspace.conversation.vo.MessageVO;
@@ -32,6 +33,7 @@ public class ConversationController {
 
     private final ConversationService conversationService;
     private final ChatStreamTracker streamTracker;
+    private final TeamWorkerConversationGovernanceService teamWorkerGovernanceService;
 
     /**
      * 获取当前用户的会话列表
@@ -94,9 +96,12 @@ public class ConversationController {
     public R<?> listMessages(@PathVariable String conversationId,
                              @RequestParam(required = false) Long beforeId,
                              @RequestParam(required = false) Integer limit,
+                             @RequestParam(required = false) Long runId,
+                             @RequestParam(required = false) Long taskId,
                              Authentication auth) {
         String username = auth != null ? auth.getName() : "anonymous";
-        if (!conversationService.isConversationOwner(conversationId, username)) {
+        if (!conversationService.isConversationOwner(conversationId, username)
+                && !teamWorkerGovernanceService.canReadTranscript(conversationId, runId, taskId, username)) {
             return R.fail(403, "无权访问该会话");
         }
 

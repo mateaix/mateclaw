@@ -39,6 +39,26 @@ class GeneratedFileCachePersistenceTest {
     }
 
     @Test
+    @DisplayName("workspace ownership metadata persists and gates lookup")
+    void ownershipPersistsAndGatesLookup(@TempDir Path dir) {
+        GeneratedFileCache first = new GeneratedFileCache(dir);
+        byte[] bytes = "workspace-b".getBytes(StandardCharsets.UTF_8);
+        String id = first.put(bytes, "b.csv", "text/csv",
+                new GeneratedFileCache.Owner(20L, 30L, "conv-b"));
+
+        GeneratedFileCache afterRestart = new GeneratedFileCache(dir);
+        GeneratedFileCache.Entry entry = afterRestart.get(id).orElse(null);
+
+        assertNotNull(entry, "persisted entry must be reloaded from disk after restart");
+        assertEquals(20L, entry.workspaceId());
+        assertEquals(30L, entry.ownerUserId());
+        assertEquals("conv-b", entry.conversationId());
+        assertTrue(afterRestart.getForWorkspace(id, 20L).isPresent());
+        assertTrue(afterRestart.getForWorkspace(id, 10L).isEmpty(),
+                "a file generated in workspace B must not resolve under workspace A");
+    }
+
+    @Test
     @DisplayName("unknown id returns empty")
     void unknownIdEmpty(@TempDir Path dir) {
         GeneratedFileCache cache = new GeneratedFileCache(dir);

@@ -1,8 +1,10 @@
 package vip.mate.skill.usage;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import vip.mate.skill.lifecycle.SkillLifecycleService;
 import vip.mate.skill.repository.SkillUsageStatMapper;
@@ -28,14 +30,11 @@ public class SkillUsageService {
         try {
             Long scopedAgentId = agentId != null ? agentId : 0L;
             String scopedConversationId = blankToEmpty(conversationId);
-            SkillUsageStatEntity row = mapper.selectOne(new LambdaQueryWrapper<SkillUsageStatEntity>()
-                    .eq(SkillUsageStatEntity::getSkillName, skill.getName())
-                    .eq(SkillUsageStatEntity::getAgentId, scopedAgentId)
-                    .eq(SkillUsageStatEntity::getConversationId, scopedConversationId)
-                    .last("LIMIT 1"));
             LocalDateTime now = LocalDateTime.now();
-            if (row == null) {
-                row = new SkillUsageStatEntity();
+            int updated = incrementExisting(skill, scopedAgentId, scopedConversationId,
+                    filePath, tokenEstimate, now);
+            if (updated == 0) {
+                SkillUsageStatEntity row = new SkillUsageStatEntity();
                 row.setSkillName(skill.getName());
                 row.setSkillId(skill.getId());
                 row.setAgentId(scopedAgentId);
@@ -45,14 +44,14 @@ public class SkillUsageService {
                 row.setLastFilePath(filePath);
                 row.setLastTokenEstimate(tokenEstimate);
                 row.setDeleted(0);
-                mapper.insert(row);
-            } else {
-                row.setSkillId(skill.getId());
-                row.setLoadCount((row.getLoadCount() == null ? 0L : row.getLoadCount()) + 1);
-                row.setLastLoadedAt(now);
-                row.setLastFilePath(filePath);
-                row.setLastTokenEstimate(tokenEstimate);
-                mapper.updateById(row);
+                try {
+                    mapper.insert(row);
+                } catch (DuplicateKeyException race) {
+                    // Another parallel invocation inserted the same scoped row
+                    // after our update missed it. Retry as one atomic update.
+                    incrementExisting(skill, scopedAgentId, scopedConversationId,
+                            filePath, tokenEstimate, now);
+                }
             }
             // Mirror the activity anchor onto mate_skill so the lifecycle
             // curator's daily scan stays a single indexed select.
@@ -60,6 +59,19 @@ public class SkillUsageService {
         } catch (Exception e) {
             log.debug("Failed to record skill usage for {}: {}", skill.getName(), e.getMessage());
         }
+    }
+
+    private int incrementExisting(ResolvedSkill skill, Long agentId, String conversationId,
+                                  String filePath, int tokenEstimate, LocalDateTime now) {
+        return mapper.update(null, new LambdaUpdateWrapper<SkillUsageStatEntity>()
+                .set(SkillUsageStatEntity::getSkillId, skill.getId())
+                .set(SkillUsageStatEntity::getLastLoadedAt, now)
+                .set(SkillUsageStatEntity::getLastFilePath, filePath)
+                .set(SkillUsageStatEntity::getLastTokenEstimate, tokenEstimate)
+                .setSql("load_count = COALESCE(load_count, 0) + 1")
+                .eq(SkillUsageStatEntity::getSkillName, skill.getName())
+                .eq(SkillUsageStatEntity::getAgentId, agentId)
+                .eq(SkillUsageStatEntity::getConversationId, conversationId));
     }
 
     public Set<String> recentLoadedSkillNames(Long agentId, int limit) {

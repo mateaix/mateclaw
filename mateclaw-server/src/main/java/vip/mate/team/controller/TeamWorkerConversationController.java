@@ -27,7 +27,8 @@ public class TeamWorkerConversationController {
             @RequestParam(required = false) Long taskId,
             Authentication authentication) {
         String username = authentication == null ? "anonymous" : authentication.getName();
-        if (!conversationService.isConversationOwner(conversationId, username)) {
+        if (!conversationService.isConversationOwner(conversationId, username)
+                && !governanceService.canReadTranscript(conversationId, runId, taskId, username)) {
             return R.fail(403, "无权访问该会话");
         }
         return governanceService.resolve(conversationId, runId, taskId)

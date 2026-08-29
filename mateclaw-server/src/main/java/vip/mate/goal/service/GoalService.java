@@ -47,6 +47,9 @@ public interface GoalService {
     // ==================== State machine ====================
 
     GoalEntity pause(Long id, String username);
+
+    /** Pause a persistent active goal until essential user input or permission is provided. */
+    GoalEntity waitForInput(Long id, String reason, String username);
     GoalEntity resume(Long id, String username);
     GoalEntity abandon(Long id, String username);
 

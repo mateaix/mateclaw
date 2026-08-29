@@ -12,12 +12,16 @@ import vip.mate.agent.graph.state.MateClawStateAccessor;
 import vip.mate.goal.config.GoalProperties;
 import vip.mate.goal.model.GoalEntity;
 import vip.mate.goal.model.GoalEvaluationResult;
+import vip.mate.goal.model.GoalResponse;
 import vip.mate.goal.service.GoalEvaluationService;
 import vip.mate.goal.service.GoalFollowupService;
 import vip.mate.goal.service.GoalService;
 import vip.mate.goal.service.GraphFlavor;
 import vip.mate.workspace.conversation.ConversationService;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -184,6 +188,12 @@ public class GoalEvaluationNode implements NodeAction {
                     .build();
         }
 
+        if (Boolean.TRUE.equals(refreshed.getPersistentExecution())
+                && refreshed.getStatus()!=vip.mate.goal.model.GoalStatus.ACTIVE) {
+            return MateClawStateAccessor.output().goalEvaluatedThisRun(true)
+                    .events(List.of(skippedEvent(refreshed.getId(), "goal_no_longer_active"))).build();
+        }
+
         // Decision branches. Each terminal write is wrapped so a DB hiccup
         // (e.g. optimistic-lock conflict exceeding retries, memory sync
         // failure on completion) does not propagate into the chat graph
@@ -199,7 +209,7 @@ public class GoalEvaluationNode implements NodeAction {
                         .events(List.of(goalEvent("goal_completed", Map.of(
                                 "goalId", String.valueOf(completed.getId()),
                                 "score", result.score(),
-                                "goal", goalService.toResponse(completed)))))
+                                "goal", stateSafeGoal(goalService.toResponse(completed))))))
                         .build();
             }
 
@@ -216,7 +226,7 @@ public class GoalEvaluationNode implements NodeAction {
                                 "evalLlmCallsUsed", exhausted.getEvalLlmCallsUsed(),
                                 "totalLlmCallsUsed", exhausted.totalLlmCallsUsed(),
                                 "reason", reason,
-                                "goal", goalService.toResponse(exhausted)))))
+                                "goal", stateSafeGoal(goalService.toResponse(exhausted))))))
                         .build();
             }
         } catch (Throwable t) {
@@ -226,6 +236,21 @@ public class GoalEvaluationNode implements NodeAction {
                     .goalEvaluationResult(result.toMap())
                     .goalEvaluatedThisRun(true)
                     .events(List.of(skippedEvent(refreshed.getId(), "terminal_write_failed")))
+                    .build();
+        }
+
+        // A persistent goal yields a finite segment. Its durable supervisor owns
+        // the next turn, cooldown and recovery; never consume graph recursion here.
+        if (Boolean.TRUE.equals(refreshed.getPersistentExecution())) {
+            return MateClawStateAccessor.output()
+                    .goalEvaluationResult(result.toMap())
+                    .goalEvaluatedThisRun(true)
+                    .events(List.of(goalEvent("goal_evaluated", Map.of(
+                            "goalId", String.valueOf(refreshed.getId()),
+                            "score", result.score(),
+                            "decision", result.decision(),
+                            "gap", result.gap() == null ? "" : result.gap(),
+                            "goal", stateSafeGoal(goalService.toResponse(refreshed))))))
                     .build();
         }
 
@@ -289,7 +314,7 @@ public class GoalEvaluationNode implements NodeAction {
                     .events(List.of(goalEvent("goal_followup", Map.of(
                             "goalId", String.valueOf(refreshed.getId()),
                             "prompt", followup.get(),
-                            "goal", goalService.toResponse(refreshed)))));
+                            "goal", stateSafeGoal(goalService.toResponse(refreshed))))));
 
             if (flavor == GraphFlavor.REACT) {
                 // ReAct: append the followup as a fresh user message via the
@@ -343,8 +368,70 @@ public class GoalEvaluationNode implements NodeAction {
                         "goalId", String.valueOf(refreshed.getId()),
                         "score", result.score(),
                         "gap", result.gap() == null ? "" : result.gap(),
-                        "goal", goalService.toResponse(refreshed)))))
+                        "goal", stateSafeGoal(goalService.toResponse(refreshed))))))
                 .build();
+    }
+
+    /**
+     * Graph state may be checkpointed and restored through a generic map
+     * serializer. Keep event payloads limited to JSON primitives, maps and
+     * lists so a restored checklist cannot contain raw maps inside a typed
+     * {@link GoalResponse} bean and fail during SSE serialization.
+     */
+    private static Map<String, Object> stateSafeGoal(GoalResponse goal) {
+        if (goal == null) {
+            return Map.of();
+        }
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("id", stringId(goal.getId()));
+        snapshot.put("conversationId", goal.getConversationId());
+        snapshot.put("agentId", stringId(goal.getAgentId()));
+        snapshot.put("workspaceId", stringId(goal.getWorkspaceId()));
+        snapshot.put("createdBy", goal.getCreatedBy());
+        snapshot.put("title", goal.getTitle());
+        snapshot.put("description", goal.getDescription());
+        snapshot.put("exitCriteria", goal.getExitCriteria());
+        snapshot.put("successCheckPrompt", goal.getSuccessCheckPrompt());
+        snapshot.put("status", goal.getStatus() == null ? null : goal.getStatus().getValue());
+        snapshot.put("persistentExecution", goal.getPersistentExecution());
+        snapshot.put("turnBudget", goal.getTurnBudget());
+        snapshot.put("turnsUsed", goal.getTurnsUsed());
+        snapshot.put("llmCallBudget", goal.getLlmCallBudget());
+        snapshot.put("agentLlmCallsUsed", goal.getAgentLlmCallsUsed());
+        snapshot.put("evalLlmCallsUsed", goal.getEvalLlmCallsUsed());
+        snapshot.put("totalLlmCallsUsed", goal.getTotalLlmCallsUsed());
+        snapshot.put("progressSummary", goal.getProgressSummary());
+        snapshot.put("completionScore", goal.getCompletionScore());
+        snapshot.put("lastEvaluationAt", stringTime(goal.getLastEvaluationAt()));
+        snapshot.put("autoFollowupEnabled", goal.getAutoFollowupEnabled());
+        snapshot.put("followupCooldownSeconds", goal.getFollowupCooldownSeconds());
+        snapshot.put("lastFollowupAt", stringTime(goal.getLastFollowupAt()));
+        snapshot.put("version", goal.getVersion());
+        snapshot.put("createTime", stringTime(goal.getCreateTime()));
+        snapshot.put("updateTime", stringTime(goal.getUpdateTime()));
+
+        List<Map<String, Object>> criteria = new ArrayList<>();
+        if (goal.getCriteria() != null) {
+            goal.getCriteria().forEach(criterion -> {
+                if (criterion == null) return;
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("id", criterion.id() == null ? "" : criterion.id());
+                item.put("text", criterion.text() == null ? "" : criterion.text());
+                item.put("passed", criterion.passed());
+                item.put("evidence", criterion.evidence() == null ? "" : criterion.evidence());
+                criteria.add(Collections.unmodifiableMap(item));
+            });
+        }
+        snapshot.put("criteria", List.copyOf(criteria));
+        return Collections.unmodifiableMap(snapshot);
+    }
+
+    private static String stringId(Long value) {
+        return value == null ? null : value.toString();
+    }
+
+    private static String stringTime(java.time.LocalDateTime value) {
+        return value == null ? null : value.toString();
     }
 
     /**

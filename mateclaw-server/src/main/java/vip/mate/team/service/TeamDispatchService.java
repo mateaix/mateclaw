@@ -15,7 +15,9 @@ import vip.mate.team.model.AgentTeamEntity;
 import vip.mate.team.model.TeamTaskEntity;
 import vip.mate.team.model.TeamTaskEventEntity;
 import vip.mate.team.model.TeamTaskStatus;
+import vip.mate.tool.document.GeneratedFileCache;
 import vip.mate.workspace.conversation.ConversationService;
+import vip.mate.workspace.conversation.model.MessageEntity;
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -28,6 +30,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Dispatches board tasks to their assigned member agents and closes the
@@ -50,6 +54,32 @@ public class TeamDispatchService {
 
     /** Result summaries are capped before persisting to keep the board readable. */
     static final int MAX_RESULT_CHARS = 8000;
+
+    /** Empty/fallback member runs get one recovery attempt, not three long identical runs. */
+    static final int MAX_RESPONSE_FAILURE_DISPATCHES = 2;
+
+    private static final Pattern GENERATED_FILE_MARKDOWN_LINK = Pattern.compile(
+            "\\[([^\\]\\r\\n]{1,200})]\\(((?:https?://[^/\\s)\\]]+)?/api/v1/files/generated/[A-Za-z0-9-]+)\\)");
+
+    private static final Set<String> CLARIFICATION_CUES = Set.of(
+            "您希望",
+            "你希望",
+            "是否继续",
+            "请问",
+            "能否",
+            "可以提供",
+            "请提供",
+            "需要您",
+            "需要你",
+            "我应该",
+            "如何处理",
+            "what would you like",
+            "how should i",
+            "could you provide",
+            "please provide",
+            "do you want me",
+            "should i",
+            "would you like");
 
     /** One JDK 21 virtual thread per member-agent run. */
     private static final ExecutorService DISPATCH_EXECUTOR =
@@ -151,6 +181,13 @@ public class TeamDispatchService {
             }
             dispatchedThisRound.add(assignee);
             TeamTaskEntity assigned = taskService.getTask(task.getId());
+            // assignTask clears the persisted reason for a clean running state,
+            // but the worker needs the previous failure feedback or an
+            // automatic retry is just the same prompt sent to the same agent.
+            if (assigned != null && (assigned.getReason() == null || assigned.getReason().isBlank())
+                    && task.getReason() != null && !task.getReason().isBlank()) {
+                assigned.setReason(task.getReason());
+            }
             DISPATCH_EXECUTOR.submit(() -> runTask(teamId, assigned));
         }
     }
@@ -248,13 +285,17 @@ public class TeamDispatchService {
             return;
         }
         if (TeamTaskStatus.IN_PROGRESS.equals(current.getStatus())) {
-            String invalidReason = invalidResultReason(current, reply);
+            boolean attachedGeneratedFile = attachGeneratedFileDeliverable(current, reply);
+            String invalidReason = invalidResultReason(current, reply, attachedGeneratedFile);
             if (invalidReason != null) {
                 int attempts = current.getDispatchCount() == null ? 0 : current.getDispatchCount();
-                if (attempts < TeamTaskService.MAX_DISPATCHES
+                int maxAttempts = isResponseGenerationFailure(invalidReason)
+                        ? MAX_RESPONSE_FAILURE_DISPATCHES
+                        : TeamTaskService.MAX_DISPATCHES;
+                if (attempts < maxAttempts
                         && taskService.requeueUnusableResult(task.getId(), invalidReason)) {
                     log.warn("Team task #{} produced an unusable result on attempt {}/{}; requeued: {}",
-                            task.getTaskNumber(), attempts, TeamTaskService.MAX_DISPATCHES,
+                            task.getTaskNumber(), attempts, maxAttempts,
                             invalidReason);
                     broadcast(task, "team_task_retrying", Map.of("reason", invalidReason));
                     return;
@@ -316,7 +357,8 @@ public class TeamDispatchService {
         announceService.announceTaskSettled(current);
     }
 
-    private String invalidResultReason(TeamTaskEntity task, String reply) {
+    private String invalidResultReason(TeamTaskEntity task, String reply,
+                                       boolean attachedGeneratedFile) {
         if (reply == null || reply.isBlank()) {
             return "member produced no result";
         }
@@ -325,10 +367,71 @@ public class TeamDispatchService {
                 || normalized.equals("(no output)")) {
             return "member response generation failed";
         }
-        if (requiresDeliverable(task) && taskService.listDeliverables(task).isEmpty()) {
+        if (requiresDeliverable(task) && !attachedGeneratedFile
+                && taskService.listDeliverables(task).isEmpty()) {
             return "required deliverable was not attached";
         }
+        if (looksLikeClarificationQuestion(reply)) {
+            return "member asked for clarification instead of producing a result";
+        }
         return null;
+    }
+
+    private boolean isResponseGenerationFailure(String reason) {
+        return "member produced no result".equals(reason)
+                || "member response generation failed".equals(reason);
+    }
+
+    private boolean looksLikeClarificationQuestion(String reply) {
+        if (reply == null) {
+            return false;
+        }
+        String normalized = reply.strip().replaceAll("\\s+", " ");
+        if (normalized.isBlank() || normalized.length() > 800) {
+            return false;
+        }
+        String lower = normalized.toLowerCase();
+        boolean hasCue = CLARIFICATION_CUES.stream().anyMatch(lower::contains);
+        if (!hasCue) {
+            return false;
+        }
+        return normalized.endsWith("?")
+                || normalized.endsWith("？")
+                || lower.contains("what would you like")
+                || lower.contains("how should i")
+                || lower.contains("could you provide")
+                || lower.contains("please provide")
+                || normalized.contains("请问")
+                || normalized.contains("是否继续")
+                || normalized.contains("如何处理")
+                || normalized.contains("请提供");
+    }
+
+    private boolean attachGeneratedFileDeliverable(TeamTaskEntity task, String reply) {
+        // A render link is a useful task artifact regardless of how the task
+        // was created. The metadata flag controls validation/retry semantics,
+        // not whether an otherwise valid generated file is discoverable in UI.
+        if (reply == null || reply.isBlank()) {
+            return false;
+        }
+        Matcher link = GENERATED_FILE_MARKDOWN_LINK.matcher(reply);
+        while (link.find()) {
+            String name = link.group(1).trim();
+            String url = link.group(2).trim();
+            if (!GeneratedFileCache.GENERATED_URL_PATTERN.matcher(url).matches()) {
+                continue;
+            }
+            try {
+                taskService.addDeliverable(task.getId(), task.getAssigneeAgentId(), name, url);
+                log.info("Team task #{} auto-attached generated deliverable from member reply: {}",
+                        task.getTaskNumber(), name);
+                return true;
+            } catch (Exception e) {
+                log.warn("Team task #{} generated deliverable auto-attach failed for {}: {}",
+                        task.getTaskNumber(), name, e.getMessage());
+            }
+        }
+        return false;
     }
 
     private boolean requiresDeliverable(TeamTaskEntity task) {
@@ -343,9 +446,12 @@ public class TeamDispatchService {
     /** Per-prerequisite and whole-section caps keeping the envelope bounded. */
     static final int MAX_PREREQ_RESULT_CHARS = 1500;
     static final int MAX_PREREQ_SECTION_CHARS = 6000;
+    static final int LEAD_ATTACHMENT_CONTEXT_MESSAGES = 12;
+    static final int MAX_LEAD_ATTACHMENT_ITEM_CHARS = 1200;
+    static final int MAX_LEAD_ATTACHMENT_SECTION_CHARS = 6000;
 
-    /** The full instruction envelope the member receives; it cannot see the lead's conversation. */
-    private String buildDispatchContent(TeamTaskEntity task) {
+    /** The full instruction envelope the member receives. */
+    String buildDispatchContent(TeamTaskEntity task) {
         StringBuilder sb = new StringBuilder(1024);
         sb.append("[Assigned team task #").append(task.getTaskNumber())
                 .append(" (taskId: ").append(task.getId()).append(")]\n")
@@ -353,6 +459,14 @@ public class TeamDispatchService {
         if (task.getDescription() != null && !task.getDescription().isBlank()) {
             sb.append("\n").append(task.getDescription()).append('\n');
         }
+        if (task.getDispatchCount() != null && task.getDispatchCount() > 1
+                && task.getReason() != null && !task.getReason().isBlank()) {
+            sb.append("\n[Retry feedback]\n")
+                    .append("The previous attempt was rejected: ")
+                    .append(truncate(task.getReason().strip(), 500))
+                    .append(". Correct that failure in this attempt; do not repeat the same empty or fallback response.\n");
+        }
+        appendLeadAttachmentContext(sb, task);
         appendPrerequisiteResults(sb, task);
         sb.append("""
 
@@ -360,9 +474,61 @@ public class TeamDispatchService {
                 - Execute this task now. Your final reply becomes the task result reported to the team lead, so end with a complete, self-contained summary of what you produced.
                 - Report milestones with team_tasks(action="progress", taskId=%s, percent=..., step=...).
                 - If the output is a document, spreadsheet or presentation, generate a real file (renderDocx / renderXlsx / renderPptx or the docx/pptx/xlsx skills) and register it with team_tasks(action="attach", taskId=%s, name="<file name>", url=<the download link the render tool returned>). Keep the result a summary — do not paste file contents.
-                - If you are missing an input you cannot obtain yourself, call team_tasks(action="comment", taskId=%s, type="blocker", text="what you need") and stop.
+                - If scope is ambiguous but you can make a reasonable assumption, state the assumption and continue.
+                - If you are missing an input you cannot obtain yourself, call team_tasks(action="comment", taskId=%s, type="blocker", text="what you need") and stop. Do not ask the lead or user for clarification in your final reply.
                 """.formatted(task.getId(), task.getId(), task.getId()));
         return sb.toString();
+    }
+
+    /**
+     * Child worker conversations are isolated from the lead transcript, so
+     * upload paths from the lead turn must be copied into the dispatch
+     * envelope explicitly. Only rendered attachment/media rows with local
+     * paths are included; ordinary lead chat text stays out of the member
+     * prompt.
+     */
+    void appendLeadAttachmentContext(StringBuilder sb, TeamTaskEntity task) {
+        String leadConversationId = task.getLeadConversationId();
+        if (leadConversationId == null || leadConversationId.isBlank()) {
+            return;
+        }
+        List<MessageEntity> messages = conversationService.listRecentMessages(
+                leadConversationId, LEAD_ATTACHMENT_CONTEXT_MESSAGES);
+        if (messages == null || messages.isEmpty()) {
+            return;
+        }
+        StringBuilder section = new StringBuilder();
+        for (MessageEntity message : messages) {
+            if (message == null || message.getContentParts() == null
+                    || message.getContentParts().isBlank()) {
+                continue;
+            }
+            String rendered = conversationService.renderMessageContent(message, true);
+            if (rendered == null || rendered.isBlank() || !hasRenderedAttachmentPath(rendered)) {
+                continue;
+            }
+            section.append("- ")
+                    .append(truncate(rendered.strip(), MAX_LEAD_ATTACHMENT_ITEM_CHARS)
+                            .replace("\n", "\n  "))
+                    .append('\n');
+        }
+        if (section.isEmpty()) {
+            return;
+        }
+        sb.append("\n[Lead conversation attachments]\n")
+                .append(truncate(section.toString(), MAX_LEAD_ATTACHMENT_SECTION_CHARS))
+                .append("Use these paths when this task refers to files uploaded in the lead conversation.\n");
+    }
+
+    private static boolean hasRenderedAttachmentPath(String rendered) {
+        if (!rendered.contains("路径:")) {
+            return false;
+        }
+        return rendered.contains("[附件]")
+                || rendered.contains("[图片]")
+                || rendered.contains("[视频]")
+                || rendered.contains("[音频]")
+                || rendered.contains("[3D 模型]");
     }
 
     /**

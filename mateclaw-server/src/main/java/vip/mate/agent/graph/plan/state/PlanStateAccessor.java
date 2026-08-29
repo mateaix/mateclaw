@@ -140,6 +140,11 @@ public final class PlanStateAccessor {
         return state.value(WORKING_CONTEXT, "");
     }
 
+    @SuppressWarnings("unchecked")
+    public Set<String> loadedSkills() {
+        return state.<Set<String>>value(MateClawStateKeys.LOADED_SKILLS).orElse(Set.of());
+    }
+
     // ===== 输出构建器 =====
 
     public static OutputBuilder output() {
@@ -249,6 +254,10 @@ public final class PlanStateAccessor {
         // ---- 事件流（写入共享键 MateClawStateKeys.PENDING_EVENTS）----
         public OutputBuilder events(List<GraphEventPublisher.GraphEvent> events) {
             return put(MateClawStateKeys.PENDING_EVENTS, events);
+        }
+
+        public OutputBuilder loadedSkills(Set<String> names) {
+            return put(MateClawStateKeys.LOADED_SKILLS, names);
         }
 
         // ---- 阶段标记（写入共享键 MateClawStateKeys.CURRENT_PHASE）----

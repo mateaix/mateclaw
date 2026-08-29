@@ -49,6 +49,15 @@ class OpenApiLockedDownAccessTest {
     }
 
     @Test
+    @DisplayName("Anonymous generated-file download is blocked (401)")
+    void anonymousGeneratedFileDownloadBlocked() {
+        ResponseEntity<String> resp = rest.getForEntity(
+                "/api/v1/files/generated/00000000-0000-0000-0000-000000000000",
+                String.class);
+        assertEquals(HttpStatus.UNAUTHORIZED, resp.getStatusCode());
+    }
+
+    @Test
     @DisplayName("A genuinely public endpoint stays reachable when Swagger is locked")
     void publicEndpointStillReachable() {
         // GET /api/v1/settings/language is permitAll (first-paint i18n); proves

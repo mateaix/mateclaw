@@ -70,6 +70,18 @@ class TeamRunViewFactoryTest {
     }
 
     @Test
+    void fallbackSummaryDoesNotCreateUnactionableAttentionItem() {
+        TeamRunEntity fallbackRun = run("{\"summaryQuality\":\"fallback\"}");
+        TeamTaskEntity completed = task(101L, 201L, null);
+
+        TeamRunView view = TeamRunViewFactory.create(fallbackRun, TeamRunStatus.COMPLETED,
+                new TeamRunView.Progress(1, 1, 0, 0, 100), List.of(completed), true);
+
+        assertEquals("fallback", view.outcomeQuality());
+        assertEquals(List.of(), view.attentionItems());
+    }
+
+    @Test
     void aggregatesRunOnlyDeliverables() {
         TeamRunEntity run = run("{\"deliverables\":[{\"name\":\"report.pdf\","
                 + "\"url\":\"" + REPORT_URL + "\"}]}");

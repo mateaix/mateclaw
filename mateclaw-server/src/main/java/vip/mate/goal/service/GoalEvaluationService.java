@@ -131,7 +131,9 @@ public class GoalEvaluationService implements Evaluator {
                     + "\n\n" + format;
 
             List<Message> messages = new ArrayList<>(2);
-            messages.add(new SystemMessage(bootstrap ? BOOTSTRAP_SYSTEM_PROMPT : VERDICT_SYSTEM_PROMPT));
+            messages.add(new SystemMessage(bootstrap ? BOOTSTRAP_SYSTEM_PROMPT
+                    : Boolean.TRUE.equals(goal.getPersistentExecution())
+                            ? PERSISTENT_VERDICT_SYSTEM_PROMPT : VERDICT_SYSTEM_PROMPT));
             messages.add(new UserMessage(userPrompt));
 
             ChatOptions options = ChatOptions.builder()
@@ -219,6 +221,17 @@ public class GoalEvaluationService implements Evaluator {
                     + "'all requirements met'. If a criterion lacks specific evidence, "
                     + "mark it not passed. Output only the requested JSON.";
 
+    private static final String PERSISTENT_VERDICT_SYSTEM_PROMPT =
+            "Judge cumulative progress toward a persistent goal using the latest reply, "
+                    + "conversation evidence and previously verified checklist evidence. "
+                    + "A later step need not repeat completed earlier work. Preserve a prior "
+                    + "passed=true item with nonblank evidence unless new concrete evidence contradicts it. "
+                    + "Revoke it when such contradictory evidence exists, citing that evidence. "
+                    + "An attempted action, a goal description or a claim of completion is not proof. "
+                    + "Newly passed criteria require concrete observable evidence. Return only changed "
+                    + "criterion verdicts; omitted criteria retain their previous state. Keep evidence concise. "
+                    + "Output only the requested JSON.";
+
     private String buildUserPrompt(GoalEntity goal,
                                    List<GoalCriterion> existing,
                                    List<? extends Message> recentMessages,
@@ -238,6 +251,12 @@ public class GoalEvaluationService implements Evaluator {
             sb.append("Current checklist (judge each by id):\n");
             for (GoalCriterion c : existing) {
                 sb.append("- ").append(c.id()).append(": ").append(c.text()).append('\n');
+                if (Boolean.TRUE.equals(goal.getPersistentExecution())) {
+                    String evidence = safe(c.evidence());
+                    sb.append("  Previous passed=").append(c.passed()).append("; evidence: ")
+                            .append(evidence.length() > 1000 ? evidence.substring(0, 1000) + " [truncated]" : evidence)
+                            .append('\n');
+                }
             }
             sb.append('\n');
         }
@@ -263,6 +282,10 @@ public class GoalEvaluationService implements Evaluator {
               .append(MAX_BOOTSTRAP_CRITERIA)
               .append(" criteria. Leave every 'passed' false and 'evidence' empty — "
                       + "this round only defines the checklist.");
+        } else if (Boolean.TRUE.equals(goal.getPersistentExecution())) {
+            sb.append("Return only changed criteria with specific evidence. Preserve verified prior work "
+                    + "unless new evidence contradicts it; absence from the latest reply is not a contradiction. "
+                    + "Never treat passed=true without nonblank evidence as verified completion.");
         } else {
             sb.append("For every criterion above, return its id with passed=true ONLY when "
                     + "the reply shows concrete evidence; otherwise passed=false with a short "

@@ -58,7 +58,22 @@ export function useGlobalFileDownloadClick() {
       if (src) {
         e.preventDefault()
         e.stopPropagation()
-        window.open(src, '_blank', 'noopener,noreferrer')
+        if (src.startsWith('blob:')) {
+          window.open(src, '_blank', 'noopener,noreferrer')
+          return
+        }
+        const win = window.open('about:blank', '_blank', 'noopener,noreferrer')
+        if (!win) return
+        try {
+          const original = genImg.dataset.generatedSrc || src
+          const url = new URL(original, window.location.href)
+          const blob = await fetchAuthenticatedBlob(url.pathname + url.search)
+          const objectUrl = URL.createObjectURL(blob)
+          win.location.href = objectUrl
+          setTimeout(() => URL.revokeObjectURL(objectUrl), 300000)
+        } catch {
+          win.close()
+        }
         return
       }
     }

@@ -150,6 +150,12 @@ const router = createRouter({
               meta: { title: 'Settings - System', requiredCapability: 'manage:settings' },
             },
             {
+              path: 'dsh',
+              name: 'SettingsDsh',
+              component: () => import('@/views/Settings/Dsh/index.vue'),
+              meta: { title: 'Settings - DeepSeek Harness', requiredCapability: 'manage:settings' },
+            },
+            {
               path: 'image',
               name: 'SettingsImage',
               component: () => import('@/views/Settings/Image/index.vue'),

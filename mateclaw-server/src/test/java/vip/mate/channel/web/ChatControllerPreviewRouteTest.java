@@ -62,7 +62,8 @@ class ChatControllerPreviewRouteTest {
                 mock(vip.mate.memory.event.ConversationCompletionPublisher.class),
                 mock(MemoryOwnerResolver.class),
                 uploadLocationResolver,
-                officePreviewService);
+                officePreviewService,
+                mock(ConversationInputQueueStore.class));
 
         mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
     }

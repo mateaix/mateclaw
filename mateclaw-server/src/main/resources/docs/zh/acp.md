@@ -198,7 +198,7 @@ ACP 服务端可以在做敏感动作前（写文件、跑 shell 命令等）发
 
 - `initialize` 握手：15 秒
 - `session/new`：10 秒
-- 整个 `session/prompt` 往返：5 分钟
+- 整个 `session/prompt` 往返：默认 300 秒，可按端点配置，最高 3600 秒
 - stdio 缓冲上限：单次 50 MiB（行级 `stdio_buffer_limit_bytes` 可改）
 
 ---
@@ -215,6 +215,7 @@ ACP 服务端可以在做敏感动作前（写文件、跑 shell 命令等）发
 | `args_json` | TEXT | NULL | CLI 参数（JSON 数组） |
 | `env_json` | TEXT | NULL | 环境变量覆盖（JSON 对象） |
 | `tool_parse_mode` | VARCHAR(32) | `call_title` | `call_title` / `call_detail` / `update_detail` |
+| `prompt_timeout_seconds` | INT | 300 | `session/prompt` 调用超时，最高 3600 秒 |
 | `builtin` | BOOLEAN | FALSE | 内置行写保护 |
 | `trusted` | BOOLEAN | TRUE | 自动放行权限请求 |
 | `enabled` | BOOLEAN | FALSE | 默认关闭，按需打开 |

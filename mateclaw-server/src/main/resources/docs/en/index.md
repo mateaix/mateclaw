@@ -20,12 +20,15 @@ hero:
       link: https://github.com/mateaix/mateclaw
 
 features:
+  - icon: ⚙️
+    title: Employee runtimes, not one Agent loop
+    details: 2.2.0 uses a shared Runtime Contract to decouple employee identity from execution. Native and DeepSeek Harness share conversations, workspaces, tool governance, and event projection; durable Goals recover across requests and backend restarts, while A2A connects external agents.
   - icon: 🧑‍💼
     title: Digital employees, not chatbots
     details: You hire coworkers, not a chat box. Each one has a role, a goal, a backstory, a pixel-art avatar, and a color of their own — six built-in templates ship ready to use. ReAct + Plan-and-Execute, parallel delegation between employees.
   - icon: 🤝
     title: Teams, not lone wolves
-    details: One team request becomes one Team Run — objective, task DAG, worker execution, final synthesis, and deliverables stay together. Chat delivers outcomes, Agents observes live work, and Teams governs history and approvals. In 2.1.0, one round of collaboration is one complete work record.
+    details: One team request becomes one Team Run — objective, task DAG, worker execution, final synthesis, and deliverables stay together. Chat delivers, Agents observes, and Teams governs; 2.2.0 further hardens checkpoint recovery and deliverable completion gates.
   - icon: 🧩
     title: Skills are the skeleton, not a plugin
     details: One SKILL.md plus one LESSONS.md that grows with use. Eight starter templates, a five-step creation wizard, pre-flight checks before install. MCP and ACP bridges — even Claude Code and Codex show up as employees.

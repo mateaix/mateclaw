@@ -16,7 +16,7 @@
     </button>
 
     <div v-show="!collapsed" class="fc-body">
-      <div v-for="it in items" :key="it.rawId" class="fc-row" @click="$emit('open', it.kbId)">
+      <div v-for="it in items" :key="it.rawId" class="fc-row" @click="$emit('open', it)">
         <span class="fc-badge" :class="rowKind(it)">{{ t(`wiki.status.${it.processingStatus}`) }}</span>
         <div class="fc-main">
           <div class="fc-line1">
@@ -25,7 +25,7 @@
           </div>
           <div class="fc-msg" :title="it.errorMessage || it.warningMessage || ''">{{ friendly(it) }}</div>
         </div>
-        <button class="fc-open" @click.stop="$emit('open', it.kbId)">{{ t('wiki.failureCenter.open') }}</button>
+        <button class="fc-open" @click.stop="$emit('open', it)">{{ t('wiki.failureCenter.open') }}</button>
       </div>
     </div>
   </section>
@@ -36,7 +36,7 @@ import { ref, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { wikiApi, type WikiFailureItem } from '@/api/index'
 
-defineEmits<{ (e: 'open', kbId: string): void }>()
+defineEmits<{ (e: 'open', item: WikiFailureItem): void }>()
 
 const { t } = useI18n()
 const items = ref<WikiFailureItem[]>([])

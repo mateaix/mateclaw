@@ -41,6 +41,9 @@ public class GoalProperties {
      */
     private boolean defaultAutoFollowup = true;
 
+    /** Create-time default only; existing goals retain their persisted mode. */
+    private boolean defaultPersistentExecution = true;
+
     /**
      * Runtime hard gate for auto-followup. When false, no goal injects a
      * follow-up regardless of its per-goal {@code autoFollowupEnabled} flag —
@@ -48,6 +51,27 @@ public class GoalProperties {
      * effect immediately, even for goals created with the flag on.
      */
     private boolean allowAutoFollowup = true;
+
+    /** Maximum number of persistent goal segments executing in this backend instance. */
+    private int maxConcurrentSegments = 4;
+
+    public void setMaxConcurrentSegments(int maxConcurrentSegments) {
+        this.maxConcurrentSegments = Math.max(1, maxConcurrentSegments);
+    }
+
+    /** Runtime floor between two ordinary persistent-goal segments. */
+    private int minimumContinuationIntervalSeconds = 1;
+
+    public void setMinimumContinuationIntervalSeconds(int minimumContinuationIntervalSeconds) {
+        this.minimumContinuationIntervalSeconds = Math.max(1, minimumContinuationIntervalSeconds);
+    }
+
+    /** Instance-wide pause before claiming more work after a retryable provider failure. */
+    private int providerFailureGlobalBackoffSeconds = 30;
+
+    public void setProviderFailureGlobalBackoffSeconds(int providerFailureGlobalBackoffSeconds) {
+        this.providerFailureGlobalBackoffSeconds = Math.max(0, providerFailureGlobalBackoffSeconds);
+    }
 
     /**
      * Auto-derive a goal from a multi-step Plan-Execute plan. The Plan-Execute

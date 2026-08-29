@@ -100,15 +100,13 @@ public class SecurityConfig {
                     // KB Open API: authenticated by KbOpenApiAuthFilter (API key),
                     // not JWT — must be permitAll so the filter is the sole gatekeeper (R1).
                     "/api/v1/open/kb/**",
+                    "/api/a2a/card",
+                    "/.well-known/agent-card.json",
                     "/api/v1/talk/ws",
                     // Desktop local-tool tunnel — the handshake interceptor
                     // authenticates the ?token= query param itself, so the
                     // upgrade request is opened to the filter chain like talk/ws.
-                    "/api/v1/desktop/ws",
-                    // RFC-045: tool-generated files served via unguessable UUID; entries
-                    // expire after GeneratedFileCache.TTL (7 days) — delayed access (e.g. an
-                    // IM-delivered link opened later) is intentional, the UUID is the guard.
-                    "/api/v1/files/generated/**"
+                    "/api/v1/desktop/ws"
                 ).permitAll();
                 // Swagger UI / OpenAPI document — explicit rule rather than the
                 // permitAll() fallthrough. Public for local dev, admin-only in

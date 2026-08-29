@@ -9,6 +9,14 @@ head:
 
 # 持久化目标
 
+## 持续执行模式（第一版）
+
+新建目标默认 `persistentExecution=true`，省略预算时 `turnBudget=0`、`llmCallBudget=0` 表示不设累计上限。显式正预算仍生效；已有目标保留旧模式，不会在升级后自动启动。
+
+持续目标由数据库队列和后台 supervisor 跨图片段调度；单次图执行的次数上限只结束当前片段，不结束目标。队列、冷却、重试和过期租约可在服务重启后恢复。仅当清单全部通过且有非空证据时才能完成，Stop、缺少必要输入、审批拒绝和预算耗尽会暂停，需明确 resume。
+
+`GET /api/v1/goals/{id}/execution` 返回独立的调度状态、原因和到期时间；它是最近的调度记录，目标当前状态以 goal API 为准。流中通过 `goal_continuation` 广播调度变化。第一版支持单后端实例的原生 runtime，不保证外部工具副作用恰好一次；恢复先检查已有产物与异步句柄。预算在片段边界检查，不是逐请求的硬费用限制。
+
 > **以前你每轮都要把上下文重复一遍。现在你定一个目标，员工自己跟。**
 
 一次对话里你说"帮我把这个博客部署到 fly.io"，员工答完一轮就停了。下一轮你要再问"DNS 配好没？证书呢？测试跑了吗？"——你在替它记目标。
@@ -109,7 +117,7 @@ POST /api/v1/goals
 
 ### 自动延续是怎么发生的
 
-如果 `autoFollowupEnabled=true` 且这一轮 evaluator 判 "continue"，后台会：
+持续模式会持久化下一次执行时间，由 supervisor 发起新的图片段。下面的图内延续流程只适用于 `persistentExecution=false` 的旧模式：
 
 1. 写一条 `followup_injected` 事件到时间线
 2. 给对话末尾 APPEND 一条用户消息。**1.5.0 起，如果目标有清单，这条消息会明确列出还没通过的那几条准则**——"5/8 已完成，剩余：① …… ② ……，去做剩下的"；没有清单时回退到笼统的 "Continue working on the goal. Still missing: {gap}."
@@ -198,9 +206,9 @@ Plan-Execute 模式下，单个步骤可能**抛异常**，也可能陷入**停�
 
 ---
 
-## 4 个内置工具（员工可用）
+## 内置目标工具（员工可用）
 
-员工的工具集里默认包含这 4 个（无需手动绑定，是 agent-wide 系统级工具）：
+员工的工具集里默认包含以下工具（无需手动绑定，是 agent-wide 系统级工具）：
 
 | 工具 | 用途 | 触发提示词示例 |
 |---|---|---|
@@ -208,6 +216,7 @@ Plan-Execute 模式下，单个步骤可能**抛异常**，也可能陷入**停�
 | **addGoalCriterion** | 追加子准则到已有目标 | "再加一条准则：必须支持 IPv6" |
 | **completeGoal** | 显式标记完成 | "所有事项已做完，请 completeGoal" |
 | **getGoalStatus** | 查询当前 goal 状态 | "我们现在进展到哪了？" |
+| **waitForGoalInput** | 持续目标缺少必要输入时暂停并记录原因 | "缺少部署域名，请等待用户补充" |
 
 完成时（`completeGoal`，或 evaluator 判定**每一条准则都通过**），员工会把这个目标的总结同步到[长期记忆](./memory)，后续对话能查得回来。
 
@@ -215,7 +224,7 @@ Plan-Execute 模式下，单个步骤可能**抛异常**，也可能陷入**停�
 
 ## 子员工不能改父员工的目标
 
-[多员工协作](./agents)里 parent 员工可以委派 child 员工干活。Child **看不到**这 4 个 goal 工具 — 目标是 parent 会话的状态，child 是无状态的执行体。
+[多员工协作](./agents)里 parent 员工可以委派 child 员工干活。Child **看不到**这些 goal 工具 — 目标是 parent 会话的状态，child 是无状态的执行体。
 
 > 这一条是设计意图，不是 bug。child 帮 parent 做事，但目标的"所有权"留在 parent 那。
 
@@ -227,7 +236,7 @@ Plan-Execute 模式下，单个步骤可能**抛异常**，也可能陷入**停�
 turnsUsed >= turnBudget  或  (agentLlmCallsUsed + evalLlmCallsUsed) >= llmCallBudget
 ```
 
-任一条命中 → 目标状态翻为 **exhausted**，不再触发评估、不再注入 follow-up，光环变橙红色。员工的最后一轮回答会正常发送给你。
+持续模式仅检查正预算；`0` 表示不限。达到预算后目标进入 **paused**，调度状态为 **budget_limited**，增加预算后可 resume。旧模式仍进入终态 **exhausted**，需要新建目标才能继续。当前片段的回答仍会保存。
 
 你的选择：
 
@@ -247,7 +256,8 @@ turnsUsed >= turnBudget  或  (agentLlmCallsUsed + evalLlmCallsUsed) >= llmCallB
    
  active ──evaluator 全部准则通过 / completeGoal──→ completed (终态)
    ↓
- active ──turns_used/llm_calls 用完 ─────────→ exhausted (终态)
+ active ──正预算用完（持续模式）───────────→ paused
+ active ──预算用完（旧模式）───────────────→ exhausted (终态)
    ↓
  active ──user abandon ─────────────────────→ abandoned (终态)
 ```
@@ -300,9 +310,18 @@ mateclaw:
     default-auto-followup: true
     # 运行期总开关；关掉则无论 per-goal 标志如何，都不注入自动延续
     allow-auto-followup: true
-    # 默认 turn 预算
+    # 单后端实例同时运行的持久化目标 Segment 上限
+    max-concurrent-segments: 4
+    # 普通 Segment 结算后再次续跑的全局最小间隔（秒）
+    minimum-continuation-interval-seconds: 1
+    # provider 或评估器发生可重试故障后，暂停认领其他目标的时间（秒；0 = 关闭）
+    provider-failure-global-backoff-seconds: 30
+    # 新目标默认持续模式；省略预算表示不限（0）
+    default-persistent-execution: true
+    supervisor-poll-ms: 5000
+    # 旧模式的默认 turn 预算
     default-turn-budget: 20
-    # 默认 LLM 调用预算（agent + evaluator 之和）
+    # 旧模式的默认 LLM 调用预算（agent + evaluator 之和）
     default-llm-call-budget: 200
     # 自动延续之间至少隔多久（秒）
     auto-followup-cooldown-seconds: 0
@@ -318,18 +337,23 @@ mateclaw:
     evaluator-context-messages: 8
 ```
 
+`minimum-continuation-interval-seconds` 与目标自身的 `followupCooldownSeconds` 取较大值。
+provider 全局退避只保存在当前后端实例内；重启恢复仍以数据库中的 continuation
+`next_run_at` 和每目标失败次数为准。耐久或低配模型测试建议使用并发 `1`、最小间隔
+`300` 秒、provider 全局退避 `300` 秒，再根据日志逐步放量。
+
 ---
 
 ## 数据库
 
-两张表，都用 `mate_` 前缀：
+相关表使用 `mate_` 前缀：
 
 | 表 | 用途 |
 |---|---|
 | `mate_agent_goal` | 目标本体；含 status / budget / 双 LLM 计数器 / 自动延续配置 |
 | `mate_agent_goal_event` | 目标的事件追加日志，drawer 时间线读它 |
 
-迁移由 Flyway 跑 `V120__agent_goal.sql`（H2 / MySQL / KingbaseES 三方言）。
+持续调度表 `mate_goal_continuation` 记录队列、到期时间和租约。迁移由 Flyway 跑 `V120__agent_goal.sql` 和 `V188__goal_continuation.sql`（H2 / MySQL / KingbaseES 三方言）。
 
 ---
 

@@ -21,6 +21,7 @@ import { useThemeStore } from '@/stores/useThemeStore'
 import { useSystemSettingsStore } from '@/stores/useSystemSettingsStore'
 import { useGlobalWikilinkClick } from '@/composables/useGlobalWikilinkClick'
 import { useGlobalFileDownloadClick } from '@/composables/useGlobalFileDownloadClick'
+import { useGlobalGeneratedImageBlob } from '@/composables/useGlobalGeneratedImageBlob'
 import McConfirmHost from '@/components/common/McConfirmHost.vue'
 import FilePreviewDialog from '@/components/chat/preview/FilePreviewDialog.vue'
 
@@ -42,6 +43,7 @@ useGlobalWikilinkClick()
 // expired/missing file degrades to a toast instead of a full-page navigation
 // to the backend's 404 JSON, which would otherwise replace the whole SPA.
 useGlobalFileDownloadClick()
+useGlobalGeneratedImageBlob()
 
 const { t } = useI18n()
 

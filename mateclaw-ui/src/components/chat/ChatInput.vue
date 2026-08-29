@@ -205,7 +205,7 @@
           class="action-btn send-btn"
           :class="sendBtnClass"
           :disabled="props.streamPhase === 'interrupting' || (!canSend && !loading)"
-          :title="props.streamPhase === 'interrupting' ? t('chat.streamInterrupting') : undefined"
+          :title="sendButtonTitle"
           @click="handleSubmit"
         >
           <!-- 有输入时始终显示发送图标（运行中发送 = interrupt） -->
@@ -222,7 +222,10 @@
 
     <!-- 底部信息 -->
     <div class="input-footer">
-      <span class="input-hint">{{ hint }}</span>
+      <span class="input-footer__left">
+        <span class="input-hint">{{ hint }}</span>
+        <span v-if="runtimeActionHint" class="input-action-hint">{{ runtimeActionHint }}</span>
+      </span>
       <span v-if="maxLength" class="input-length">
         {{ inputValue.length }}/{{ maxLength }}
       </span>
@@ -498,6 +501,17 @@ const inputPlaceholder = computed(() => {
   }
   return props.placeholder
 })
+
+const runtimeActionHint = computed(() => {
+  if (props.streamPhase === 'interrupting') return t('chat.streamInterrupting')
+  if (!props.loading) return ''
+  if (props.queuedMessage && !canSend.value) return t('chat.streamQueuedWaitingAction')
+  if (props.queuedMessage && canSend.value) return t('chat.streamReplaceQueuedAction')
+  if (canSend.value) return t('chat.streamQueueAction')
+  return t('chat.streamStopAction')
+})
+
+const sendButtonTitle = computed(() => runtimeActionHint.value || undefined)
 
 // 处理提交
 const handleSubmit = () => {
@@ -887,16 +901,41 @@ defineExpose({
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 10px;
   margin-top: 6px;
   padding: 0 4px;
+}
+
+.input-footer__left {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 .input-hint {
   font-size: 12px;
   color: var(--mc-text-tertiary, #94a3b8);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.input-action-hint {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding-left: 8px;
+  border-left: 1px solid var(--mc-border, #e2e8f0);
+  color: var(--mc-text-secondary, #64748b);
+  font-size: 12px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .input-length {
+  flex: 0 0 auto;
   font-size: 12px;
   color: var(--mc-text-tertiary, #94a3b8);
 }

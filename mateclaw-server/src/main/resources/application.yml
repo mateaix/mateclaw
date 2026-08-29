@@ -131,6 +131,33 @@ springdoc:
 
 # MateClaw 自定义配置
 mateclaw:
+  a2a:
+    enabled: ${MATECLAW_A2A_ENABLED:false}
+    # Public base URL for Agent Cards. Production deployments should set this
+    # explicitly so peers do not depend on proxy-derived request headers.
+    base-url: ${MATECLAW_A2A_BASE_URL:}
+    call-timeout-ms: ${MATECLAW_A2A_CALL_TIMEOUT_MS:120000}
+    max-tasks: ${MATECLAW_A2A_MAX_TASKS:1000}
+    task-ttl-seconds: ${MATECLAW_A2A_TASK_TTL_SECONDS:3600}
+    max-response-bytes: ${MATECLAW_A2A_MAX_RESPONSE_BYTES:1048576}
+    outbound-timeout-ms: ${MATECLAW_A2A_OUTBOUND_TIMEOUT_MS:120000}
+    allow-private-outbound: ${MATECLAW_A2A_ALLOW_PRIVATE_OUTBOUND:false}
+    sweep-interval-ms: ${MATECLAW_A2A_SWEEP_INTERVAL_MS:60000}
+
+  # DeepSeek Harness runtime. The executable and Cordis composition are kept
+  # outside the Spring classpath and can be supplied by environment variables.
+  agent:
+    runtime:
+        dsh:
+          command: ${DSH_JSONRPC_AGENT:}
+          cordis-config: ${DSH_CORDIS_CONFIG:}
+          working-directory: ${DSH_CWD:}
+          base-url: ${DEEPSEEK_BASE_URL:}
+          model-name: ${DEEPSEEK_MODEL:}
+          api-key: ${DEEPSEEK_API_KEY:}
+          manifest-url: ${DSH_MANIFEST_URL:}
+          github-release-url: ${DSH_GITHUB_RELEASE_URL:https://api.github.com/repos/deepseek-ai/deepseek-harness/releases/latest}
+          install-root: ${DSH_INSTALL_ROOT:${user.home}/.mateclaw/runtimes/deepseek-harness}
   server:
     # Public base URL used to build absolute download links for tool-generated
     # files (e.g. https://mateclaw.example.com). Leave empty to fall back to the

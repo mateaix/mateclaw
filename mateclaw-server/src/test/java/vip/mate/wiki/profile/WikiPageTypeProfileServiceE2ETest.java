@@ -89,6 +89,17 @@ class WikiPageTypeProfileServiceE2ETest {
     }
 
     @Test
+    void reservedPageType_isRejectedOnSave() {
+        try {
+            service.saveProfile(SEQ.incrementAndGet(), "bad",
+                    "{\"pageTypes\":{\"system\":{\"label\":\"System\"},\"concept\":{\"label\":\"Concept\"}}}");
+            org.junit.jupiter.api.Assertions.fail("expected IllegalArgumentException");
+        } catch (IllegalArgumentException expected) {
+            assertTrue(expected.getMessage().contains("reserved pageType"));
+        }
+    }
+
+    @Test
     void validateProfileJson_reportsIssues() {
         assertTrue(service.validateProfileJson(EPISODE_JSON).isEmpty());
 
@@ -102,5 +113,16 @@ class WikiPageTypeProfileServiceE2ETest {
         List<String> badType = service.validateProfileJson(
                 "{\"pageTypes\":{\"x\":{\"schema\":{\"f\":{\"type\":\"banana\"}}}}}");
         assertTrue(badType.stream().anyMatch(s -> s.contains("unknown field type")));
+    }
+
+    @Test
+    void validateProfileJson_rejectsReservedPageTypesAndFallback() {
+        List<String> reservedType = service.validateProfileJson(
+                "{\"pageTypes\":{\"system\":{\"label\":\"System\"},\"concept\":{\"label\":\"Concept\"}}}");
+        assertTrue(reservedType.stream().anyMatch(s -> s.contains("reserved pageType")));
+
+        List<String> reservedFallback = service.validateProfileJson(
+                "{\"fallbackType\":\"synthesis\",\"pageTypes\":{\"concept\":{\"label\":\"Concept\"}}}");
+        assertTrue(reservedFallback.stream().anyMatch(s -> s.contains("reserved fallbackType")));
     }
 }

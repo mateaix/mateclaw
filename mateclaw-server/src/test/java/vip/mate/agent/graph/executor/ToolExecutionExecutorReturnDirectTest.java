@@ -10,11 +10,15 @@ import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.ai.tool.metadata.ToolMetadata;
 import vip.mate.agent.AgentToolSet;
 import vip.mate.agent.GraphEventPublisher;
+import vip.mate.agent.context.ChatOrigin;
 import vip.mate.agent.graph.state.DirectToolOutput;
+import vip.mate.tool.ToolInputValidationException;
 import vip.mate.tool.guard.ToolGuard;
 import vip.mate.tool.guard.ToolGuardResult;
 
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -29,6 +33,7 @@ import static org.junit.jupiter.api.Assertions.*;
  *       fixed placeholder, not the sensitive content.</li>
  *   <li>An {@code EVENT_TOOL_DIRECT_RESULT} event is emitted with the full text
  *       and {@code renderAs=assistant_message}.</li>
+ *   <li>A payload-free {@code EVENT_TOOL_COMPLETE} closes the live tool card.</li>
  *   <li>Non-direct tools in the same batch keep their existing behavior.</li>
  * </ol>
  */
@@ -81,11 +86,17 @@ class ToolExecutionExecutorReturnDirectTest {
         assertEquals(SECRET, data.get("result"));
         assertEquals("assistant_message", data.get("renderAs"));
 
-        // (4) no tool_call_completed event for the direct tool — direct path replaces it
-        boolean hasCompleted = result.events().stream()
-                .anyMatch(e -> GraphEventPublisher.EVENT_TOOL_COMPLETE.equals(e.type()));
-        assertFalse(hasCompleted, "direct path replaces tool_call_completed; double-emit would " +
-                "leak the placeholder into UI as a tool result card");
+        // (4) the started tool card receives a terminal pair, without leaking
+        // the direct payload into its ordinary result field.
+        var completed = result.events().stream()
+                .filter(e -> GraphEventPublisher.EVENT_TOOL_COMPLETE.equals(e.type()))
+                .toList();
+        assertEquals(1, completed.size());
+        assertEquals(Boolean.TRUE, completed.get(0).data().get("success"));
+        assertEquals(ToolExecutionExecutor.DIRECT_TOOL_PLACEHOLDER,
+                completed.get(0).data().get("result"));
+        assertFalse(String.valueOf(completed.get(0).data().get("result"))
+                .contains("EMPLOYEE-SALARY"));
     }
 
     @Test
@@ -111,6 +122,39 @@ class ToolExecutionExecutorReturnDirectTest {
     }
 
     @Test
+    @DisplayName("duplicate load_skill calls execute once across batch and loaded state")
+    void duplicateSkillLoadsAreShortCircuitedBeforeParallelExecution() {
+        AtomicInteger executions = new AtomicInteger();
+        ToolCallback loadSkill = stubCallback("load_skill", false, args -> {
+            executions.incrementAndGet();
+            return "skill instructions";
+        });
+        ToolExecutionExecutor executor = newExecutor(loadSkill);
+        AssistantMessage.ToolCall first = new AssistantMessage.ToolCall(
+                "skill_1", "function", "load_skill", "{\"skillName\":\"docx\"}");
+        AssistantMessage.ToolCall duplicate = new AssistantMessage.ToolCall(
+                "skill_2", "function", "load_skill", "{\"skillName\":\"DOCX\"}");
+
+        ToolExecutionExecutor.ToolExecutionResult batch = executor.execute(
+                List.of(first, duplicate), "conv", "agent", false, "", null,
+                ChatOrigin.EMPTY, Set.of());
+
+        assertEquals(1, executions.get());
+        assertEquals(2, batch.responses().size());
+        assertTrue(batch.responses().get(1).responseData().contains("already loaded"));
+        assertTrue(batch.events().stream().anyMatch(event ->
+                GraphEventPublisher.EVENT_TOOL_COMPLETE.equals(event.type())
+                        && "skill_2".equals(event.data().get("toolCallId"))
+                        && Boolean.TRUE.equals(event.data().get("success"))));
+
+        ToolExecutionExecutor.ToolExecutionResult laterTurn = executor.execute(
+                List.of(first), "conv", "agent", false, "", null,
+                ChatOrigin.EMPTY, Set.of("docx"));
+        assertEquals(1, executions.get());
+        assertTrue(laterTurn.responses().getFirst().responseData().contains("already loaded"));
+    }
+
+    @Test
     @DisplayName("RFC-052: returnDirect tool throwing yields generic message (no exception details leak)")
     void directTool_throwing_genericErrorMessage() {
         ToolCallback throwingDirect = stubCallback("query_employee_salary", true, args -> {
@@ -131,6 +175,27 @@ class ToolExecutionExecutorReturnDirectTest {
                 "Direct-tool exception text must be replaced with a generic placeholder");
         assertFalse(content.contains("PWD123"), "Sensitive substring from exception must not leak");
         assertFalse(content.contains("OracleDriver"), "Stack/connection details must not leak");
+    }
+
+    @Test
+    @DisplayName("RFC-052: safe input validation errors return to the model for correction")
+    void directTool_validationErrorIsActionableAndDoesNotShortCircuit() {
+        ToolCallback invalidDirect = stubCallback("renderDocx", true, args -> {
+            throw new ToolInputValidationException("markdown must not be blank");
+        });
+        ToolExecutionExecutor executor = newExecutor(invalidDirect);
+
+        AssistantMessage.ToolCall call = new AssistantMessage.ToolCall(
+                "call_v", "function", "renderDocx", "{\"markdown\":\"\"}");
+        ToolExecutionExecutor.ToolExecutionResult result =
+                executor.execute(List.of(call), "conv_v", "agent_v", false, "user_v", null);
+
+        assertFalse(result.hasDirectOutputs(), "invalid input must not trigger returnDirect");
+        assertEquals("Tool input validation failed: markdown must not be blank",
+                result.responses().get(0).responseData());
+        assertTrue(result.events().stream()
+                .anyMatch(e -> GraphEventPublisher.EVENT_TOOL_COMPLETE.equals(e.type())
+                        && Boolean.FALSE.equals(e.data().get("success"))));
     }
 
     @Test

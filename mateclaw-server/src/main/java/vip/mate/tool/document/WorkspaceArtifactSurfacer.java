@@ -67,7 +67,7 @@ public final class WorkspaceArtifactSurfacer {
                     byte[] bytes = Files.readAllBytes(p);
                     totalBytes += size;
                     String name = p.getFileName().toString();
-                    String id = cache.put(bytes, name, probeMime(p, name));
+                    String id = cache.put(bytes, name, probeMime(p, name), ctx);
                     links.add("[" + name + "](" + cache.downloadUrl(id, ctx) + ")");
                 } catch (Exception perFile) {
                     log.debug("[ArtifactSurfacer] skip {}: {}", p, perFile.getMessage());
@@ -81,8 +81,7 @@ public final class WorkspaceArtifactSurfacer {
 
     private static boolean modifiedSince(Path p, long sinceMillis) {
         try {
-            // 1s slack absorbs filesystem mtime granularity.
-            return Files.getLastModifiedTime(p).toMillis() >= sinceMillis - 1000L;
+            return Files.getLastModifiedTime(p).toMillis() >= sinceMillis;
         } catch (Exception e) {
             return false;
         }
