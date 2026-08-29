@@ -70,40 +70,40 @@
     <text x="65" y="37" text-anchor="middle" font-size="9" fill="#665245">Slack</text>
   </g>
 
-  <!-- ===== Layer 2: Agent Engine ===== -->
+  <!-- ===== Layer 2: Agent Runtime ===== -->
   <rect x="30" y="186" width="900" height="118" rx="14" fill="url(#warm)" stroke="#d9cec2" stroke-width="1" filter="url(#shadow)"/>
   <rect x="30" y="186" width="900" height="4" rx="2" fill="url(#accent)"/>
-  <text x="56" y="210" font-size="11" font-weight="700" fill="#184a45" letter-spacing="1">数字员工运行时</text>
+  <text x="56" y="210" font-size="11" font-weight="700" fill="#184a45" letter-spacing="1">AGENT RUNTIME · 统一事件与治理</text>
 
   <g transform="translate(56, 222)">
     <rect width="172" height="68" rx="10" fill="#dce8e4" stroke="#5ca69d" stroke-width="0.5" filter="url(#shadowSm)"/>
-    <text x="86" y="20" text-anchor="middle" font-size="12" font-weight="700" fill="#184a45">推理双引擎</text>
-    <text x="86" y="36" text-anchor="middle" font-size="9" fill="#665245">ReAct · 思考→行动→观察</text>
-    <text x="86" y="50" text-anchor="middle" font-size="9" fill="#665245">Plan-Execute · 计划分解</text>
+    <text x="86" y="20" text-anchor="middle" font-size="12" font-weight="700" fill="#184a45">Runtime Contract</text>
+    <text x="86" y="36" text-anchor="middle" font-size="9" fill="#665245">Provider · Session · 能力</text>
+    <text x="86" y="50" text-anchor="middle" font-size="9" fill="#665245">生命周期 · 用量 · 投影</text>
   </g>
   <g transform="translate(244, 222)">
     <rect width="172" height="68" rx="10" fill="#f6e2d7" stroke="#ebb08f" stroke-width="0.5" filter="url(#shadowSm)"/>
-    <text x="86" y="20" text-anchor="middle" font-size="12" font-weight="700" fill="#d96d46">团队 · 工作流 · 触发器</text>
-    <text x="86" y="36" text-anchor="middle" font-size="9" fill="#665245">任务板派发 + 并行（2.0.0+）</text>
-    <text x="86" y="50" text-anchor="middle" font-size="9" fill="#9b7d6c">7 step mode · 6 pattern</text>
+    <text x="86" y="20" text-anchor="middle" font-size="12" font-weight="700" fill="#d96d46">Native Runtime</text>
+    <text x="86" y="36" text-anchor="middle" font-size="9" fill="#665245">StateGraph · ReAct</text>
+    <text x="86" y="50" text-anchor="middle" font-size="9" fill="#9b7d6c">Plan-Execute · Goal · Team</text>
   </g>
   <g transform="translate(432, 222)">
     <rect width="172" height="68" rx="10" fill="#f6e2d7" stroke="#ebb08f" stroke-width="0.5" filter="url(#shadowSm)"/>
-    <text x="86" y="20" text-anchor="middle" font-size="12" font-weight="700" fill="#d96d46">技能 · 工具</text>
-    <text x="86" y="36" text-anchor="middle" font-size="9" fill="#665245">内置 · MCP · ACP · 技能</text>
-    <text x="86" y="50" text-anchor="middle" font-size="9" fill="#665245">SKILL.md + LESSONS + 审批</text>
+    <text x="86" y="20" text-anchor="middle" font-size="12" font-weight="700" fill="#d96d46">DSH Runtime</text>
+    <text x="86" y="36" text-anchor="middle" font-size="9" fill="#665245">受管理 JSON-RPC 进程</text>
+    <text x="86" y="50" text-anchor="middle" font-size="9" fill="#665245">DeepSeek Harness · Cordis</text>
   </g>
   <g transform="translate(620, 222)">
     <rect width="172" height="68" rx="10" fill="#f6e2d7" stroke="#ebb08f" stroke-width="0.5" filter="url(#shadowSm)"/>
-    <text x="86" y="20" text-anchor="middle" font-size="12" font-weight="700" fill="#d96d46">记忆 · Dreaming</text>
-    <text x="86" y="36" text-anchor="middle" font-size="9" fill="#665245">短期上下文 + 长期提取</text>
-    <text x="86" y="50" text-anchor="middle" font-size="9" fill="#665245">夜里整合 · 你睡了它在工作</text>
+    <text x="86" y="20" text-anchor="middle" font-size="12" font-weight="700" fill="#d96d46">宿主治理</text>
+    <text x="86" y="36" text-anchor="middle" font-size="9" fill="#665245">Workspace · Tool Guard</text>
+    <text x="86" y="50" text-anchor="middle" font-size="9" fill="#665245">审批 · 凭证隔离</text>
   </g>
   <g transform="translate(808, 222)">
     <rect width="108" height="68" rx="10" fill="#f6e2d7" stroke="#ebb08f" stroke-width="0.5" filter="url(#shadowSm)"/>
-    <text x="54" y="20" text-anchor="middle" font-size="12" font-weight="700" fill="#d96d46">Wiki KB</text>
-    <text x="54" y="36" text-anchor="middle" font-size="9" fill="#665245">知识消化</text>
-    <text x="54" y="50" text-anchor="middle" font-size="9" fill="#665245">+ 加工器（1.3.0）</text>
+    <text x="54" y="20" text-anchor="middle" font-size="12" font-weight="700" fill="#d96d46">工具平面</text>
+    <text x="54" y="36" text-anchor="middle" font-size="9" fill="#665245">技能 · MCP</text>
+    <text x="54" y="50" text-anchor="middle" font-size="9" fill="#665245">ACP · 内置工具</text>
   </g>
 
   <!-- ===== Layer 3: Core Services ===== -->

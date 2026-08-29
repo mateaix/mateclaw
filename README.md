@@ -8,7 +8,7 @@
 
 <p align="center"><b>Your second brain</b></p>
 
-<p align="center"><sub><b>Agent Harness · Spring Boot inside · One JAR to ship</b></sub></p>
+<p align="center"><sub><b>Pluggable Agent Runtime · Native + DSH · Spring Boot inside</b></sub></p>
 
 [![GitHub Repo](https://img.shields.io/badge/GitHub-Repo-black.svg?logo=github)](https://github.com/mateaix/mateclaw)
 [![Documentation](https://img.shields.io/badge/Docs-Website-green.svg?logo=readthedocs&label=Docs)](https://claw.mate.vip/docs)
@@ -30,7 +30,7 @@
 
 ---
 
-> **Latest stable: v2.1.0 — Team Runs, closed skill evolution, and replayable reasoning.** One team request is now one durable `runId` across Chat, Agents, and Teams; skills can mine recurring requests under explicit controls and restore from snapshots; reasoning, tool calls, and observations can be exported in execution order. Read the [v2.1.0 release notes](https://claw.mate.vip/docs/en/releases/2.1.0).
+> **Latest stable: v2.2.0 — a pluggable, recoverable Agent Runtime.** Digital employees can now run on MateClaw's native StateGraph engine or the managed DeepSeek Harness (DSH) runtime while keeping one conversation, policy, tool, persistence, and observability plane. Persistent Goals survive bounded turns and backend restarts, and A2A connects governed employees across systems. Read the [v2.2.0 release notes](https://claw.mate.vip/docs/en/releases/2.2.0).
 
 ---
 
@@ -38,7 +38,7 @@
 >
 > Multi-user workspaces. Approval-gated sensitive actions. Full audit trail. Spring Boot Actuator health monitoring. Per-channel error isolation so one chat platform's outage doesn't take down the rest. One JAR in your environment; you control persisted data, and task content is sent only to model, channel, or tool services you explicitly configure.
 >
-> **And underneath, a real agent harness.** ReAct + Plan-and-Execute on a StateGraph runtime — not a one-shot RAG call dressed up. Tools, Skills, MCP, and ACP converge on one registry with per-employee binding. Sensitive tool calls flow through an approval gate you can actually inspect. Multi-vendor failover keeps the loop running when a provider doesn't.
+> **And underneath, a real Agent Runtime.** An employee is no longer welded to one reasoning loop. Choose the native StateGraph runtime for ReAct, Plan-and-Execute, Goals, and Team Runs, or run DeepSeek Harness as a managed external loop over authenticated JSON-RPC. Both paths converge on the same conversations, workspace boundaries, Tool Guard, event projection, and lifecycle controls.
 
 Most AI tools die when their vendor has a bad day. Most forget you the moment the tab closes. Most give you a chatbox and call it a product.
 
@@ -83,7 +83,10 @@ Same brain. Same memory. Same tools. Different doors.
 ## What's in the box
 
 ### Digital employees, not chatbots
-You hire coworkers, not chat boxes. Each one has a **Role**, a **Goal**, a **Backstory**, a pixel-art avatar, and a color of their own — six built-in templates ship ready (General Assistant · Product Assistant · Research Analyst · Customer Support · Data Analyst · Code Reviewer). **ReAct** drives iterative reasoning, **Plan-and-Execute** decomposes complex multi-step work, employees can delegate to one another in parallel. Dynamic context pruning, smart truncation, stale-stream cleanup — the boring stuff that makes long conversations actually work.
+You hire coworkers, not chat boxes. Each one has a **Role**, a **Goal**, a **Backstory**, a runtime, a pixel-art avatar, and a color of their own — six built-in templates ship ready (General Assistant · Product Assistant · Research Analyst · Customer Support · Data Analyst · Code Reviewer). Employee identity and governance stay stable even when the execution engine changes.
+
+### Agent Runtime: native or DSH (2.2.0+)
+The `AgentRuntimeProvider` contract separates an employee from the engine that runs its turn. The **native runtime** keeps ReAct, Plan-and-Execute, persistent Goals, and Team Runs inside MateClaw. The **DSH runtime** manages `dsh-jsonrpc-agent` as an authenticated child process and streams thinking, text, tool calls, usage, completion, and cancellation back as normalized runtime events. DSH owns the external Agent loop; MateClaw still owns the session, workspace, credentials, tools, approvals, messages, and UI projection. Runtime availability and capabilities are validated before startup, and DSH can be installed, verified, connection-tested, enabled, or disabled from the console. [Configure DeepSeek Harness →](https://claw.mate.vip/docs/en/deepseek-harness)
 
 ### Team Runs (2.1.0+)
 One request, one durable **Team Run**. A stable `runId` links the user's objective, task DAG, worker executions, final synthesis, and deliverables. Chat is the outcome surface, Agents Live groups the workers for real-time observation, and Teams owns history and governance — all three consume the same server projection. Worker conversations no longer flood the normal sidebar; summaries and files lead, while tasks, evidence, approvals, and read-only worker records drill down on demand. Underneath, the 2.0 shared board still provides dependency orchestration, parallel dispatch, prerequisite hand-off, execution leases, cancel-interrupt, and human approval gates.
@@ -105,7 +108,7 @@ One request, one durable **Team Run**. A stable `runId` links the user's objecti
 - **Wiki Transformations** — Wiki stops being retrieval-only. User-authored templates run against raw materials or existing pages, with cross-material map-reduce aggregation, reverse-citation extraction, JSON output mode, and per-template model picker
 
 ### You see what every employee is doing
-**Admin Runtime Console** (`Settings → System → Runtime`) — who's running, what step they're on, how many tokens, one-click force-recycle when stuck. Streaming is staged honestly (thinking / tool / answer), each reasoning iteration keeps its real position and wall-clock duration, and linear trajectory export lays out reasoning, calls, observations, and answers for review. Per-event SSE IDs make reconnects safe; Team Runs group member work under one live execution.
+**Admin Runtime Console** (`Settings → System → Runtime`) — who's running, which runtime provider owns the turn, what step it is on, how many tokens it uses, and one-click force-recycle when stuck. Native and DSH events enter the same thinking / tool / answer projection; completion, failure, usage, and cancellation retain consistent lifecycle semantics. Per-event SSE IDs make reconnects safe, and Team Runs group member work under one live execution.
 
 ### Multimodal creation
 Text-to-speech · Speech-to-text · Image · Music · Video · 3D. First-class, not add-ons. **Sidecar routing** (1.3.0+) means a text-only main model + an image attachment no longer dead-ends — a configured vision model describes the image, and the main model answers. **Image edit** lands too: refer to an earlier conversation attachment by `msg:<id>:<idx>` and ask the model to recolor or restyle it. Four **document-generation tools** (`DocxRenderTool` / `XlsxRenderTool` / `PptxRenderTool` / `PdfRenderTool`) render Markdown straight to Office files inside the JVM — no subprocess, no Office install.
@@ -122,7 +125,7 @@ RBAC + JWT. **Personal Access Tokens** for headless scripts and CI. **HMAC-SHA-2
 
 Model providers rate-limit, networks fail, keys expire, and services become temporarily unavailable. Betting every AI capability on one provider turns an upstream incident into your own outage.
 
-Once AI enters production, the stable layer should not be tied to one supplier. MateClaw absorbs that uncertainty into one runtime through provider priorities, health tracking, cooldown, and failover.
+Once AI enters production, the stable layer should not be tied to one model supplier or one Agent loop. MateClaw absorbs model uncertainty through provider priorities, health tracking, cooldown, and failover, then places native and external execution engines behind one governed Agent Runtime contract.
 
 **MateClaw is that layer — built the Spring Boot way.**
 
@@ -194,7 +197,7 @@ Download from [GitHub Releases](https://github.com/mateaix/mateclaw/releases). B
 
 ```
 mateclaw/
-├── mateclaw-server/        Spring Boot 3.5 backend (Spring AI Alibaba, StateGraph runtime)
+├── mateclaw-server/        Spring Boot 3.5 backend (Agent Runtime contract, native StateGraph + DSH)
 ├── mateclaw-ui/            Vue 3 + TypeScript admin SPA (built into the server JAR)
 ├── mateclaw-desktop/       Electron desktop app (local-embedded / remote-centralized)
 ├── mateclaw-webchat/       Embeddable chat widget (UMD / ES bundles)
@@ -213,7 +216,7 @@ Desktop binaries ship via [GitHub Releases](https://github.com/mateaix/mateclaw/
 | Layer | Technology |
 |---|---|
 | Backend | Spring Boot 3.5 · Spring AI Alibaba 1.1 · MyBatis Plus · Flyway |
-| Digital Employee Runtime | StateGraph · ReAct + Plan-Execute · Role / Goal / Backstory · closed skill evolution · Team Run + shared task board (2.1.0+) |
+| Agent Runtime | `AgentRuntimeProvider` contract · Native StateGraph (ReAct + Plan-Execute) · managed DSH JSON-RPC runtime · normalized events / lifecycle / usage · Tool Guard |
 | Orchestration | Workflow (7 step modes · Pebble DSL) · Triggers (6 pattern types · event governance) · Wiki Transformations (1.3.0+) |
 | Capability Extension | SKILL.md packages · MCP (stdio / SSE / HTTP · per-agent binding) · ACP bridge (Claude Code / Codex) |
 | Database | H2 (dev) · PostgreSQL 16 (Docker default) · MySQL 8.0+ (supported) · Kingbase (opt-in driver) |
@@ -229,6 +232,16 @@ Desktop binaries ship via [GitHub Releases](https://github.com/mateaix/mateclaw/
 Full docs at **[claw.mate.vip/docs](https://claw.mate.vip/docs)** — setup, architecture, each subsystem, API reference.
 
 ## Roadmap
+
+**v2.2.0 (shipped 2026-08-29)** — from one built-in reasoning loop to **a pluggable and recoverable Agent Runtime**:
+
+- **Runtime contract** — provider registry, session factory, capability validation, normalized event stream, lifecycle, usage, and UI projection decouple employees from execution engines
+- **DeepSeek Harness runtime** — managed installation and configuration, authenticated JSON-RPC process bridge, Cordis composition, cancellable streaming, isolated child environment, and host-governed tool dispatch
+- **Durable long work** — bounded Goal segments, persisted continuation and input queues, attempts, cooldown, retry, leases, restart recovery, and explicit pause / resume semantics
+- **Agent interoperability** — inbound and outbound A2A with Agent Cards, JSON-RPC / SSE tasks, authentication, idempotency, and guarded network boundaries
+- **Runtime hardening** — tighter workspace ownership, reliable Team Run recovery and deliverable gates, plus consistent long-form output and input handling across approval, stop, and recovery
+
+Full story in the [v2.2.0 release notes](https://claw.mate.vip/docs/en/releases/2.2.0).
 
 **v2.1.0 (shipped 2026-08-15)** — from “a board full of tasks” to **one governable team run**:
 
