@@ -61,13 +61,13 @@ class WebChatSessionManagementTest {
         String owner = WebChatController.webchatUsername(VISITOR);
         // default thread (no sessionId)
         conversationService.getOrCreateWebchatConversation(
-                WebChatController.deriveConversationId(API_KEY, VISITOR, null), null, owner, 1L, null);
+                WebChatController.deriveConversationId(CHANNEL_ID, VISITOR, null), null, owner, 1L, null);
         // short sessioned thread
         conversationService.getOrCreateWebchatConversation(
-                WebChatController.deriveConversationId(API_KEY, VISITOR, "s1"), null, owner, 1L, "s1");
+                WebChatController.deriveConversationId(CHANNEL_ID, VISITOR, "s1"), null, owner, 1L, "s1");
         // long sessioned thread → conversationId hashes
         conversationService.getOrCreateWebchatConversation(
-                WebChatController.deriveConversationId(API_KEY, VISITOR, LONG_SESSION), null, owner, 1L, LONG_SESSION);
+                WebChatController.deriveConversationId(CHANNEL_ID, VISITOR, LONG_SESSION), null, owner, 1L, LONG_SESSION);
 
         token = WebChatController.computeVisitorToken(SECRET, CHANNEL_ID, VISITOR);
     }
@@ -112,7 +112,7 @@ class WebChatSessionManagementTest {
         R<Void> r = controller.renameSession(API_KEY, token, VISITOR, "s1", Map.of("title", "Renamed"));
         assertThat(r.getCode()).isEqualTo(200);
 
-        String cid = WebChatController.deriveConversationId(API_KEY, VISITOR, "s1");
+        String cid = WebChatController.deriveConversationId(CHANNEL_ID, VISITOR, "s1");
         String title = jdbc.queryForObject(
                 "SELECT title FROM mate_conversation WHERE conversation_id = ?", String.class, cid);
         assertThat(title).isEqualTo("Renamed");
@@ -122,7 +122,7 @@ class WebChatSessionManagementTest {
     @DisplayName("sessionMessages paginates with hasMore")
     @SuppressWarnings("unchecked")
     void paginatesMessages() {
-        String cid = WebChatController.deriveConversationId(API_KEY, VISITOR, "s1");
+        String cid = WebChatController.deriveConversationId(CHANNEL_ID, VISITOR, "s1");
         conversationService.saveMessage(cid, "user", "m1");
         conversationService.saveMessage(cid, "assistant", "m2");
         conversationService.saveMessage(cid, "user", "m3");
