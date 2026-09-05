@@ -25,6 +25,7 @@ import vip.mate.memory.service.MemoryRecallTracker;
 import vip.mate.team.event.TeamChangedEvent;
 import vip.mate.workspace.conversation.model.ConversationEntity;
 import vip.mate.workspace.conversation.repository.ConversationMapper;
+import vip.mate.workspace.core.service.WorkspaceService;
 
 import java.util.List;
 import java.util.Locale;
@@ -122,8 +123,13 @@ public class AgentService {
      *                disabled rows visible for re-enabling.
      */
     public List<AgentEntity> listAgentsByWorkspace(Long workspaceId, Boolean enabled) {
+        // 全局共享预置 Agent（workspace_id = 0）对本工作区只读可见，故与本工作区
+        // Agent 一并返回。用 .and(...) 嵌套包裹 OR，确保后续 enabled 条件以 AND
+        // 作用于整个 (workspace_id = wsId OR workspace_id = 0) 分组，而非仅后者。
         LambdaQueryWrapper<AgentEntity> q = new LambdaQueryWrapper<AgentEntity>()
-                .eq(AgentEntity::getWorkspaceId, workspaceId);
+                .and(w -> w.eq(AgentEntity::getWorkspaceId, workspaceId)
+                        .or()
+                        .eq(AgentEntity::getWorkspaceId, WorkspaceService.GLOBAL_WORKSPACE_ID));
         if (enabled != null) {
             q.eq(AgentEntity::getEnabled, enabled);
         }
@@ -139,6 +145,13 @@ public class AgentService {
     }
 
     public AgentEntity createAgent(AgentEntity agent) {
+        // workspace_id = 0 保留给全局共享预置（系统维护），用户路径不得创建——
+        // 堵住 AgentController.create 直接取 X-Workspace-Id 头可能传入 0 的漏洞。
+        if (agent.getWorkspaceId() != null
+                && agent.getWorkspaceId() == WorkspaceService.GLOBAL_WORKSPACE_ID) {
+            throw new MateClawException("err.agent.global_preset_readonly", 403,
+                    "全局预置 Agent 由系统维护，不可创建");
+        }
         agent.setEnabled(true);
         if (agent.getAgentType() == null) {
             agent.setAgentType("react");
@@ -164,6 +177,7 @@ public class AgentService {
         // intent rather than every metadata edit. Reading the prior row
         // is cheap and gives us a clean diff source.
         AgentEntity prior = agentMapper.selectById(agent.getId());
+        requireMutable(prior);
         // Only re-validate uniqueness when the name actually changes —
         // a pure metadata edit (icon, prompt, ...) shouldn't pay the
         // SELECT cost or risk a false positive against the row itself.
@@ -224,8 +238,24 @@ public class AgentService {
         }
     }
 
+    /**
+     * 拒绝任何用户态写路径作用于全局共享预置 Agent（{@code workspace_id = 0}）。
+     *
+     * <p>预置由产品统一维护（单一事实源），对所有工作区只读可见；若允许用户修改
+     * 或删除，会污染每个工作区看到的版本。镜像 {@link #requireUniqueName} 的
+     * {@code requireX} 约定，在 mutator 顶部调用。{@code agent == null} 时无可保护
+     * 的记录，直接放行（后续操作至多是 no-op）。
+     */
+    private void requireMutable(AgentEntity agent) {
+        if (agent != null && agent.isGlobalPreset()) {
+            throw new MateClawException("err.agent.global_preset_readonly", 403,
+                    "全局预置 Agent 由系统维护，不可修改或删除: " + agent.getName());
+        }
+    }
+
     public void deleteAgent(Long id) {
         AgentEntity prior = agentMapper.selectById(id);
+        requireMutable(prior);
         agentMapper.deleteById(id);
         agentInstances.remove(id);
         if (prior != null) publishLifecycle(prior, "terminated");
