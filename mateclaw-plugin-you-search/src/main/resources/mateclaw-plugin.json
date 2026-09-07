@@ -1,0 +1,42 @@
+{
+  "name": "mateclaw-plugin-you-search",
+  "version": "1.0.0",
+  "type": "search",
+  "displayName": "You.com Search Provider (Optional)",
+  "description": "Adds You.com as a web-search provider via the You.com Search API (X-API-Key auth). Joins the web_search provider chain alongside serper / tavily / searxng / duckduckgo. Requires a You.com API key. Not part of the default stack.",
+  "entrypoint": "vip.mate.plugin.yousearch.YouSearchPlugin",
+  "minPlatformVersion": "2.0.0",
+  "author": "Mouse Parker",
+  "config": {
+    "apiKey": {
+      "type": "string",
+      "required": true,
+      "secret": true,
+      "description": "You.com API key (X-API-Key header). Get one at https://you.com/platform/api-keys"
+    },
+    "baseUrl": {
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "description": "You.com Search API base URL. Default https://ydc-index.io"
+    },
+    "country": {
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "description": "Country code for geographical focus of results, e.g. us / de. Optional."
+    },
+    "safesearch": {
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "description": "Content moderation filter: strict / moderate / off. Default off."
+    },
+    "timeoutMs": {
+      "type": "integer",
+      "required": false,
+      "secret": false,
+      "description": "HTTP timeout in milliseconds. Default 15000."
+    }
+  }
+}
