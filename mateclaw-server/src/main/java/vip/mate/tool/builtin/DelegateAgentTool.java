@@ -24,6 +24,7 @@ import vip.mate.channel.web.ChatStreamTracker;
 import vip.mate.task.AsyncTaskService;
 import vip.mate.task.model.AsyncTaskEntity;
 import vip.mate.workspace.conversation.ConversationService;
+import vip.mate.workspace.core.service.WorkspaceService;
 
 import java.time.Duration;
 import java.util.*;
@@ -253,7 +254,7 @@ public class DelegateAgentTool {
             return "[错误] 委派层级已达上限（" + MAX_DELEGATION_DEPTH + " 层），请直接处理任务。";
         }
 
-        AgentEntity target = findAgent(agentName);
+        AgentEntity target = findAgent(agentName, callerWorkspaceId(ctx));
         if (target == null) {
             return "[错误] 未找到名为「" + agentName + "」的已启用 Agent。" + availableAgentsHint();
         }
@@ -511,7 +512,7 @@ public class DelegateAgentTool {
                 continue;
             }
 
-            AgentEntity agent = findAgent(agentName);
+            AgentEntity agent = findAgent(agentName, callerWorkspaceId(ctx));
             if (agent == null) {
                 errors.add("[任务 " + (i + 1) + "] 未找到 Agent「" + agentName + "」");
                 continue;
@@ -827,7 +828,7 @@ public class DelegateAgentTool {
             return errorJson("Delegation depth exceeded (max " + MAX_DELEGATION_DEPTH + ")");
         }
 
-        AgentEntity target = findAgent(agentName);
+        AgentEntity target = findAgent(agentName, callerWorkspaceId(ctx));
         if (target == null) {
             return errorJson("Agent not found: " + agentName);
         }
@@ -1367,10 +1368,27 @@ public class DelegateAgentTool {
         return sb.toString();
     }
 
-    private AgentEntity findAgent(String name) {
-        return agentMapper.selectOne(new LambdaQueryWrapper<AgentEntity>()
+    private AgentEntity findAgent(String name, Long workspaceId) {
+        LambdaQueryWrapper<AgentEntity> q = new LambdaQueryWrapper<AgentEntity>()
                 .eq(AgentEntity::getName, name.trim())
-                .eq(AgentEntity::getEnabled, true));
+                .eq(AgentEntity::getEnabled, true);
+        if (workspaceId != null) {
+            // 限定为「调用方工作区或全局预置」，避免命中其他工作区的同名 Agent。
+            q.and(w -> w.eq(AgentEntity::getWorkspaceId, workspaceId)
+                    .or()
+                    .eq(AgentEntity::getWorkspaceId, WorkspaceService.GLOBAL_WORKSPACE_ID));
+        }
+        // 本工作区 Agent 优先于全局预置（workspace_id=0）：取排序后首条而非 selectOne，
+        // 避免「全局预置 + 本地同名 Agent」并存时多结果抛 TooManyResultsException。
+        q.orderByDesc(AgentEntity::getWorkspaceId);
+        List<AgentEntity> matches = agentMapper.selectList(q);
+        return matches.isEmpty() ? null : matches.get(0);
+    }
+
+    /** 委派调用方的工作区 ID（无上下文时为 null，退回全局按名匹配）。 */
+    private Long callerWorkspaceId(ToolContext ctx) {
+        ChatOrigin origin = ChatOrigin.from(ctx);
+        return origin != null ? origin.workspaceId() : null;
     }
 
     /**
