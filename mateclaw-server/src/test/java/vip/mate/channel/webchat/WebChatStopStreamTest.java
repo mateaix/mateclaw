@@ -81,7 +81,7 @@ class WebChatStopStreamTest {
     @DisplayName("stop actually disposes the active subscription (chatStream wiring works)")
     void stopsActiveStream() {
         controller.createSession(API_KEY, req("visitorA", "s1"));
-        String cid = WebChatController.deriveConversationId(API_KEY, "visitorA", "s1");
+        String cid = WebChatController.deriveConversationId(CHANNEL_ID, "visitorA", "s1");
 
         // Simulate what WebChatController.chatStream does right after .subscribe():
         // register the run + bind the Disposable so requestStop() can dispose it.
