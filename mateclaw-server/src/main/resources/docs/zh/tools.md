@@ -155,6 +155,33 @@ Tool Guard 是守门员。超时是**每个工具独立**的（这样一个慢�
 - **安全包装**——结果返回前先净化
 - **原生搜索 + 工具搜索共存**——自带搜索的模型用原生搜索，工具搜索作为 fallback
 
+#### You.com 供应商（可选插件）
+
+::: warning 不在默认安装中
+You.com 供应商是一个**可选社区插件**（`mateclaw-plugin-you-search`）——**不属于** MateClaw 默认安装，需要 You.com API Key。内置供应商链（DuckDuckGo / SearXNG / Serper / Tavily）不受影响；插件安装并配置后会作为 `you` 供应商加入链中。
+:::
+
+[You.com](https://you.com) 提供的搜索 API 支持 `freshness` / `language` / `count` 参数，与工具自身的参数词汇一致，因此一一映射。结果包含标题、URL、摘要、来源域名和页面时间。
+
+安装步骤：
+
+1. 在 [you.com/platform/api-keys](https://you.com/platform/api-keys) **获取 API Key**。
+2. **构建插件 JAR**：在 MateClaw 仓库根目录执行 `mvn -pl mateclaw-plugin-you-search -am package`，JAR 输出在 `mateclaw-plugin-you-search/target/mateclaw-plugin-you-search-*.jar`。
+3. 将 JAR 放入 MateClaw 的 `plugins/` 目录。
+4. 在插件管理界面**配置**：`apiKey`（必填），可选 `country`、`safesearch`、`timeoutMs`。重启或重载插件。
+
+配置项：
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `apiKey` | string | 是 | — | You.com API Key，以 `X-API-Key` 头发送 |
+| `baseUrl` | string | 否 | `https://ydc-index.io` | You.com 搜索 API 地址（可用于代理） |
+| `country` | string | 否 | — | 结果地理聚焦的国家代码，如 `us` / `cn` |
+| `safesearch` | string | 否 | — | 内容过滤级别：`strict` / `moderate` / `off` |
+| `timeoutMs` | integer | 否 | `15000` | HTTP 超时（毫秒） |
+
+配置完成后，在 `设置 → 系统设置 → 搜索服务` 选择 `you`（或保持自动——供应商可用时即参与链）。API 出错时供应商抛出异常，平台自动 fallback 到下一个供应商，You.com 故障时优雅降级。
+
 ### ShellExecuteTool
 
 跨平台 shell 执行。Linux/macOS 用 `/bin/sh -c`，Windows 用 `cmd.exe /D /S /C`。**每一次调用都过 Tool Guard。**
