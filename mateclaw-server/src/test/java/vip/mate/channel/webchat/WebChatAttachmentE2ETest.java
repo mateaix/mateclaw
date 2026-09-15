@@ -272,7 +272,7 @@ class WebChatAttachmentE2ETest {
 
         stream(visitorId, sessionId, "please read the attached", "[\"" + fileId + "\"]");
 
-        String cid = WebChatController.deriveConversationId(API_KEY, visitorId, sessionId);
+        String cid = WebChatController.deriveConversationId(CHANNEL_ID, visitorId, sessionId);
         String parts = lastUserContentParts(cid);
         assertThat(parts).isNotNull();
         // Text part is present.
@@ -299,7 +299,7 @@ class WebChatAttachmentE2ETest {
         String visitorId = "vAtt-unknown";
         stream(visitorId, null, "hello", "[\"totally-bogus-file-id\"]");
 
-        String cid = WebChatController.deriveConversationId(API_KEY, visitorId, null);
+        String cid = WebChatController.deriveConversationId(CHANNEL_ID, visitorId, null);
         String parts = lastUserContentParts(cid);
         assertThat(parts).isNotNull();
         assertThat(parts).contains("\"type\":\"text\"");
@@ -320,11 +320,11 @@ class WebChatAttachmentE2ETest {
         stream(visitorB, null, "trying to grab alice's file", "[\"" + aliceFileId + "\"]");
 
         // B's conversation's user message has no file part.
-        String bobCid = WebChatController.deriveConversationId(API_KEY, visitorB, null);
+        String bobCid = WebChatController.deriveConversationId(CHANNEL_ID, visitorB, null);
         String bobParts = lastUserContentParts(bobCid);
         assertThat(bobParts).doesNotContain("\"type\":\"file\"");
         // Alice's conversation is untouched — no user message there at all.
-        String aliceCid = WebChatController.deriveConversationId(API_KEY, visitorA, null);
+        String aliceCid = WebChatController.deriveConversationId(CHANNEL_ID, visitorA, null);
         Integer aliceMsgCount = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM mate_message WHERE conversation_id = ? AND role = 'user'",
                 Integer.class, aliceCid);
