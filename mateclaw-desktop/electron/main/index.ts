@@ -300,7 +300,10 @@ function pollBackendReady(): void {
     const isHttps = BACKEND_URL.startsWith('https:')
     const client = isHttps ? https : http
     const reqOpts = isHttps ? { agent: insecureAgent } : {}
-    const req = client.get(`${BACKEND_URL}/`, reqOpts, (res) => {
+    // Cast to the http module type so TS treats .get() as callable — https
+    // exposes the same surface, but the union `typeof https | typeof http`
+    // is not directly callable.
+    const req = (client as typeof http).get(`${BACKEND_URL}/`, reqOpts, (res) => {
       if (resolved) return
       resolved = true
 
@@ -430,7 +433,7 @@ function probeServer(
     const isHttps = normalized.startsWith('https:')
     const client = isHttps ? https : http
     const reqOpts = isHttps ? { agent: insecureAgent } : {}
-    const req = client.get(`${normalized}/`, reqOpts, (res) => {
+    const req = (client as typeof http).get(`${normalized}/`, reqOpts, (res) => {
       res.resume()
       const status = res.statusCode ?? 0
       // Any non-5xx response means the server is reachable and serving.
