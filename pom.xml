@@ -19,6 +19,7 @@
         <module>mateclaw-plugin-sample</module>
         <module>mateclaw-plugin-search-sample</module>
         <module>mateclaw-plugin-mem0</module>
+        <module>mateclaw-plugin-you-search</module>
     </modules>
 
     <properties>
