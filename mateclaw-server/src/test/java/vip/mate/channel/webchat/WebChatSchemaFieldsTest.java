@@ -97,7 +97,7 @@ class WebChatSchemaFieldsTest {
     @DisplayName("archived column on mate_conversation is read/write")
     void archivedColumnReadWrite() {
         controller.createSession(API_KEY, req("visitorArch", "s1"));
-        String cid = WebChatController.deriveConversationId(API_KEY, "visitorArch", "s1");
+        String cid = WebChatController.deriveConversationId(CHANNEL_ID, "visitorArch", "s1");
 
         Integer before = jdbc.queryForObject(
                 "SELECT archived FROM mate_conversation WHERE conversation_id = ?",
@@ -116,7 +116,7 @@ class WebChatSchemaFieldsTest {
     void viewExposesNewFields() {
         controller.createSession(API_KEY, req("visitorView", "s1"));
         // Flip pinned via the service (endpoint comes in PR 3) so we can assert the view mirrors it.
-        String cid = WebChatController.deriveConversationId(API_KEY, "visitorView", "s1");
+        String cid = WebChatController.deriveConversationId(CHANNEL_ID, "visitorView", "s1");
         conversationService.setPinned(cid, true);
 
         R<List<WebChatSessionView>> r = controller.listSessions(
@@ -136,7 +136,7 @@ class WebChatSchemaFieldsTest {
         controller.createSession(API_KEY, req("visitorHide", "active"));
         controller.createSession(API_KEY, req("visitorHide", "stale"));
 
-        String staleCid = WebChatController.deriveConversationId(API_KEY, "visitorHide", "stale");
+        String staleCid = WebChatController.deriveConversationId(CHANNEL_ID, "visitorHide", "stale");
         jdbc.update("UPDATE mate_conversation SET archived = 1 WHERE conversation_id = ?", staleCid);
 
         // Default: only "active" is returned.
@@ -159,7 +159,7 @@ class WebChatSchemaFieldsTest {
         // the quota gate filters archived out, so the active count is 0 here.
         String owner = WebChatController.webchatUsername("visitorQuota");
         for (int i = 1; i <= 5; i++) {
-            String cid = WebChatController.deriveConversationId(API_KEY, "visitorQuota", "arch" + i);
+            String cid = WebChatController.deriveConversationId(CHANNEL_ID, "visitorQuota", "arch" + i);
             conversationService.getOrCreateWebchatConversation(
                     cid, AGENT_ID, owner, 1L, "arch" + i);
             jdbc.update("UPDATE mate_conversation SET archived = 1 WHERE conversation_id = ?", cid);
