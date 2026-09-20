@@ -18,8 +18,14 @@ hero:
     - theme: alt
       text: GitHub
       link: https://github.com/mateaix/mateclaw
+    - theme: alt
+      text: v2.3.0 更新日志
+      link: /zh/releases/2.3.0
 
 features:
+  - icon: ✅
+    title: 2.3.0 — 托管 JSON 验收
+    details: 用户指定顶层必需字段，服务端把检查绑定到当前要求与不可变 JSON 版本。默认观察模式的执行证据用于追踪；普通产物诊断不代替验收绑定。
   - icon: ⚙️
     title: 员工 Runtime，不只一种 Agent Loop
     details: 2.2.0 用统一 Runtime Contract 把员工身份与推理引擎解耦。Native 与 DeepSeek Harness 共用会话、工作空间、工具治理和事件投影；持久目标跨请求与后端重启恢复，A2A 连接外部 Agent。

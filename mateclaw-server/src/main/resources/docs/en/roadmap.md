@@ -169,6 +169,16 @@ Full story: [v2.1.0 release notes](./releases/2.1.0.md); guides: [Team Runs](./t
 
 Full story: [v2.2.0 release notes](./releases/2.2.0.md); guides: [DeepSeek Harness](./deepseek-harness), [Persistent Goals](./goals), and [A2A](./a2a).
 
+### v2.3 — JSON acceptance and execution evidence ✅ Released (2026-09-20)
+
+- **Managed JSON acceptance**: users select required fields; the server stores immutable JSON versions, binds checks to requirement revisions and slot generations, and rechecks them at Goal completion.
+- **Execution evidence**: observe mode records execution and artifacts by default; on-demand version and JSON field diagnostics do not establish Goal acceptance.
+- **Worker intervention**: handle worker tool approvals, denial, and feedback from team details while retaining conversation governance and exclusive execution.
+- **Skill uploads**: upload documents, binary files, and folders with directory structure preserved; each file is limited to 10 MiB.
+- **Reliability fixes**: bounded DSH history/output tokens, vLLM thinking control, SSE line-ending support, bounded spreadsheet extraction, and tool timeouts.
+
+[v2.3.0](./releases/2.3.0) · [Goals](./goals) · [Teams](./teams) · [Skills](./skills)
+
 ---
 
 ## Next: Resident runtimes & Team follow-through

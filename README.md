@@ -30,7 +30,7 @@
 
 ---
 
-> **Latest stable: v2.2.0 — a pluggable, recoverable Agent Runtime.** Digital employees can now run on MateClaw's native StateGraph engine or the managed DeepSeek Harness (DSH) runtime while keeping one conversation, policy, tool, persistence, and observability plane. Persistent Goals survive bounded turns and backend restarts, and A2A connects governed employees across systems. Read the [v2.2.0 release notes](https://claw.mate.vip/docs/en/releases/2.2.0).
+> **v2.3.0 (released 2026-09-20) — JSON acceptance and execution evidence for persistent Goals.** Users can configure required JSON fields and bind checks to current requirements and immutable artifact versions. This release also adds controlled worker intervention and skill document/folder uploads, with fixes for DSH history and output budgets, vLLM reasoning, and SSE framing. [Read the release notes](https://claw.mate.vip/docs/en/releases/2.3.0).
 
 ---
 
@@ -239,6 +239,16 @@ Desktop binaries ship via [GitHub Releases](https://github.com/mateaix/mateclaw/
 Full docs at **[claw.mate.vip/docs](https://claw.mate.vip/docs)** — setup, architecture, each subsystem, API reference.
 
 ## Roadmap
+
+**v2.3.0 (released 2026-09-20) — JSON acceptance and execution evidence for persistent Goals.** Users can configure required JSON fields and bind checks to current requirements and immutable artifact versions. This release also adds controlled worker intervention and skill document/folder uploads, with fixes for DSH history and output budgets, vLLM reasoning, and SSE framing.
+
+- **Managed JSON acceptance**: users select required fields; the server stores immutable JSON versions, binds checks to requirement revisions and slot generations, and rechecks them at Goal completion.
+- **Execution evidence**: observe mode records execution and artifacts by default; on-demand version and JSON field diagnostics do not establish Goal acceptance.
+- **Worker intervention**: handle worker tool approvals, denial, and feedback from team details while retaining conversation governance and exclusive execution.
+- **Skill uploads**: upload documents, binary files, and folders with directory structure preserved; each file is limited to 10 MiB.
+- **Reliability fixes**: bounded DSH history/output tokens, vLLM thinking control, SSE line-ending support, bounded spreadsheet extraction, and tool timeouts.
+
+[↗ v2.3.0](https://claw.mate.vip/docs/en/releases/2.3.0)
 
 **v2.2.0 (shipped 2026-08-29)** — from one built-in reasoning loop to **a pluggable and recoverable Agent Runtime**:
 

@@ -9,6 +9,24 @@ head:
 
 # Persistent Goals
 
+## 2.3.0: managed JSON acceptance
+
+Expand JSON acceptance in the chat Goal panel. An authorized user supplies a requirement key, artifact slot, and required fields (one per line). Active and paused Goals are configurable; terminal Goals are read-only. Requirements belong to the user: model tools cannot change them on the user's behalf.
+
+1. Select a slot such as `report` and top-level fields such as `summary` and `items`. Requirement keys and slots start with a lowercase letter and contain only lowercase letters, digits, underscores, or hyphens, up to 64 characters.
+2. The employee calls `getManagedGoalJsonSlots`, then `publishManagedGoalJson` to publish a strict JSON object to a selected slot. The content is stored as a managed version; a workspace file path cannot substitute for publication.
+3. Call `checkManagedGoalJson` with the current requirement revision, artifact ID, and slot generation. The server derives the result from stored bytes rather than accepting a model-declared PASS.
+4. Every current requirement needs a matching valid binding, alongside the Goal's existing completion conditions. Changing a requirement or publishing a new generation requires new checks; refresh after a version conflict.
+
+**Scope and limits:** the current recipe checks only that 1–16 distinct top-level fields exist and are not null; names are 1–128 characters. It is not full JSON Schema, field-type, or business-correctness validation. Each version is limited to 1 MiB UTF-8, each Goal to 32 versions, and versions expire after 24 hours. Expired versions cannot provide a valid completion binding. At the version limit, inspect and reuse a still-valid current version rather than repeatedly publishing.
+
+### Observation versus acceptance binding
+
+Execution evidence defaults to `mateclaw.execution-evidence.mode=observe`, recording attempts and artifacts. `off` disables recording; `enforce` is currently rejected. Ordinary artifact version checks and required-field diagnostics run on demand and return `acceptanceEligible=false`; they cannot replace managed JSON bindings. The ordinary checklist still requires every criterion to pass with nonblank evidence.
+
+Inputs accepted during approval or busy execution retain the selected Goal and requester identity. Recovery rechecks Goal state, account access, and runtime ownership. Queued input cannot automatically revive a terminal Goal.
+
+
 ## Continuous execution (v1)
 
 New goals default to `persistentExecution=true`; omitted `turnBudget` and `llmCallBudget` become `0` (no cumulative limit). Explicit positive budgets still apply. Existing goals retain legacy mode and do not start automatically after an upgrade.

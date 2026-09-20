@@ -18,8 +18,14 @@ hero:
     - theme: alt
       text: GitHub
       link: https://github.com/mateaix/mateclaw
+    - theme: alt
+      text: v2.3.0 Release Notes
+      link: /en/releases/2.3.0
 
 features:
+  - icon: ✅
+    title: 2.3.0 — Managed JSON acceptance
+    details: Users select required top-level fields; the server binds checks to current requirements and immutable JSON versions. Execution evidence defaults to observation, and ordinary artifact diagnostics do not replace acceptance bindings.
   - icon: ⚙️
     title: Employee runtimes, not one Agent loop
     details: 2.2.0 uses a shared Runtime Contract to decouple employee identity from execution. Native and DeepSeek Harness share conversations, workspaces, tool governance, and event projection; durable Goals recover across requests and backend restarts, while A2A connects external agents.

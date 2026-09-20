@@ -1,5 +1,15 @@
 # Skills
 
+## 2.3.0: document and folder uploads
+
+In skill file management, select `references/`, `templates/`, or `scripts/`, then upload files or choose a folder. The selected folder and descendants remain under that bucket, for example `references/manual/chapter.pdf`. The upload endpoint requires workspace admin access; built-in skill files are read-only. Replacing an existing path requires confirmation.
+
+- The server limits each file to **10 MiB**. The frontend batch planner allows at most **100 files totaling 50 MiB**.
+- Text is stored as UTF-8; binary content is stored as Base64 and restored to bytes when synchronized into the skill working directory. Binary files cannot be edited as text; upload a replacement instead.
+- Paths are validated; traversal, invalid separators, duplicate destinations, and overly long paths are rejected.
+- Uploading manages skill attachments; it does not establish that an attachment has been read, executed, or content-validated.
+
+
 **A skill is a tool that thinks in sentences.**
 
 Tools are atomic — read a file, send an HTTP request, run a command. Skills are compositions — "research this topic and write a brief", "review this code and comment on it", "turn my git log into a standup update". A skill is a `SKILL.md` file that combines instructions, parameters, prompt templates, optional scripts, and a list of tools the skill needs. The runtime loads it, renders it with your inputs, and hands the result to the agent.
@@ -192,7 +202,8 @@ The database is the source of truth, the filesystem is a materialized cache. Tha
 | `id` | Primary key |
 | `skill_id` | FK to `mate_skill` |
 | `file_path` | Relative path like `scripts/run.py` or `references/cfg.md` |
-| `content` | UTF-8 text (defaults: ≤1 MB per file, ≤50 MB per bundle — configurable via `mateclaw.skill.upload.max-entry-size-mb` / `max-total-size-mb`) |
+| `content` | Text or Base64-encoded binary content (2.3.0+); see upload limits above |
+| `content_encoding` | `utf8` or `base64` (added by V202); synchronization restores the original bytes |
 | `content_size` | Byte count (so listings don't have to load the blob) |
 | `sha256` | Content fingerprint, drives the syncer's idempotent diff |
 

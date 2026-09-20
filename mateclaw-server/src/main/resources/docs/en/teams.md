@@ -9,6 +9,13 @@ head:
 
 # Team Runs and Agent Teams (2.1.0+)
 
+## 2.3.0: controlled worker intervention
+
+Team run details can resolve a worker's pending tool approval, replay an approved call in its governed conversation, or deny it. Feedback can supply missing information; it is limited to 4000 characters, and pending approvals must be resolved first.
+
+These operations still validate task, run, worker conversation, and access scope. The member must be idle and the operation must acquire a conversation execution permit; it cannot inject a concurrent turn into a busy worker. If approved replay fails with an uncertain external side effect, the task is parked for review instead of treating approval as an unconditional retry.
+
+
 > **Before: one employee with sub-tasks. Now: a team around a shared task board.**
 
 Sub-agent delegation (`delegateToAgent`) solves "one person temporarily calls a helper": synchronous, one-to-one, black-box. But real complex delivery looks like a project: **break down tasks, declare dependencies, run in parallel, gate on approvals, archive deliverables, and see who is doing what at any time**.
