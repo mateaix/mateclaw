@@ -214,7 +214,7 @@ class TeamRunProjectorTest {
     }
 
     @Test
-    void fallbackAndStopReasonProduceAttentionWithHumanActionFirst() {
+    void fallbackDoesNotInflateAttentionAndStopReasonKeepsHumanActionFirst() {
         LocalDateTime now = LocalDateTime.now();
         TeamRunEntity run = run(TeamRunStatus.CANCELLED, "{\"summaryQuality\":\"fallback\"}");
         run.setFinalSummary("raw results");
@@ -233,7 +233,7 @@ class TeamRunProjectorTest {
         TeamRunView view = projector.project(RUN_ID);
 
         assertEquals("review", view.attentionItems().getFirst().type());
-        assertTrue(view.attentionItems().stream().anyMatch(item -> "synthesis".equals(item.type())));
+        assertTrue(view.attentionItems().stream().noneMatch(item -> "synthesis".equals(item.type())));
         assertTrue(view.attentionItems().stream().anyMatch(item -> "stopped".equals(item.type())));
     }
 

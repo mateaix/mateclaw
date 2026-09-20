@@ -10,6 +10,7 @@ import vip.mate.task.model.AsyncTaskEntity;
 import vip.mate.task.repository.AsyncTaskMapper;
 import vip.mate.workspace.conversation.event.ConversationDeletedEvent;
 
+import java.time.LocalDateTime;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
@@ -231,6 +232,34 @@ class AsyncTaskServiceOneShotTest {
         // agent-delegate one-shots per AsyncTaskService.submitOneShot.
         verify(tracker, timeout(2_000)).broadcastObject(
                 eq("conv-broadcast-fail"), eq("async_task_completed"), any());
+    }
+
+    @Test
+    @DisplayName("Completion event exposes terminal status, progress, and wall-clock duration")
+    @SuppressWarnings("unchecked")
+    void completionEventCarriesObservabilityFields() {
+        AsyncTaskEntity entity = new AsyncTaskEntity();
+        entity.setTaskId("tid-observe");
+        entity.setTaskType("agent_delegate");
+        entity.setConversationId("conv-observe");
+        entity.setStatus("failed");
+        entity.setProgress(37);
+        entity.setCreateTime(LocalDateTime.of(2026, 8, 30, 12, 0, 0));
+        entity.setUpdateTime(LocalDateTime.of(2026, 8, 30, 12, 0, 2));
+
+        service.broadcastTaskEventWithData(entity, "async_task_completed", false,
+                java.util.Map.of("reason", "timeout"), "timed out");
+
+        org.mockito.ArgumentCaptor<java.util.Map<String, Object>> payload =
+                org.mockito.ArgumentCaptor.forClass(java.util.Map.class);
+        verify(tracker).broadcastObject(eq("conv-observe"),
+                eq("async_task_completed"), payload.capture());
+        assertThat(payload.getValue())
+                .containsEntry("status", "failed")
+                .containsEntry("progress", 37)
+                .containsEntry("durationMs", 2_000L)
+                .containsEntry("reason", "timeout")
+                .containsEntry("errorMessage", "timed out");
     }
 
     @Test

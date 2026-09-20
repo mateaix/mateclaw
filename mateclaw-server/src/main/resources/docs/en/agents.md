@@ -121,7 +121,34 @@ Three delegation tools, one per cadence:
 
 - **`delegateToAgent`** — synchronous. Hand a sub-task to a specific employee, wait for it to finish, and return only after the child's final result. Optional `inheritParentContext` carries the parent conversation's recent context to the child, so you don't have to re-explain the background.
 - **`delegateParallel`** — fan out. Delegate to several children at once; each runs in its own isolated session and the results are collected together.
-- **`delegateAsync`** — background. Returns a `task_id` immediately while the child runs in the background; fetch the result later with **`taskOutput`**. `taskOutput` has an **attribution gate** — only the **same conversation + the same user** that spawned the task can read its result, preventing cross-conversation / cross-user leakage.
+- **`delegateAsync`** — background. Returns a `task_id` immediately while the child runs in the background; fetch the result later with **`taskOutput`**. Background runs have a bounded execution budget (default 3600 seconds, configurable with `mateclaw.delegation.async-timeout-seconds`, or per call with `timeoutSeconds`, max 86400). On timeout MateClaw stops the child session and persists a failed result instead of leaving an orphan run. `taskOutput` has an **attribution gate** — only the **same conversation + the same user** that spawned the task can read its result, preventing cross-conversation / cross-user leakage.
+
+#### Async long tasks: scheduling, polling, and acceptance
+
+`delegateAsync` uses the shared async-task pool. A user can currently run at most **3** async tasks at once; delegation, image, video, and other async workloads share that allowance. For a batch, start at most three tasks, poll until one reaches a terminal state, and then refill the free slot. A call rejected by the concurrency limit returns no `task_id` and must not be counted as started.
+
+`taskOutput` parameters and response semantics:
+
+| Field | Meaning |
+|---|---|
+| `taskId` | Required; pass the `task_id` returned by `delegateAsync` |
+| `block` | Optional, default `false`; when `true`, wait for a terminal state within this call |
+| `timeoutSeconds` | Controls only one blocking poll, default 30 seconds and max 120; it does not change the child's execution budget |
+| `status` | `pending` / `running` / `succeeded` / `failed` |
+| `progress` | Lifecycle progress; local delegation currently usually stays at 0 while running and becomes 100 at termination, so it is not content-completion percentage |
+| `duration_ms` | Wall-clock duration, returned only for a terminal task |
+
+::: warning `succeeded` does not mean the deliverable passed acceptance
+`succeeded` only means that the child did not finish with a runtime exception or timeout. A model may return only an outline, a required tool may have failed, or a quantitative target may be missed while the task still becomes `succeeded`. The parent must verify business evidence before aggregating the result or completing a goal.
+:::
+
+Use at least these acceptance gates:
+
+1. Required files, links, or structured results actually exist and are readable; do not rely only on a claim that they were generated.
+2. Word, chapter, scenario, and similar quantitative targets have reproducible counts.
+3. No plan or checklist items remain, and the final answer contains no “continue later” or “remaining work” declaration.
+4. Critical write, read, and execution tools succeeded; if content was returned inline after an artifact failure, record that fallback explicitly.
+5. Put this evidence into the [goal checklist](./goals), and complete the goal only when every criterion passes.
 
 Children deny a default set of tools so the tree can't run away:
 

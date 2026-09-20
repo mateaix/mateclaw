@@ -39,4 +39,5 @@ public abstract class MemoryProviderDecorator implements MemoryProvider {
     }
     @Override public void warmup(Long agentId) { delegate.warmup(agentId); }
     @Override public void evict(Long agentId) { delegate.evict(agentId); }
+    @Override public void close() { delegate.close(); }
 }

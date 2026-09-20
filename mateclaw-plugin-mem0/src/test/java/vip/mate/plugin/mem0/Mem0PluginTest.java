@@ -90,6 +90,7 @@ class Mem0PluginTest {
         PluginContext ctx = new StubContext(config, registered) {
             @Override
             public void registerMemoryProvider(PluginMemoryProvider provider) {
+                registered.set(provider);
                 throw new PluginException("Only one external memory provider allowed");
             }
         };
@@ -98,6 +99,7 @@ class Mem0PluginTest {
         assertThatThrownBy(() -> plugin.onLoad(ctx))
                 .isInstanceOf(PluginException.class)
                 .hasMessageContaining("Only one");
+        assertThat(((Mem0Provider) registered.get()).isClosed()).isTrue();
     }
 
     /**

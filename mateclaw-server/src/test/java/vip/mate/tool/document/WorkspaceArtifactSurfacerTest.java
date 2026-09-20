@@ -4,6 +4,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
@@ -13,6 +14,8 @@ import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -94,6 +97,40 @@ class WorkspaceArtifactSurfacerTest {
         List<String> links = WorkspaceArtifactSurfacer.collect(cache, tmp, runStart, null);
 
         assertTrue(links.isEmpty(), "pre-existing files from another run/workspace must not surface: " + links);
+    }
+
+    @Test
+    @DisplayName("A workspace symlink must not publish an outside file as an artifact")
+    void excludesSymbolicLinks() throws Exception {
+        tmp = Files.createTempDirectory("artifacts-");
+        cacheDir = Files.createTempDirectory("cache-");
+        Path outside = Files.writeString(cacheDir.resolve("secret.csv"), "private outside content");
+        Files.createSymbolicLink(tmp.resolve("report.csv"), outside);
+        Files.createSymbolicLink(tmp.resolve("nested"), cacheDir);
+
+        assertTrue(WorkspaceArtifactSurfacer.collect(new GeneratedFileCache(cacheDir), tmp, 0L, null).isEmpty());
+    }
+
+    @Test
+    void boundsActualReadAndRejectsLinkAtOpen() throws Exception {
+        tmp = Files.createTempDirectory("artifacts-");
+        Path artifact = Files.write(tmp.resolve("data.csv"), new byte[]{1, 2, 3, 4});
+        assertArrayEquals(new byte[]{1, 2, 3, 4}, WorkspaceArtifactSurfacer.readArtifact(artifact, 4));
+        assertThrows(IOException.class, () -> WorkspaceArtifactSurfacer.readArtifact(artifact, 3));
+        Files.delete(artifact);
+        Path target = Files.writeString(tmp.resolve("target.csv"), "secret");
+        Files.createSymbolicLink(artifact, target);
+        assertThrows(IOException.class, () -> WorkspaceArtifactSurfacer.readArtifact(artifact, 10));
+    }
+
+    @Test
+    void preservesRegularNestedArtifacts() throws Exception {
+        tmp = Files.createTempDirectory("artifacts-");
+        cacheDir = Files.createTempDirectory("cache-");
+        Files.writeString(Files.createDirectory(tmp.resolve("results")).resolve("report.csv"), "a,b");
+        List<String> links = WorkspaceArtifactSurfacer.collect(new GeneratedFileCache(cacheDir), tmp, 0L, null);
+        assertEquals(1, links.size());
+        assertTrue(links.getFirst().contains("report.csv"));
     }
 
     @Test

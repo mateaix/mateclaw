@@ -82,6 +82,39 @@ class TeamRunViewFactoryTest {
     }
 
     @Test
+    void awaitingToolApprovalCreatesHighestPriorityAttentionItem() {
+        TeamTaskEntity task = task(101L, 201L,
+                "{\"toolApproval\":{\"pendingId\":\"pending-42\","
+                        + "\"summary\":\"shell command requires approval\"}}");
+        task.setStatus(TeamTaskStatus.AWAITING_APPROVAL);
+        task.setReason("shell command requires approval");
+
+        TeamRunView view = project(run("{}"), List.of(task));
+
+        assertEquals(1, view.attentionItems().size());
+        TeamRunView.AttentionItem item = view.attentionItems().getFirst();
+        assertEquals("approval", item.type());
+        assertEquals("action", item.severity());
+        assertEquals(0, item.priority());
+        assertEquals(101L, item.taskId());
+        assertEquals("shell command requires approval", item.message());
+    }
+
+    @Test
+    void uncertainReplayProjectsOnlyTheSafeRecoveryAttentionType() {
+        TeamTaskEntity task = task(101L, 201L,
+                "{\"toolApproval\":{\"pendingId\":\"pending-42\","
+                        + "\"replayOutcomeUncertain\":true}}");
+        task.setStatus(TeamTaskStatus.AWAITING_APPROVAL);
+        task.setReason("verify the tool outcome manually");
+
+        TeamRunView view = project(run("{}"), List.of(task));
+
+        assertEquals("replay_uncertain", view.attentionItems().getFirst().type());
+        assertEquals("action", view.attentionItems().getFirst().severity());
+    }
+
+    @Test
     void aggregatesRunOnlyDeliverables() {
         TeamRunEntity run = run("{\"deliverables\":[{\"name\":\"report.pdf\","
                 + "\"url\":\"" + REPORT_URL + "\"}]}");

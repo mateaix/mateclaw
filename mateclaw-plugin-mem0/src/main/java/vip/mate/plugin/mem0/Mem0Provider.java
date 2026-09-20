@@ -4,9 +4,11 @@ import org.slf4j.Logger;
 import vip.mate.plugin.api.memory.PluginMemoryProvider;
 
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Executor;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Memory provider that bridges MateClaw's per-turn lifecycle to a self-hosted
@@ -17,13 +19,14 @@ import java.util.concurrent.Executors;
  *   <li>{@code systemPromptBlock} — no-op (returns ""), aligns with SessionSearchProvider</li>
  *   <li>{@code prefetch(agentId, query, ownerKey)} — when {@code searchEnabled}
  *       and {@code ownerKey} is non-blank, calls {@code POST /memories/search/}
- *       and returns a {@code [Mem0 Recall]} block. Returns "" on any failure
- *       or when disabled.</li>
+ *       and returns a {@code [Mem0 Recall]} block. Failures propagate to the
+ *       platform's timeout/circuit-breaker boundary.</li>
  *   <li>{@code syncTurn(agentId, conversationId, messages, ownerKey)} — when
  *       {@code syncEnabled} and {@code ownerKey} is non-blank, asynchronously
  *       pushes the turn to {@code POST /memories/} under {@code user_id =
  *       ownerKey}, the same identifier prefetch recalls by. Failures are
- *       logged and swallowed; never blocks the response path. The four-arg
+ *       logged and swallowed; never blocks the response path. The bounded
+ *       queue drops new writes when saturated. The four-arg
  *       variant (no ownerKey) skips — writing under any other identifier
  *       would produce memories that owner-scoped recall can never surface.</li>
  *   <li>{@code getToolBeans} — empty (no agent-facing tools in v1)</li>
@@ -34,8 +37,8 @@ import java.util.concurrent.Executors;
  * When {@code ownerKey} is null/blank, both recall and sync are skipped — Mem0
  * requires {@code user_id}.
  *
- * <p>Asynchronous sync: a single-thread daemon executor is used
- * so that bursts of turns don't pile up on the platform's request thread.
+ * <p>Asynchronous sync: a single-thread daemon executor with a bounded queue
+ * prevents an unavailable Mem0 service from growing heap usage without limit.
  *
  * @author MateClaw Team
  */
@@ -46,21 +49,19 @@ class Mem0Provider implements PluginMemoryProvider {
     private final Mem0Config config;
     private final Mem0Client client;
     private final Logger log;
-    private final Executor async;
+    private final ThreadPoolExecutor async;
+    private final AtomicLong droppedSyncCount = new AtomicLong();
 
     Mem0Provider(Mem0Config config, Mem0Client client, Logger log) {
         this.config = config;
         this.client = client;
         this.log = log;
-        // Single-thread executor is enough — syncTurn calls are sequential per
-        // agent and not latency-sensitive; the platform's request thread must
-        // not be blocked. A bounded single-thread queue keeps memory footprint
-        // predictable even under burst load.
-        this.async = Executors.newSingleThreadExecutor(r -> {
-            Thread t = new Thread(r, "mem0-sync");
-            t.setDaemon(true);
-            return t;
-        });
+        this.async = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(Math.max(1, config.syncQueueCapacity())), r -> {
+                    Thread t = new Thread(r, "mem0-sync");
+                    t.setDaemon(true);
+                    return t;
+                }, new ThreadPoolExecutor.AbortPolicy());
     }
 
     @Override
@@ -104,20 +105,12 @@ class Mem0Provider implements PluginMemoryProvider {
         if (userQuery == null || userQuery.isBlank()) {
             return "";
         }
-        try {
-            List<String> memories = client.searchMemories(
-                    ownerKey, agentId == null ? null : agentId.toString(), userQuery);
-            if (memories.isEmpty()) {
-                return "";
-            }
-            return formatRecallBlock(memories);
-        } catch (Exception e) {
-            // Fault isolation: log and return empty so the platform falls back
-            // to the other (local) providers without affecting the response.
-            log.warn("[Mem0] prefetch failed for agent={} owner={}: {}",
-                    agentId, ownerKey, e.getMessage());
+        List<String> memories = client.searchMemories(
+                ownerKey, agentId == null ? null : agentId.toString(), userQuery);
+        if (memories.isEmpty()) {
             return "";
         }
+        return formatRecallBlock(memories);
     }
 
     @Override
@@ -143,15 +136,52 @@ class Mem0Provider implements PluginMemoryProvider {
                 && (assistantReply == null || assistantReply.isBlank())) {
             return;
         }
-        CompletableFuture.runAsync(() -> {
-            try {
-                client.addMemories(ownerKey, agentId == null ? null : agentId.toString(),
-                        conversationId, userMessage, assistantReply);
-            } catch (Exception e) {
-                log.debug("[Mem0] syncTurn failed for agent={} owner={}: {}",
-                        agentId, ownerKey, e.getMessage());
+        try {
+            async.execute(() -> {
+                try {
+                    client.addMemories(ownerKey, agentId == null ? null : agentId.toString(),
+                            conversationId, userMessage, assistantReply);
+                } catch (Exception e) {
+                    log.debug("[Mem0] syncTurn failed for agent={} owner={}: {}",
+                            agentId, ownerKey, e.getMessage());
+                }
+            });
+        } catch (RejectedExecutionException e) {
+            long dropped = droppedSyncCount.incrementAndGet();
+            log.warn("[Mem0] sync queue full or provider closed; dropped turn for agent={} owner={} (totalDropped={})",
+                    agentId, ownerKey, dropped);
+        }
+    }
+
+    int queuedSyncCount() {
+        return async.getQueue().size();
+    }
+
+    long droppedSyncCount() {
+        return droppedSyncCount.get();
+    }
+
+    boolean isClosed() {
+        return async.isShutdown();
+    }
+
+    @Override
+    public void close() {
+        async.shutdown();
+        List<Runnable> dropped = List.of();
+        try {
+            long drainMs = Math.min(1000L, Math.max(100L, config.timeoutMs()));
+            if (!async.awaitTermination(drainMs, TimeUnit.MILLISECONDS)) {
+                dropped = async.shutdownNow();
             }
-        }, async);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            dropped = async.shutdownNow();
+        }
+        if (!dropped.isEmpty()) {
+            droppedSyncCount.addAndGet(dropped.size());
+            log.warn("[Mem0] provider closed with {} queued sync turn(s) discarded", dropped.size());
+        }
     }
 
     @Override

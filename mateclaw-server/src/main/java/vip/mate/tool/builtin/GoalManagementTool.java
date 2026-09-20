@@ -166,7 +166,7 @@ public class GoalManagementTool {
                 true, "manual", 0, 0L,
                 java.util.List.of(), null);
         try {
-            GoalEntity completed = goalService.markCompleted(goal.getId(), synthetic);
+            GoalEntity completed = goalService.markRuntimeCompleted(goal.getId(), synthetic, ChatOrigin.from(ctx));
             // Broadcast a goal_completed event with the same shape as the
             // GoalEvaluationNode auto-completed path, so the frontend
             // handler doesn't need to branch on which path completed it.
@@ -192,7 +192,24 @@ public class GoalManagementTool {
         if (!properties.isEnabled()) return errorJson("Goal subsystem is disabled");
         GoalEntity goal = resolveActive(ctx);
         if (goal == null) {
-            return successJson(Map.of("active", false));
+            ChatOrigin origin = ChatOrigin.from(ctx);
+            GoalEntity latest = origin != null && origin.conversationId() != null
+                    ? goalService.findLatestByConversation(origin.conversationId()) : null;
+            if (latest == null) {
+                return successJson(Map.of(
+                        "active", false,
+                        "recoverable", false,
+                        "reason", "no_goal_on_conversation"));
+            }
+            boolean recoverable = latest.getStatus() == GoalStatus.PAUSED;
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("active", false);
+            out.put("goalId", String.valueOf(latest.getId()));
+            out.put("title", latest.getTitle());
+            out.put("status", latest.getStatus().getValue());
+            out.put("recoverable", recoverable);
+            out.put("reason", "latest_goal_" + latest.getStatus().getValue());
+            return successJson(out);
         }
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("active", true);
@@ -205,6 +222,7 @@ public class GoalManagementTool {
         out.put("evalLlmCallsUsed", goal.getEvalLlmCallsUsed());
         out.put("totalLlmCallsUsed", goal.totalLlmCallsUsed());
         out.put("llmCallBudget", goal.getLlmCallBudget());
+        out.put("jsonAcceptanceRequired", goal.isJsonAcceptanceRequired());
         out.put("completionScore", goal.getCompletionScore());
         out.put("progressSummary", goal.getProgressSummary());
         out.put("autoFollowupEnabled", goal.getAutoFollowupEnabled());

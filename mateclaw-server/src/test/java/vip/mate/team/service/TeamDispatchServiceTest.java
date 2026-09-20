@@ -4,6 +4,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import vip.mate.agent.AgentService;
+import vip.mate.approval.ApprovalWorkflowService;
+import vip.mate.approval.PendingApproval;
 import vip.mate.channel.web.ChatStreamTracker;
 import vip.mate.team.model.AgentTeamEntity;
 import vip.mate.team.model.TeamTaskEntity;
@@ -43,6 +45,7 @@ class TeamDispatchServiceTest {
     private ChatStreamTracker streamTracker;
     private TeamAnnounceService announceService;
     private TeamEventChannel eventChannel;
+    private ApprovalWorkflowService approvalService;
     private TeamDispatchService service;
 
     @BeforeEach
@@ -54,8 +57,9 @@ class TeamDispatchServiceTest {
         streamTracker = mock(ChatStreamTracker.class);
         announceService = mock(TeamAnnounceService.class);
         eventChannel = mock(TeamEventChannel.class);
+        approvalService = mock(ApprovalWorkflowService.class);
         service = new TeamDispatchService(teamService, taskService, agentService,
-                conversationService, streamTracker, announceService, eventChannel);
+                conversationService, streamTracker, announceService, eventChannel, approvalService);
     }
 
     private TeamTaskEntity task(Long id, Long assignee) {
@@ -363,6 +367,28 @@ class TeamDispatchServiceTest {
         // Both sides of the run persist, so the task card's transcript view has content.
         verify(conversationService).saveMessage(startsWith("team-task-"), eq("user"), anyString());
         verify(conversationService).saveMessage(startsWith("team-task-"), eq("assistant"), eq("all done"));
+    }
+
+    @Test
+    @DisplayName("a worker tool approval parks the task instead of completing or retrying it")
+    void runTaskParksPendingToolApproval() {
+        TeamTaskEntity assigned = task(1L, MEMBER_A);
+        assigned.setStatus(TeamTaskStatus.IN_PROGRESS);
+        PendingApproval pending = new PendingApproval("pending-42", "worker", "system",
+                "execute_shell_command", "{}", "shell command requires approval");
+        pending.setSummary("shell command requires approval");
+        when(agentService.chatWithUsage(eq(MEMBER_A), anyString(), anyString()))
+                .thenReturn(AgentService.ChatResult.contentOnly("I need permission first."));
+        when(approvalService.findPendingByConversation(startsWith("team-task-"))).thenReturn(pending);
+        when(taskService.parkForToolApproval(1L, "pending-42", "shell command requires approval"))
+                .thenReturn(true);
+
+        service.runTask(TEAM_ID, assigned);
+
+        verify(taskService).parkForToolApproval(1L, "pending-42", "shell command requires approval");
+        verify(taskService, never()).completeTask(any(), any(), anyString());
+        verify(taskService, never()).requeueUnusableResult(any(), anyString());
+        verify(eventChannel).publishTaskEvent(any(), eq("team_task_awaiting_approval"), any());
     }
 
     @Test

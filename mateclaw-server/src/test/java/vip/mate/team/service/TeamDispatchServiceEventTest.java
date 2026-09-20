@@ -12,6 +12,7 @@ import org.springframework.transaction.support.AbstractPlatformTransactionManage
 import org.springframework.transaction.support.DefaultTransactionStatus;
 import org.springframework.transaction.support.TransactionTemplate;
 import vip.mate.agent.AgentService;
+import vip.mate.approval.ApprovalWorkflowService;
 import vip.mate.channel.web.ChatStreamTracker;
 import vip.mate.team.event.TeamTasksDelegatedEvent;
 import vip.mate.workspace.conversation.ConversationService;
@@ -65,7 +66,8 @@ class TeamDispatchServiceEventTest {
             return new TeamDispatchService(
                     mock(TeamService.class), taskService, mock(AgentService.class),
                     mock(ConversationService.class), mock(ChatStreamTracker.class),
-                    mock(TeamAnnounceService.class), mock(TeamEventChannel.class));
+                    mock(TeamAnnounceService.class), mock(TeamEventChannel.class),
+                    mock(ApprovalWorkflowService.class));
         }
     }
 

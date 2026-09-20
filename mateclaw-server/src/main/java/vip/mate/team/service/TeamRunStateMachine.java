@@ -16,12 +16,14 @@ public final class TeamRunStateMachine {
             TeamTaskStatus.PENDING,
             TeamTaskStatus.BLOCKED,
             TeamTaskStatus.IN_PROGRESS,
+            TeamTaskStatus.AWAITING_APPROVAL,
             TeamTaskStatus.STALE
     );
     private static final Set<String> KNOWN_TASK_STATUSES = Set.of(
             TeamTaskStatus.PENDING,
             TeamTaskStatus.BLOCKED,
             TeamTaskStatus.IN_PROGRESS,
+            TeamTaskStatus.AWAITING_APPROVAL,
             TeamTaskStatus.IN_REVIEW,
             TeamTaskStatus.COMPLETED,
             TeamTaskStatus.FAILED,

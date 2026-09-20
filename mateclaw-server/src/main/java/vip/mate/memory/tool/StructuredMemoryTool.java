@@ -11,6 +11,7 @@ import org.springframework.stereotype.Component;
 import vip.mate.agent.context.ChatOrigin;
 import vip.mate.memory.MemoryProperties;
 import vip.mate.memory.identity.MemoryOwnerResolver;
+import vip.mate.memory.service.StructuredMemoryCandidate;
 import vip.mate.memory.service.StructuredMemoryService;
 
 import java.util.List;
@@ -72,8 +73,8 @@ public class StructuredMemoryTool {
 
         try {
             Long parsedAgentId = parseAgentId(agentId);
-            structuredMemoryService.remember(parsedAgentId, type.trim().toLowerCase(),
-                    key.trim(), content.trim(), "agent", writeOwner(toolContext));
+            StructuredMemoryCandidate candidate = StructuredMemoryCandidate.explicit(type, key, content);
+            structuredMemoryService.remember(parsedAgentId, candidate, "agent", writeOwner(toolContext));
 
             JSONObject result = new JSONObject();
             result.set("success", true);

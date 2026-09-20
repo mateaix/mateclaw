@@ -1,0 +1,104 @@
+{
+  "schemaVersion": 1,
+  "suiteId": "json-artifact-boundaries-v1",
+  "tasks": [
+    {
+      "id": "required-fields-present",
+      "task": "required fields present",
+      "source": "cycle011 JSON artifact check boundary",
+      "operation": "CHECK",
+      "content": "{\"report\":false}",
+      "requiredFields": [
+        "report"
+      ],
+      "expected": {
+        "status": "MATCH",
+        "missingFields": [],
+        "recipeInvoked": true,
+        "acceptanceEligible": false
+      }
+    },
+    {
+      "id": "missing-required-field",
+      "task": "missing required field",
+      "source": "cycle011 JSON artifact check boundary",
+      "operation": "CHECK",
+      "content": "{\"appendix\":1}",
+      "requiredFields": [
+        "report"
+      ],
+      "expected": {
+        "status": "MISSING_FIELDS",
+        "missingFields": [
+          "report"
+        ],
+        "recipeInvoked": true,
+        "acceptanceEligible": false
+      }
+    },
+    {
+      "id": "duplicate-json-key",
+      "task": "duplicate json key",
+      "source": "cycle011 JSON artifact check boundary",
+      "operation": "CHECK",
+      "content": "{\"report\":1,\"report\":2}",
+      "requiredFields": [
+        "report"
+      ],
+      "expected": {
+        "status": "INVALID_JSON",
+        "missingFields": [],
+        "recipeInvoked": true,
+        "acceptanceEligible": false
+      }
+    },
+    {
+      "id": "changed-durable-file",
+      "task": "changed durable file",
+      "source": "cycle011 JSON artifact check boundary",
+      "operation": "REWRITE_DISK",
+      "content": "{\"report\":true}",
+      "requiredFields": [
+        "report"
+      ],
+      "expected": {
+        "status": "STALE",
+        "missingFields": [],
+        "recipeInvoked": false,
+        "acceptanceEligible": false
+      }
+    },
+    {
+      "id": "insufficient-read-budget",
+      "task": "insufficient read budget",
+      "source": "cycle011 JSON artifact check boundary",
+      "operation": "TOO_SMALL_BUDGET",
+      "content": "{\"report\":true}",
+      "requiredFields": [
+        "report"
+      ],
+      "expected": {
+        "status": "UNKNOWN",
+        "missingFields": [],
+        "recipeInvoked": false,
+        "acceptanceEligible": false
+      }
+    },
+    {
+      "id": "foreign-artifact-owner",
+      "task": "foreign artifact owner",
+      "source": "cycle011 JSON artifact check boundary",
+      "operation": "FOREIGN_OWNER",
+      "content": "{\"report\":true}",
+      "requiredFields": [
+        "report"
+      ],
+      "expected": {
+        "status": "UNAVAILABLE",
+        "missingFields": [],
+        "recipeInvoked": false,
+        "acceptanceEligible": false
+      }
+    }
+  ]
+}

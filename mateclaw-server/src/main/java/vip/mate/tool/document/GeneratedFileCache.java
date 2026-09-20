@@ -10,10 +10,19 @@ import org.springframework.web.context.request.RequestAttributes;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 import vip.mate.agent.context.ChatOrigin;
+import vip.mate.execution.evidence.service.ExecutionObservationSink;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.Objects;
+import java.util.HexFormat;
+import java.util.Arrays;
+import java.time.Instant;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
@@ -148,6 +157,17 @@ public class GeneratedFileCache {
                         @Nullable Long ownerUserId,
                         @Nullable String conversationId) {
 
+        public Entry {
+            // A file id owns its registered bytes, independent of producer buffers.
+            bytes = bytes == null ? null : bytes.clone();
+        }
+
+        @Override
+        public byte[] bytes() {
+            // Download/consumer buffers must not mutate this cached version.
+            return bytes == null ? null : bytes.clone();
+        }
+
         public boolean expired() {
             return System.currentTimeMillis() > expireAt;
         }
@@ -163,7 +183,25 @@ public class GeneratedFileCache {
     }
 
     public String put(byte[] bytes, String filename, String mimeType, @Nullable ToolContext ctx) {
-        return put(bytes, filename, mimeType, Owner.from(ctx));
+        String id = put(bytes, filename, mimeType, Owner.from(ctx));
+        ExecutionObservationSink sink = ExecutionObservationSink.from(ctx);
+        if (sink != null && !sink.metadataOnly()) {
+            Entry durable = loadFromDisk(id);
+            Owner owner = Owner.from(ctx);
+            if (durable != null && owner.workspaceId() != null && owner.conversationId() != null
+                    && owner.workspaceId().equals(durable.workspaceId())
+                    && owner.conversationId().equals(durable.conversationId())
+                    && Objects.equals(owner.ownerUserId(), durable.ownerUserId())
+                    && Arrays.equals(bytes, durable.bytes)) {
+                try {
+                    String digest = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(durable.bytes));
+                    sink.artifact(id, digest, durable.bytes.length, durable.mimeType(), Instant.ofEpochMilli(durable.expireAt()));
+                } catch (NoSuchAlgorithmException e) {
+                    throw new IllegalStateException("SHA-256 is unavailable", e);
+                }
+            }
+        }
+        return id;
     }
 
     public String put(byte[] bytes, String filename, String mimeType, @Nullable Owner owner) {
@@ -241,39 +279,35 @@ public class GeneratedFileCache {
      * JVM restarts; expired entries are removed as a side-effect.
      */
     public Optional<Entry> get(String id) {
+        return Optional.ofNullable(getAuthorized(id, owner -> true).entry());
+    }
+
+    public enum AccessStatus { FOUND, FORBIDDEN, MISSING }
+    public record AccessResult(AccessStatus status, @Nullable Entry entry) { }
+
+    /** Authorize ownership metadata before reading or caching a cold content body. */
+    public AccessResult getAuthorized(String id, java.util.function.Predicate<Owner> authorized) {
+        Objects.requireNonNull(authorized, "authorized");
         if (id == null || !ID_RE.matcher(id).matches()) {
-            return Optional.empty();
+            return new AccessResult(AccessStatus.MISSING, null);
         }
-        Entry entry = entries.get(id);
-        if (entry == null) {
-            entry = loadFromDisk(id);
-            if (entry != null) {
-                entries.put(id, entry);
+        Entry cached = entries.get(id);
+        if (cached != null) {
+            if (cached.expired()) {
+                evict(id);
+                return new AccessResult(AccessStatus.MISSING, null);
             }
+            return authorized.test(new Owner(cached.workspaceId(), cached.ownerUserId(), cached.conversationId()))
+                    ? new AccessResult(AccessStatus.FOUND, cached) : new AccessResult(AccessStatus.FORBIDDEN, null);
         }
-        if (entry == null) {
-            return Optional.empty();
-        }
-        if (entry.expired()) {
-            evict(id);
-            return Optional.empty();
-        }
-        return Optional.of(entry);
+        AccessResult loaded = loadAuthorizedFromDisk(id, authorized);
+        if (loaded.entry() != null) entries.put(id, loaded.entry());
+        return loaded;
     }
 
     public Optional<Entry> getForWorkspace(String id, @Nullable Long workspaceId) {
-        Optional<Entry> entry = get(id);
-        if (entry.isEmpty()) {
-            return Optional.empty();
-        }
-        Long ownerWorkspaceId = entry.get().workspaceId();
-        if (ownerWorkspaceId == null) {
-            return entry;
-        }
-        if (workspaceId == null || !ownerWorkspaceId.equals(workspaceId)) {
-            return Optional.empty();
-        }
-        return entry;
+        return Optional.ofNullable(getAuthorized(id, owner -> owner.workspaceId() == null
+                || Objects.equals(owner.workspaceId(), workspaceId)).entry());
     }
 
     /**
@@ -339,11 +373,11 @@ public class GeneratedFileCache {
     }
 
     private void persist(String id, Entry entry) {
-        if (entry.bytes() == null) {
+        if (entry.bytes == null) {
             return;
         }
         try {
-            Files.write(storageDir.resolve(id), entry.bytes());
+            Files.write(storageDir.resolve(id), entry.bytes);
             // expireAt \t mimeType \t base64(filename) \t workspaceId
             // \t ownerUserId \t base64(conversationId). Base64 keeps unicode and
             // separators round-trippable without custom escaping.
@@ -360,21 +394,158 @@ public class GeneratedFileCache {
         }
     }
 
-    private Entry loadFromDisk(String id) {
+    /** No positive verification state: a matching shared file is still unverified. */
+    public enum ArtifactVersion { UNVERIFIED, CHANGED, UNAVAILABLE }
+
+    /** Bounded metadata-only probe. Availability does not imply that current content is verified. */
+    public boolean isDurablyAvailable(String id, Long workspaceId, String conversationId) {
+        try {
+            return availableMetadata(id, workspaceId, conversationId) != null;
+        } catch (IOException | RuntimeException unavailable) {
+            return false;
+        }
+    }
+
+    /**
+     * On-demand bounded comparison with a historical snapshot, never a freshness certificate.
+     * A changed digest is useful negative evidence; equality cannot exclude concurrent writers.
+     */
+    public ArtifactVersion probeDurableArtifactVersion(String id, Long workspaceId, String conversationId,
+                                                      String expectedDigest, int maxBytes) {
+        try {
+            Metadata before = availableMetadata(id, workspaceId, conversationId);
+            if (before == null) return ArtifactVersion.UNAVAILABLE;
+            int budget = Math.clamp(maxBytes, 0, 16_777_216);
+            if (budget == 0 || expectedDigest == null || !expectedDigest.matches("[0-9a-fA-F]{64}")) {
+                return ArtifactVersion.UNVERIFIED;
+            }
+            Path bin = storageDir.resolve(id);
+            if (Files.size(bin) > budget) return ArtifactVersion.UNVERIFIED;
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            int total = 0;
+            byte[] buffer = new byte[8192];
+            try (var input = Files.newInputStream(bin, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)) {
+                int read;
+                // At most budget+1 bytes even if a concurrent writer grows the file.
+                while ((read = input.read(buffer, 0, Math.min(buffer.length, budget + 1 - total))) != -1) {
+                    total += read;
+                    if (total > budget) return ArtifactVersion.UNVERIFIED;
+                    digest.update(buffer, 0, read);
+                }
+            }
+            Metadata after = availableMetadata(id, workspaceId, conversationId);
+            if (after == null) return ArtifactVersion.UNAVAILABLE;
+            if (!before.equals(after)) return ArtifactVersion.UNVERIFIED;
+            return expectedDigest.equalsIgnoreCase(HexFormat.of().formatHex(digest.digest()))
+                    ? ArtifactVersion.UNVERIFIED : ArtifactVersion.CHANGED;
+        } catch (IOException | RuntimeException unavailable) {
+            return ArtifactVersion.UNAVAILABLE;
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
+        }
+    }
+
+    /** One bounded read for an explicit content check, never a managed-scope certificate. */
+    public record ArtifactRead(String status, byte[] bytes) {
+        public ArtifactRead { bytes = bytes == null ? null : bytes.clone(); }
+        @Override public byte[] bytes() { return bytes == null ? null : bytes.clone(); }
+    }
+
+    public ArtifactRead readDurableArtifactSnapshot(String id, Long workspaceId, String conversationId,
+                                                    String expectedDigest, int maxBytes) {
+        try {
+            if (workspaceId == null || conversationId == null) return new ArtifactRead("UNAVAILABLE", null);
+            Metadata before = availableMetadata(id, workspaceId, conversationId);
+            if (before == null) return new ArtifactRead("UNAVAILABLE", null);
+            int budget = Math.clamp(maxBytes, 0, 1_048_576);
+            if (budget == 0 || expectedDigest == null || !expectedDigest.matches("[0-9a-fA-F]{64}")) {
+                return new ArtifactRead("UNKNOWN", null);
+            }
+            Path bin = storageDir.resolve(id);
+            if (Files.size(bin) > budget) return new ArtifactRead("UNKNOWN", null);
+            byte[] bytes;
+            try (var input = Files.newInputStream(bin, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)) {
+                bytes = input.readNBytes(budget + 1);
+            }
+            if (bytes.length > budget) return new ArtifactRead("UNKNOWN", null);
+            Metadata after = availableMetadata(id, workspaceId, conversationId);
+            if (after == null) return new ArtifactRead("UNAVAILABLE", null);
+            if (!before.equals(after)) return new ArtifactRead("UNKNOWN", null);
+            String actual = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+            return expectedDigest.equalsIgnoreCase(actual)
+                    ? new ArtifactRead("READ", bytes) : new ArtifactRead("STALE", null);
+        } catch (IOException | RuntimeException unavailable) {
+            return new ArtifactRead("UNAVAILABLE", null);
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
+        }
+    }
+
+    private Metadata availableMetadata(String id, Long workspaceId, String conversationId) throws IOException {
+        if (id == null || !ID_RE.matcher(id).matches()) return null;
         Path bin = storageDir.resolve(id).normalize();
         Path meta = storageDir.resolve(id + META_SUFFIX).normalize();
-        // Containment guard — id is already validated, this is defence in depth.
-        if (!bin.startsWith(storageDir) || !Files.isRegularFile(bin) || !Files.isRegularFile(meta)) {
-            return null;
+        if (!bin.startsWith(storageDir) || !Files.isRegularFile(bin, LinkOption.NOFOLLOW_LINKS)
+                || !Files.isRegularFile(meta, LinkOption.NOFOLLOW_LINKS)) return null;
+        byte[] raw;
+        try (var input = Files.newInputStream(meta, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)) {
+            raw = input.readNBytes(16_385);
+        }
+        if (raw.length > 16_384) return null;
+        Metadata stored = parseMeta(new String(raw, StandardCharsets.UTF_8), id);
+        return stored.expireAt() > System.currentTimeMillis()
+                && Objects.equals(workspaceId, stored.workspaceId())
+                && Objects.equals(conversationId, stored.conversationId()) ? stored : null;
+    }
+
+    private Entry loadFromDisk(String id) {
+        return loadAuthorizedFromDisk(id, owner -> true).entry();
+    }
+
+    private AccessResult loadAuthorizedFromDisk(String id, java.util.function.Predicate<Owner> authorized) {
+        AccessResult missing = new AccessResult(AccessStatus.MISSING, null);
+        Path bin = storageDir.resolve(id).normalize();
+        Path meta = storageDir.resolve(id + META_SUFFIX).normalize();
+        // NOFOLLOW also applies at open; parent-directory ownership is separate.
+        if (!bin.startsWith(storageDir) || !Files.isRegularFile(bin, LinkOption.NOFOLLOW_LINKS)
+                || !Files.isRegularFile(meta, LinkOption.NOFOLLOW_LINKS)) return missing;
+        Metadata before;
+        try {
+            before = readDownloadMetadata(meta, id);
+        } catch (IOException | RuntimeException e) {
+            log.debug("Could not read generated file metadata id={}: {}", id, e.toString());
+            return missing;
+        }
+        if (before.expireAt() <= System.currentTimeMillis()) {
+            evict(id);
+            return missing;
+        }
+        // Keep permission-provider errors distinct from unavailable storage.
+        if (!authorized.test(new Owner(before.workspaceId(), before.ownerUserId(), before.conversationId()))) {
+            return new AccessResult(AccessStatus.FORBIDDEN, null);
         }
         try {
-            Metadata parsed = parseMeta(Files.readString(meta), id);
-            byte[] bytes = Files.readAllBytes(bin);
-            return new Entry(bytes, parsed.filename(), parsed.mimeType(), parsed.expireAt(),
-                    parsed.workspaceId(), parsed.ownerUserId(), parsed.conversationId());
-        } catch (Exception e) {
-            log.warn("Could not load generated file id={}: {}", id, e.toString());
-            return null;
+            // Authorization can take time. Refuse observed metadata replacement
+            // before opening the body and again before making it available.
+            if (!before.equals(readDownloadMetadata(meta, id))) return missing;
+            byte[] bytes;
+            try (var input = Files.newInputStream(bin, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)) {
+                bytes = input.readAllBytes();
+            }
+            if (!before.equals(readDownloadMetadata(meta, id))
+                    || before.expireAt() <= System.currentTimeMillis()) return missing;
+            Entry entry = new Entry(bytes, before.filename(), before.mimeType(), before.expireAt(),
+                    before.workspaceId(), before.ownerUserId(), before.conversationId());
+            return new AccessResult(AccessStatus.FOUND, entry);
+        } catch (IOException | RuntimeException e) {
+            log.debug("Could not load generated file id={}: {}", id, e.toString());
+            return missing;
+        }
+    }
+
+    private Metadata readDownloadMetadata(Path meta, String id) throws IOException {
+        try (var input = Files.newInputStream(meta, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)) {
+            return parseMeta(new String(input.readAllBytes(), StandardCharsets.UTF_8), id);
         }
     }
 

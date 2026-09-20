@@ -74,6 +74,12 @@ public class ChatController {
     @org.springframework.beans.factory.annotation.Autowired
     private ConversationTurnGate turnGate = new ConversationTurnGate();
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private vip.mate.goal.service.GoalJsonAcceptanceService jsonAcceptance;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private vip.mate.goal.service.GoalApprovalRunService goalApprovalRuns;
+
     // Virtual thread per SSE task: matches the app-wide virtual-thread model
     // (spring.threads.virtual.enabled=true) and, unlike a cached platform-thread
     // pool, never reuses a thread across tasks, so no ThreadLocal state can leak
@@ -241,7 +247,13 @@ public class ChatController {
 
             // deny: workflow.resolve handles DB + metadata + memory atomically.
             if (isDenyCommand) {
-                ResolveOutcome denyOutcome = approvalService.resolve(pending.getPendingId(), username, "denied");
+                ResolveOutcome denyOutcome;
+                try {
+                    denyOutcome = resolveWithCurrentApprover(pending, auth, username, false);
+                } catch (vip.mate.exception.MateClawException revoked) {
+                    sendErrorDoneAndComplete(emitter, revoked.getMessage());
+                    return emitter;
+                }
                 conversationService.removeApprovalPlaceholders(conversationId);
                 log.info("[Approval-Stream] User {} denied pending {} for conversation {} (dbSynced={}, msgRewritten={})",
                         username, pending.getPendingId(), conversationId,
@@ -251,7 +263,13 @@ public class ChatController {
             // approve: atomic resolveAndConsume; workflow handles DB + metadata + memory.
             PendingApproval consumed = null;
             if (isApprovalCommand) {
-                ResolveOutcome consumeOutcome = approvalService.resolveAndConsume(pending.getPendingId(), username);
+                ResolveOutcome consumeOutcome;
+                try {
+                    consumeOutcome = resolveWithCurrentApprover(pending, auth, username, true);
+                } catch (vip.mate.exception.MateClawException revoked) {
+                    sendErrorDoneAndComplete(emitter, revoked.getMessage());
+                    return emitter;
+                }
                 if (consumeOutcome.isAlreadyResolved()) {
                     try {
                         sendEvent(emitter, "error", Map.of("message", "审批记录已过期或已被处理"));
@@ -346,7 +364,7 @@ public class ChatController {
                     }
                     // Carry the request-thread base URL so any file a replayed
                     // tool generates gets an absolute download link.
-                    replayOrigin = replayOrigin.withBaseUrl(requestBaseUrl);
+                    replayOrigin = replayOrigin.withBaseUrl(requestBaseUrl).withApprovalId(finalConsumed.getPendingId());
                     Disposable disposable = agentService.chatWithReplayStream(
                             replayAgentId, replayPrompt, conversationId, finalConsumed.getToolCallPayload(), username, replayOrigin)
                             .doOnNext(delta -> {
@@ -577,6 +595,19 @@ public class ChatController {
                 ? (regenerateSeed.content() != null ? regenerateSeed.content() : "")
                 : requestMessage;
 
+        // Snapshot selection on the request thread before the executor can be
+        // delayed behind other work. A Goal abandoned during model inference
+        // must still be recognizable when that turn asks for approval.
+        final vip.mate.agent.context.ChatOrigin selectedTurnOrigin;
+        try {
+            selectedTurnOrigin = captureWebGoal(memoryOrigin(conversationId, username,
+                    requesterUserIdOf(auth), workspaceId, request.getEndUserId())
+                    .withBaseUrl(requestBaseUrl), agentId);
+        } catch (vip.mate.exception.MateClawException invalidSelection) {
+            sendErrorDoneAndComplete(emitter, invalidSelection.getMessage());
+            return emitter;
+        }
+
         // ---- 正常请求：注册流状态并附着首个订阅者 ----
         streamTracker.register(conversationId);
         setupPermit.close();
@@ -638,10 +669,7 @@ public class ChatController {
                 // RFC-063r §2.5: web entry — null channelId / no ChannelTarget;
                 // tools that need a workspace path read it from the agent (origin
                 // is enriched with workspaceBasePath in StateGraph buildInitialState).
-                vip.mate.agent.context.ChatOrigin webOrigin =
-                        memoryOrigin(conversationId, username, requesterUserIdOf(auth), workspaceId, request.getEndUserId())
-                                .withBaseUrl(requestBaseUrl)
-                                .withOriginMessageId(originMessageId);
+                vip.mate.agent.context.ChatOrigin webOrigin = selectedTurnOrigin.withOriginMessageId(originMessageId);
                 Disposable disposable = agentService.chatStructuredStream(agentId, promptText, conversationId, username, request.getThinkingLevel(), webOrigin)
                         .doOnNext(delta -> {
                             if (emitterDone.get()) return;
@@ -1114,8 +1142,17 @@ public class ChatController {
 
         // Commit the payload before publishing acceptance. The stream tracker is
         // only a wake signal; the database row remains authoritative on restart.
-        var stored = inputQueue.enqueue(conversationId, agentId, username, message, contentParts,
-                LocalDateTime.now());
+        var enqueueConversation = conversationService.findByConversationId(conversationId);
+        Long queueAgentId = agentId == null && enqueueConversation != null
+                ? enqueueConversation.getAgentId() : agentId;
+        if (enqueueConversation == null || queueAgentId == null
+                || !java.util.Objects.equals(queueAgentId, enqueueConversation.getAgentId())) {
+            return R.fail(409, "会话助手已变化，请刷新后重试");
+        }
+        var queuedSelection = captureWebGoal(vip.mate.agent.context.ChatOrigin.web(conversationId,
+                username, enqueueConversation.getWorkspaceId(), null, null, requesterUserIdOf(auth)), queueAgentId);
+        var stored = inputQueue.enqueue(conversationId, queueAgentId, username, message, contentParts,
+                requesterUserIdOf(auth), queuedSelection.selectedGoalId(), LocalDateTime.now());
         boolean queued = streamTracker.notifyQueuedInput(conversationId);
         if (!queued) {
             inputQueue.cancel(stored.id(), "stream_finished_before_queue_registration",
@@ -1167,9 +1204,9 @@ public class ChatController {
         String promptText = buildPromptText(request.getMessage(), request.getContentParts());
         // Carry the web origin so per-owner memory recall (read) and the
         // post-conversation memory write below agree on the same owner key.
-        vip.mate.agent.context.ChatOrigin webOrigin =
+        vip.mate.agent.context.ChatOrigin webOrigin = captureWebGoal(
                 memoryOrigin(request.getConversationId(), username, requesterUserIdOf(auth), workspaceId,
-                        request.getEndUserId()).withOriginMessageId(
+                        request.getEndUserId()), agentId).withOriginMessageId(
                                 savedUser == null ? null : savedUser.getId());
         AgentService.ChatResult result = turnGate.withPermit(permit, () ->
                 agentService.chatWithUsage(agentId, promptText, request.getConversationId(), webOrigin));
@@ -1344,11 +1381,46 @@ public class ChatController {
         return vip.mate.agent.context.ChatOrigin.web(conversationId, username, workspaceId, null, baseUrl, requesterUserId);
     }
 
-    /**
-     * Extract the authenticated user's immutable numeric id from the
-     * {@link Authentication} details (stamped by {@code JwtAuthFilter} for both
-     * the JWT and PAT paths). Null when not authenticated or details absent.
-     */
+    private vip.mate.agent.context.ChatOrigin captureWebGoal(
+            vip.mate.agent.context.ChatOrigin origin, Long agentId) {
+        var withAgent = origin.withAgent(agentId);
+        return goalApprovalRuns == null ? withAgent : goalApprovalRuns.captureSelectedGoal(withAgent);
+    }
+
+    /** Hold the selected Goal's approver identity through the approval write. */
+    private ResolveOutcome resolveWithCurrentApprover(PendingApproval pending, Authentication auth,
+                                                       String username, boolean approve) {
+        if (goalApprovalRuns != null && jsonAcceptance != null) {
+            var origin = approvalService.restoreChatOrigin(pending.getChatOrigin());
+            if (approve && (origin == null || origin.conversationId() == null
+                    || origin.requesterUserId() == null && (origin.executionAttribution() == null
+                            || origin.executionAttribution().goalId() == null))
+                    && goalApprovalRuns.hasManagedGoalHistory(pending.getConversationId(), pending.getAgentId())) {
+                throw new vip.mate.exception.MateClawException(409,
+                        "Managed Goal approval origin is unavailable; start a new request");
+            }
+            if (origin != null) origin = origin.withApprovalId(pending.getPendingId());
+            if (origin != null && goalApprovalRuns.requiresCurrentApprover(origin)) {
+                var capturedOrigin = origin;
+                Long currentUserId = requesterUserIdOf(auth);
+                return jsonAcceptance.withAuthenticatedUser(currentUserId, username, current -> {
+                    var attribution = capturedOrigin.executionAttribution();
+                    if (attribution == null || attribution.goalAttemptId() == null) {
+                        if (!java.util.Objects.equals(currentUserId, capturedOrigin.requesterUserId())) {
+                            throw new vip.mate.exception.MateClawException(403, "Approval belongs to another account");
+                        }
+                    }
+                    goalApprovalRuns.validateCapturedForApproval(capturedOrigin, current, approve);
+                    return approve ? approvalService.resolveAndConsume(pending.getPendingId(), current)
+                            : approvalService.resolve(pending.getPendingId(), current, "denied");
+                });
+            }
+        }
+        return approve ? approvalService.resolveAndConsume(pending.getPendingId(), username)
+                : approvalService.resolve(pending.getPendingId(), username, "denied");
+    }
+
+    /** Extract the immutable account id stamped in Authentication details. */
     private Long requesterUserIdOf(org.springframework.security.core.Authentication auth) {
         if (auth == null) return null;
         Object details = auth.getDetails();
@@ -1461,6 +1533,30 @@ public class ChatController {
             return;
         }
 
+        // A row queued by an older binary has no selection snapshot. If this
+        // conversation has managed Goal history, execution could turn an old
+        // selected request into an explicitly unselected approval after a Goal
+        // ended. Keep the user's text and require a fresh authenticated turn.
+        if (preConsumedInput.selectedGoalId() == null && goalApprovalRuns != null
+                && goalApprovalRuns.hasManagedGoalHistory(conversationId, String.valueOf(agentId))) {
+            skipQueuedInput(preConsumedInput, queueClaimId, conversationId, emitter, emitterDone,
+                    requesterId, baseUrl, "managed_goal_selection_unknown",
+                    "排队消息缺少Goal选择快照，内容已保存，请重新发送");
+            return;
+        }
+        if (preConsumedInput.selectedGoalId() != null) {
+            var selectedOrigin = vip.mate.agent.context.ChatOrigin.web(conversationId,
+                    preConsumedInput.createdBy(), queuedConversation.getWorkspaceId(), null,
+                    baseUrl, preConsumedInput.requesterUserId())
+                    .withAgent(agentId).withSelectedGoalId(preConsumedInput.selectedGoalId());
+            if (goalApprovalRuns == null || !goalApprovalRuns.queuedSelectionStillCurrent(selectedOrigin)) {
+                skipQueuedInput(preConsumedInput, queueClaimId, conversationId, emitter, emitterDone,
+                        requesterId, baseUrl, "managed_goal_selection_stale",
+                        "排队消息的Goal或账户已失效，内容已保存，请重新发送");
+                return;
+            }
+        }
+
         // Rate Limit 防护：如果上一轮以 rate limit 错误结束，不立即续跑排队消息（必然再次 429）。
         // 改为持久化用户消息 + 通知前端"稍后重试"，避免连锁 429 浪费配额。
         String lastMessage = conversationService.getLastMessage(conversationId);
@@ -1526,12 +1622,15 @@ public class ChatController {
         streamTracker.incrementFlux(conversationId);
         // RFC-063r §2.5: queued messages land in the same conversation; carry
         // a web-origin ChatOrigin so any cron job created during the queued
-        // turn keeps a consistent (null-channel) binding.
+        // turn keeps a consistent (null-channel) binding. The account id comes
+        // from the authenticated enqueue, never from the previous stream
+        // username. Managed operations revalidate this account and scope.
         vip.mate.agent.context.ChatOrigin queuedOrigin =
-                vip.mate.agent.context.ChatOrigin.web(conversationId, requesterId, null, null)
-                        .withBaseUrl(baseUrl)
-                        .withOriginMessageId(queuedOriginMessageId);
-        Disposable disposable = agentService.chatStructuredStream(agentId, queuedMessage, conversationId, requesterId, null, queuedOrigin)
+                vip.mate.agent.context.ChatOrigin.web(conversationId, preConsumedInput.createdBy(),
+                                queuedConversation.getWorkspaceId(), null, baseUrl, preConsumedInput.requesterUserId())
+                        .withOriginMessageId(queuedOriginMessageId)
+                        .withSelectedGoalId(preConsumedInput.selectedGoalId());
+        Disposable disposable = agentService.chatStructuredStream(agentId, queuedMessage, conversationId, preConsumedInput.createdBy(), null, queuedOrigin)
                 .doOnNext(delta -> {
                     if (emitterDone.get()) return;
                     try {
@@ -1649,6 +1748,42 @@ public class ChatController {
         streamTracker.setDisposable(conversationId, disposable);
         streamTracker.setEmergencySaveCallback(conversationId,
                 () -> emergencySaveAccumulator(conversationId, accumulator));
+    }
+
+    private void skipQueuedInput(ConversationInputQueueStore.QueuedInput input, String claimId,
+                                 String conversationId, SseEmitter emitter, AtomicBoolean emitterDone,
+                                 String requesterId, String baseUrl, String reason, String warning) {
+        if (input.persistedMessageId() == null) {
+            MessageEntity saved = conversationService.saveMessage(conversationId, "user",
+                    input.message(), input.contentParts(), "queued");
+            if (saved == null || !inputQueue.bindMessage(input.id(), claimId,
+                    saved.getId(), LocalDateTime.now())) {
+                inputQueue.release(input.id(), claimId, LocalDateTime.now());
+                throw new IllegalStateException("Skipped queued input could not be preserved");
+            }
+        }
+        if (!inputQueue.consume(input.id(), claimId, LocalDateTime.now()))
+            throw new IllegalStateException("Skipped queued input claim was lost");
+        // The preceding turn may have removed its RunState already, so a
+        // tracker broadcast can silently disappear. The held emitter is the
+        // authoritative response for this queued input.
+        try {
+            sendEvent(emitter, "warning", Map.of("message", warning));
+            sendEvent(emitter, "queued_input_skipped", Map.of(
+                    "conversationId", conversationId,
+                    "message", input.message() == null ? "" : input.message(),
+                    "reason", reason));
+        } catch (IOException disconnected) {
+            log.debug("Queued-input skip notification could not be delivered for {}: {}",
+                    conversationId, disconnected.getMessage());
+        }
+        if (hasQueuedInput(conversationId)) {
+            sseExecutor.execute(() -> startQueuedMessage(conversationId, emitter, emitterDone,
+                    requesterId, baseUrl));
+        } else {
+            conversationService.updateStreamStatus(conversationId, "idle");
+            completeEmitterQuietly(emitter, emitterDone);
+        }
     }
 
     private boolean hasQueuedInput(String conversationId) {

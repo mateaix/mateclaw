@@ -96,36 +96,44 @@ public abstract class AbstractCronResultDelivery implements CronResultDelivery {
     // ---------- SQL state-machine helpers ----------
 
     /**
-     * Atomic SQL CAS: transition delivery_status from {@code NONE} or
-     * {@code PENDING} → {@code PENDING}. Returns true iff this instance won
-     * the race. NONE-eligibility lets fresh runs claim without a separate
-     * "first-time" branch; PENDING-eligibility covers the rare same-instance
-     * retry inside the listener.
+     * Atomic SQL CAS: transition delivery_status from {@code NONE} (or legacy
+     * {@code NULL}) to {@code PENDING}. An already-pending row is owned by the
+     * worker that claimed it and must never be claimable again.
      *
      * <p>SQL semantics gotcha: {@code IN (...)} never matches NULL. Legacy
      * rows from before V57 (pre-RFC) may have null delivery_status, so the
-     * predicate explicitly tests {@code IS NULL OR IN (NONE, PENDING)} via
+     * predicate explicitly tests {@code IS NULL OR = NONE} via
      * a nested OR group rather than putting null inside the IN list.
      */
     private boolean claimRun(CronJobRunEntity run) {
         return runMapper.update(null, new LambdaUpdateWrapper<CronJobRunEntity>()
                 .eq(CronJobRunEntity::getId, run.getId())
                 .and(w -> w.isNull(CronJobRunEntity::getDeliveryStatus)
-                        .or().in(CronJobRunEntity::getDeliveryStatus, "NONE", "PENDING"))
+                        .or().eq(CronJobRunEntity::getDeliveryStatus, "NONE"))
                 .set(CronJobRunEntity::getDeliveryStatus, "PENDING")) == 1;
     }
 
     private void markDelivered(CronJobRunEntity run, DeliveryOutcome o) {
-        runMapper.update(null, new LambdaUpdateWrapper<CronJobRunEntity>()
+        int updated = runMapper.update(null, new LambdaUpdateWrapper<CronJobRunEntity>()
                 .eq(CronJobRunEntity::getId, run.getId())
+                .eq(CronJobRunEntity::getDeliveryStatus, "PENDING")
                 .set(CronJobRunEntity::getDeliveryStatus, "DELIVERED")
                 .set(CronJobRunEntity::getDeliveryTarget, o.target()));
+        if (updated == 0) {
+            log.warn("[CronDelivery] Run {} lost its PENDING fence before success was persisted",
+                    run.getId());
+        }
     }
 
     private void markNotDelivered(CronJobRunEntity run, Exception e) {
-        runMapper.update(null, new LambdaUpdateWrapper<CronJobRunEntity>()
+        int updated = runMapper.update(null, new LambdaUpdateWrapper<CronJobRunEntity>()
                 .eq(CronJobRunEntity::getId, run.getId())
+                .eq(CronJobRunEntity::getDeliveryStatus, "PENDING")
                 .set(CronJobRunEntity::getDeliveryStatus, "NOT_DELIVERED")
                 .set(CronJobRunEntity::getDeliveryError, StrUtil.maxLength(e.getMessage(), 500)));
+        if (updated == 0) {
+            log.warn("[CronDelivery] Run {} lost its PENDING fence before failure was persisted",
+                    run.getId());
+        }
     }
 }

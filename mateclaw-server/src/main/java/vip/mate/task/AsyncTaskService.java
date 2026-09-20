@@ -508,6 +508,12 @@ public class AsyncTaskService implements ApplicationRunner {
         data.put("taskId", task.getTaskId());
         data.put("taskType", task.getTaskType());
         data.put("success", success);
+        data.put("status", Objects.toString(task.getStatus(), success ? "succeeded" : "failed"));
+        if (task.getProgress() != null) data.put("progress", task.getProgress());
+        if (task.getCreateTime() != null && task.getUpdateTime() != null) {
+            data.put("durationMs", Math.max(0L,
+                    java.time.Duration.between(task.getCreateTime(), task.getUpdateTime()).toMillis()));
+        }
         if (extraData != null) data.putAll(extraData);
         if (errorMessage != null) data.put("errorMessage", errorMessage);
         streamTracker.broadcastObject(task.getConversationId(), eventName, data);

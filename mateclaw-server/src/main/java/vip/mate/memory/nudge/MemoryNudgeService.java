@@ -16,6 +16,7 @@ import vip.mate.agent.prompt.PromptLoader;
 import vip.mate.llm.model.ModelConfigEntity;
 import vip.mate.llm.service.ModelConfigService;
 import vip.mate.memory.MemoryProperties;
+import vip.mate.memory.service.StructuredMemoryCandidate;
 import vip.mate.memory.service.StructuredMemoryService;
 import vip.mate.workspace.conversation.ConversationService;
 import vip.mate.workspace.conversation.model.MessageEntity;
@@ -84,17 +85,21 @@ public class MemoryNudgeService {
         }
 
         try {
-            doNudge(agentId, conversationId, ownerKey);
-            lastNudgeTimes.put(cooldownKey, Instant.now());
+            if (doNudge(agentId, conversationId, ownerKey)) {
+                lastNudgeTimes.put(cooldownKey, Instant.now());
+            }
         } catch (Exception e) {
             log.warn("[Nudge] Failed for agent={}, conv={}: {}",
                     agentId, conversationId, e.getMessage());
         }
     }
 
-    private void doNudge(Long agentId, String conversationId, String ownerKey) {
+    private boolean doNudge(Long agentId, String conversationId, String ownerKey) {
         // 1. Load recent messages
         List<MessageEntity> messages = conversationService.listMessages(conversationId);
+        if (messages == null || messages.isEmpty()) {
+            return false;
+        }
         int maxReview = properties.getNudgeMaxMessages();
         List<MessageEntity> recent = messages.size() > maxReview
                 ? messages.subList(messages.size() - maxReview, messages.size())
@@ -102,12 +107,12 @@ public class MemoryNudgeService {
 
         if (recent.size() < 4) {
             log.debug("[Nudge] Not enough messages to review ({}), skipping", recent.size());
-            return;
+            return false;
         }
 
         // 2. Build transcript
         String transcript = buildTranscript(recent);
-        if (transcript.isBlank()) return;
+        if (transcript.isBlank()) return false;
 
         // 3. Load existing structured memories for dedup (owner-scoped)
         String existingMemories = structuredMemoryService.buildMemoryBlock(agentId, ownerKey);
@@ -130,11 +135,11 @@ public class MemoryNudgeService {
             llmResponse = callLlmWithRetry(chatModel, prompt, 2);
             if (llmResponse == null) {
                 log.warn("[Nudge] LLM returned null after retries for agent={}", agentId);
-                return;
+                return false;
             }
         } catch (Exception e) {
             log.warn("[Nudge] LLM call failed for agent={}: {}", agentId, e.getMessage());
-            return;
+            return false;
         }
 
         // 6. Parse and apply
@@ -142,30 +147,31 @@ public class MemoryNudgeService {
             JsonNode root = parseJsonResponse(llmResponse);
             if (root == null || !root.isArray()) {
                 log.debug("[Nudge] No entries extracted for agent={}", agentId);
-                return;
+                return false;
             }
 
             int saved = 0;
             for (JsonNode entry : root) {
-                String type = entry.path("type").asText("");
-                String key = entry.path("key").asText("");
-                String content = entry.path("content").asText("");
-                if (type.isBlank() || key.isBlank() || content.isBlank()) continue;
+                var candidate = StructuredMemoryCandidate.fromJson(entry);
+                if (candidate.isEmpty() || !candidate.get().isAdmissible(java.time.LocalDate.now())) continue;
 
                 try {
-                    structuredMemoryService.remember(agentId, type, key, content, "nudge", ownerKey);
+                    structuredMemoryService.remember(agentId, candidate.get(), "nudge", ownerKey);
                     saved++;
                 } catch (Exception e) {
-                    log.debug("[Nudge] Failed to save entry {}/{}: {}", type, key, e.getMessage());
+                    log.debug("[Nudge] Failed to save entry {}/{}: {}",
+                            candidate.get().type(), candidate.get().key(), e.getMessage());
                 }
             }
 
             if (saved > 0) {
                 log.info("[Nudge] Extracted {} entries for agent={}", saved, agentId);
             }
+            return true;
 
         } catch (Exception e) {
             log.warn("[Nudge] Failed to parse nudge response for agent={}: {}", agentId, e.getMessage());
+            return false;
         }
     }
 

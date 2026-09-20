@@ -27,7 +27,7 @@ function iconFor(status: string) {
   if (status === 'completed') return CircleCheckFilled
   if (status === 'failed') return CircleCloseFilled
   if (status === 'cancelled' || status === 'stale') return RemoveFilled
-  if (status === 'in_review') return View
+  if (status === 'in_review' || status === 'awaiting_approval') return View
   if (status === 'in_progress') return Loading
   if (status === 'blocked') return Lock
   if (status === 'pending') return Clock
@@ -102,7 +102,7 @@ function preview(value: string | null) {
 .run-task-row:focus-visible { outline: 2px solid #1b8f68; outline-offset: -2px; }
 .run-task-row__state { padding-top: 2px; color: #64748b; }
 .run-task-row__state.is-completed { color: #16835b; }
-.run-task-row__state.is-in_review, .run-task-row__state.is-blocked { color: #a15c05; }
+.run-task-row__state.is-in_review, .run-task-row__state.is-awaiting_approval, .run-task-row__state.is-blocked { color: #a15c05; }
 .run-task-row__state.is-failed { color: #c13d3d; }
 .run-task-row__body { min-width: 0; display: grid; gap: 5px; }
 .run-task-row__title { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; font-weight: 600; }

@@ -2,6 +2,9 @@ package vip.mate.goal.model;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullAndEmptySource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.List;
 
@@ -9,6 +12,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * Pure unit tests for the checklist (de)serialization + merge helpers.
@@ -48,6 +52,17 @@ class GoalCriteriaCodecTest {
         assertNull(GoalCriteriaCodec.serialize(null, mapper));
     }
 
+    @Test
+    void duplicateVerdictIdsAreRejectedInsteadOfLastWriteWinning() {
+        var existing = List.of(new GoalCriterion("C1", "report", false, ""));
+        var failed = new GoalChecklistVerdict.CriterionVerdict("C1", false, "missing");
+        var passed = new GoalChecklistVerdict.CriterionVerdict("C1", true, "claimed written");
+        assertThrows(IllegalArgumentException.class, () -> GoalCriteriaCodec.merge(existing, List.of(failed, passed)));
+        assertThrows(IllegalArgumentException.class, () -> GoalCriteriaCodec.merge(existing, List.of(passed, failed)));
+        assertThrows(IllegalArgumentException.class, () -> GoalCriteriaCodec.merge(existing, List.of(passed, passed)));
+        assertFalse(existing.getFirst().passed());
+    }
+
     // ---------- merge ----------
 
     @Test
@@ -75,6 +90,23 @@ class GoalCriteriaCodecTest {
                 new GoalChecklistVerdict.CriterionVerdict("C9", true, "nope"));
         List<GoalCriterion> merged = GoalCriteriaCodec.merge(existing, delta);
         assertFalse(merged.get(0).passed());
+    }
+
+    @ParameterizedTest
+    @NullAndEmptySource
+    @ValueSource(strings = {" ", "\t\n"})
+    void blankEvidenceCannotPassNewOrPersistedCriteria(String evidence) {
+        var existing = List.of(new GoalCriterion("C1", "deliver report", false, ""));
+        var merged = GoalCriteriaCodec.merge(existing, List.of(
+                new GoalChecklistVerdict.CriterionVerdict("C1", true, evidence)));
+        assertFalse(merged.getFirst().passed());
+        assertFalse(GoalCriteriaCodec.allPassed(merged));
+        assertEquals(1, GoalCriteriaCodec.remaining(merged).size());
+
+        var persisted = List.of(new GoalCriterion("C1", "deliver report", true, evidence));
+        assertFalse(GoalCriteriaCodec.allPassed(persisted));
+        assertEquals(1, GoalCriteriaCodec.remaining(persisted).size());
+        assertFalse(GoalCriteriaCodec.merge(persisted, List.of()).getFirst().passed());
     }
 
     // ---------- allPassed / remaining ----------

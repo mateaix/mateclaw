@@ -23,6 +23,16 @@ import static org.junit.jupiter.api.Assertions.*;
 class Utf8SseEmitterTest {
 
     @Test
+    void disablesProxyBufferingAndCachingWhileKeepingUtf8() {
+        var response = new ServletServerHttpResponse(new MockHttpServletResponse());
+        new Utf8SseEmitter().extendResponse(response);
+
+        assertEquals("no", response.getHeaders().getFirst("X-Accel-Buffering"));
+        assertEquals("no-store, no-transform", response.getHeaders().getCacheControl());
+        assertEquals(StandardCharsets.UTF_8, response.getHeaders().getContentType().getCharset());
+    }
+
+    @Test
     @DisplayName("extendResponse stamps charset=UTF-8 when Content-Type is unset")
     void stampsUtf8WhenContentTypeUnset() throws Exception {
         Utf8SseEmitter emitter = new Utf8SseEmitter(10_000L);

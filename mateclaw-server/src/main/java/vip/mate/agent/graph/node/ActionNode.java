@@ -61,7 +61,7 @@ public class ActionNode implements NodeAction {
 
     /**
      * Tools whose results should NOT be auto-recorded into the ledger.
-     * Two groups:
+     * Three groups:
      * <ul>
      *   <li><b>Meta-tools</b> (load_skill, enable_tool, progress_update,
      *       skill helpers) — they either have their own ledger side-effects
@@ -72,6 +72,8 @@ public class ActionNode implements NodeAction {
      *       answer follow-up questions from stale output instead of
      *       re-checking, because the snapshot instructs "已完成的步骤不要
      *       重复执行".</li>
+     *   <li><b>Time-bound verification</b> — managed JSON bindings may need
+     *       a new check during the same loop after a goal definition changes.</li>
      * </ul>
      */
     private static final Set<String> AUTO_RECORD_SKIP = Set.of(
@@ -82,7 +84,9 @@ public class ActionNode implements NodeAction {
             "extract_document_text", "extract_pdf_text", "extract_docx_text",
             "detect_file_type",
             "getCurrentDateTime", "getCurrentDate", "getCurrentTime",
-            "listSubagents"
+            "listSubagents", "getManagedGoalJsonSlots",
+            // A binding is time-bound and can need refreshing during this same tool loop.
+            "checkManagedGoalJson"
     );
 
     private final ToolExecutionExecutor executor;

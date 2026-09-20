@@ -6,6 +6,7 @@ import vip.mate.memory.spi.MemoryProvider;
 import vip.mate.plugin.api.memory.PluginMemoryProvider;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -205,6 +206,19 @@ class PluginMemoryBridgeTest {
         assertSame(toolBean, tools.get(0));
     }
 
+    @Test
+    @DisplayName("close is forwarded so plugin-owned resources are released on unload")
+    void closeForwardsToPlugin() {
+        AtomicBoolean closed = new AtomicBoolean();
+        PluginMemoryProvider delegate = new ForwardingPluginProvider(stub()) {
+            @Override public void close() { closed.set(true); }
+        };
+
+        new PluginMemoryBridge(delegate).close();
+
+        assertTrue(closed.get());
+    }
+
     // ---- helpers ----
 
     private static PluginMemoryProvider stub() {
@@ -251,5 +265,6 @@ class PluginMemoryBridgeTest {
         @Override public void onSessionEnd(Long agentId, String conversationId) {
             delegate.onSessionEnd(agentId, conversationId);
         }
+        @Override public void close() { delegate.close(); }
     }
 }

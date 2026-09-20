@@ -23,7 +23,9 @@ class GoalContinuationStoreTest {
         new ResourceDatabasePopulator(
                 new ClassPathResource("db/migration/h2/V120__agent_goal.sql"),
                 new ClassPathResource("db/migration/h2/V188__goal_continuation.sql"),
-                new ClassPathResource("db/migration/h2/V189__goal_attempt_and_input_queue.sql")).execute(ds);
+                new ClassPathResource("db/migration/h2/V189__goal_attempt_and_input_queue.sql"),
+                new ClassPathResource("db/migration/h2/V198__goal_absolute_owner_leases.sql"),
+                new ClassPathResource("db/migration/h2/V200__goal_approval_attempt_handoff.sql")).execute(ds);
         jdbc = new JdbcTemplate(ds);
         store = new GoalContinuationStore(jdbc);
     }
@@ -103,7 +105,7 @@ class GoalContinuationStoreTest {
         var goals=org.mockito.Mockito.mock(GoalService.class);
         var runner=org.mockito.Mockito.mock(GoalSegmentRunner.class);
         var coordinator=new GoalRunCoordinator(new GoalContinuationStore(jdbc),new GoalAttemptStore(jdbc),goals,
-                new vip.mate.goal.config.GoalProperties());
+                new vip.mate.goal.config.GoalProperties(),java.time.Clock.fixed(now.atZone(java.time.ZoneId.systemDefault()).toInstant(), java.time.ZoneId.systemDefault()));
         var recovery=org.mockito.Mockito.mock(GoalRecoveryService.class);
         var running=new vip.mate.agent.runtime.RunningConversationRegistry();
         var streams=new vip.mate.channel.web.ChatStreamTracker(new com.fasterxml.jackson.databind.ObjectMapper());

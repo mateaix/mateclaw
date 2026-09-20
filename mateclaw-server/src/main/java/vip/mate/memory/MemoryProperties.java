@@ -162,6 +162,18 @@ public class MemoryProperties {
     /** Enable provider metrics collection */
     private boolean providerMetricsEnabled = false;
 
+    /** Maximum time allowed for a single provider prefetch; 0 = no per-provider limit. */
+    private long providerPrefetchTimeoutMs = 1500;
+
+    /** Maximum time allowed for the complete prefetch chain; 0 = no total limit. */
+    private long providerPrefetchTotalBudgetMs = 2500;
+
+    /** Consecutive prefetch failures before a provider circuit opens. */
+    private int providerCircuitFailureThreshold = 3;
+
+    /** Time an open provider circuit waits before allowing one probe request. */
+    private long providerCircuitCooldownSeconds = 30;
+
     // --- Phase 3: Fact projection ---
 
     /** Fact projection configuration */

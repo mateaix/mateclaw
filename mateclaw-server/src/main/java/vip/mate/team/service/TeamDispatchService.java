@@ -10,6 +10,8 @@ import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
 import vip.mate.team.event.TeamTasksDelegatedEvent;
 import vip.mate.agent.AgentService;
+import vip.mate.approval.ApprovalWorkflowService;
+import vip.mate.approval.PendingApproval;
 import vip.mate.channel.web.ChatStreamTracker;
 import vip.mate.team.model.AgentTeamEntity;
 import vip.mate.team.model.TeamTaskEntity;
@@ -107,6 +109,7 @@ public class TeamDispatchService {
     private final ChatStreamTracker streamTracker;
     private final TeamAnnounceService announceService;
     private final TeamEventChannel eventChannel;
+    private final ApprovalWorkflowService approvalService;
 
     /** Members with a run currently in flight in this JVM (belt-and-braces on top of hasActiveTask). */
     private final Set<Long> runningMembers = ConcurrentHashMap.newKeySet();
@@ -215,9 +218,7 @@ public class TeamDispatchService {
             streamTracker.incrementFlux(childConvId);
             // Renew the execution lease while the member works; the conditional
             // UPDATE inside renewLock makes this a no-op once the task settles.
-            heartbeat = HEARTBEAT_SCHEDULER.scheduleAtFixedRate(
-                    () -> taskService.renewLock(task.getId()),
-                    HEARTBEAT_MINUTES, HEARTBEAT_MINUTES, TimeUnit.MINUTES);
+            heartbeat = startLeaseHeartbeat(task.getId());
             broadcast(task, "team_task_dispatched", Map.of());
             log.info("Team {} task #{} dispatched to agent {} (conv {})",
                     teamId, task.getTaskNumber(), memberId, childConvId);
@@ -233,6 +234,20 @@ public class TeamDispatchService {
             String reply = result == null ? null : result.content();
             if (reply != null && !reply.isBlank()) {
                 conversationService.saveMessage(childConvId, "assistant", reply);
+            }
+
+            PendingApproval pending = approvalService.findPendingByConversation(childConvId);
+            if (pending != null) {
+                String summary = pending.getSummary() == null || pending.getSummary().isBlank()
+                        ? pending.getReason() : pending.getSummary();
+                if (taskService.parkForToolApproval(task.getId(), pending.getPendingId(), summary)) {
+                    TeamTaskEntity parked = taskService.getTask(task.getId());
+                    broadcast(parked != null ? parked : task, "team_task_awaiting_approval",
+                            Map.of("pendingId", pending.getPendingId(),
+                                    "toolName", pending.getToolName() == null ? "" : pending.getToolName(),
+                                    "summary", summary == null ? "Tool approval required" : summary));
+                }
+                return;
             }
 
             settleOutcome(task, reply);
@@ -257,6 +272,13 @@ public class TeamDispatchService {
             // Chain: dispatch released dependents and the member's next task.
             requestDispatch(teamId);
         }
+    }
+
+    /** Share the same DB-backed lease heartbeat with controlled worker replays. */
+    ScheduledFuture<?> startLeaseHeartbeat(Long taskId) {
+        return HEARTBEAT_SCHEDULER.scheduleAtFixedRate(
+                () -> taskService.renewLock(taskId),
+                HEARTBEAT_MINUTES, HEARTBEAT_MINUTES, TimeUnit.MINUTES);
     }
 
     /**

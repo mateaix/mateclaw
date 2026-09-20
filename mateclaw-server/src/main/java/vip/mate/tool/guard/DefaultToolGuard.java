@@ -34,6 +34,7 @@ public class DefaultToolGuard implements ToolGuard {
     /** 文件写入类工具 —— 默认需要用户审批 */
     private static final Set<String> FILE_WRITE_TOOL_NAMES = Set.of(
             "write_file",
+            "append_file",
             "edit_file"
     );
 

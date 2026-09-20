@@ -1,6 +1,7 @@
 package vip.mate.i18n;
 
 import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import vip.mate.common.result.R;
@@ -20,5 +21,10 @@ public class I18nAutoConfig {
     @PostConstruct
     public void init() {
         R.setI18n(i18nService);
+    }
+
+    @PreDestroy
+    public void destroy() {
+        R.clearI18n(i18nService);
     }
 }

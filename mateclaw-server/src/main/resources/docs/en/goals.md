@@ -17,6 +17,66 @@ A durable queue and background supervisor schedule persistent goals across bound
 
 `GET /api/v1/goals/{id}/execution` exposes the latest scheduling state, reason and due time; the goal API remains authoritative for current goal status. Streams broadcast scheduling changes through `goal_continuation`. V1 supports a single backend instance and the native runtime. External tool effects are not guaranteed exactly once; recovery must check existing artifacts and async handles. Budgets are checked at segment boundaries, not as per-request spending caps.
 
+## The durable execution contract
+
+Persistent execution separates a long goal from any one HTTP request or graph run. The database holds the work that must survive process loss:
+
+| Durable state | Why it matters after a restart |
+|---|---|
+| Goal and criteria | The completion bar remains unchanged |
+| Continuation row | The supervisor knows whether work is queued, cooling down, retrying, paused, or blocked |
+| Attempt and lease | An interrupted segment can be classified before another segment is claimed |
+| Accepted-input queue | A message sent while the worker is busy is consumed later instead of being dropped |
+| Progress ledger and artifacts | The next segment can inspect completed work and continue from evidence |
+
+One segment claims the goal, consumes at most one queued input, executes a bounded graph run, saves its result, and then either reaches a terminal condition or schedules the next segment. A backend restart releases orphaned input claims and reconciles expired attempts before ordinary dispatch resumes.
+
+Recovery is deliberately conservative. A safe retry may run again; an already-saved assistant message is reconciled; completed tool evidence is inspected; and a tool that may have produced an uncertain external side effect blocks for review. This avoids silently converting “the process restarted” into “repeat a payment, publication, or deletion.”
+
+### Inputs accepted while work is running
+
+When an active persistent goal is already executing, new user input is stored in `mate_conversation_input_queue` before it is handed to a later attempt. Each item moves through queued, claimed, and consumed states. If the process stops after claiming but before consuming it, startup recovery releases the orphaned claim so the same input remains available.
+
+The queue preserves accepted input; it does not make contradictory instructions safe. A user can still pause or abandon the goal, and an instruction that changes the acceptance criteria should update the goal explicitly rather than relying on an ambiguous follow-up sentence.
+
+## Designing work that can run for hours
+
+The runtime can preserve scheduling state, but the task still needs recoverable checkpoints. For long-form writing, code generation, research collections, or data exports:
+
+1. Create concrete criteria before doing bulk work. Counts, file paths, required sections, tests, and final validation are stronger than “produce a good result.”
+2. Store a small plan and progress ledger in the workspace. Record the last completed unit, cumulative count, unresolved items, and the exact next action.
+3. Write in bounded units. For prose, a chapter or 2,000–4,000 Chinese characters per mutation is easier to retry and inspect than an entire volume in one tool call.
+4. Re-read the checkpoint and the target file tail after recovery. Continue from evidence rather than from the model's recollection of the interrupted turn.
+5. Prefer retry-safe mutations. `append_file` treats an exact block already present at the file tail as success with `alreadyApplied=true`; `expectedTail` can reject an append when another write changed the file since it was read.
+6. Pace provider traffic. Set a minimum continuation interval and a provider-wide backoff that match the model's quota. A retry storm is not progress.
+7. Verify before completion. Recount content, enumerate units, read the ending, rerun tests, and require nonblank evidence for every criterion before calling `completeGoal`.
+
+### Example: a 500,000-character novel soak test
+
+A useful soak test asks the General Assistant to create a persistent goal for a ten-volume, roughly 180-chapter novel, save a story bible, outline, and progress ledger, then append one chapter at a time until the body contains at least 500,000 Chinese characters. Each recovery pass must inspect existing headings and the file tail before writing the next chapter.
+
+In the 2026-08-30 single-instance validation, the backend was stopped during chapter generation. Twelve chapters and 15,342 Chinese characters were present at the recovery checkpoint. After restart, the supervisor reloaded the original goal and conversation context, read the outline, progress ledger, and volume tail, then continued at chapter 13. The observation window reached chapter 17 and 24,628 Chinese characters with zero duplicate chapter headings. Provider rate limits and a transient connection failure entered backoff and later continued. These figures describe that test run; they are not throughput guarantees.
+
+For a repeatable check, record values before restart and compare them after recovery:
+
+```bash
+FILE=data/workspace/novel-ash-sea/volumes/volume-01.md
+rg -c '^## 第.*章' "$FILE"
+python3 - <<'PY'
+import re
+from pathlib import Path
+text = Path("data/workspace/novel-ash-sea/volumes/volume-01.md").read_text(encoding="utf-8")
+print(len(re.findall(r"[\u4e00-\u9fff]", text)))
+PY
+rg '^## 第.*章' "$FILE" | sort | uniq -d
+```
+
+The last command must produce no output. Also check `GET /actuator/health`, `GET /api/v1/goals/{id}/execution`, the continuation logs, the progress ledger, and the newest artifact timestamp. Recovery has passed only when the worker writes a new unit after restart without losing queued input or duplicating the previous unit.
+
+::: warning Current boundary
+Persistent Goal v1 is designed and tested for one backend instance using the native runtime. Database-backed state survives a restart of that instance, but arbitrary external side effects are not exactly once. Use provider idempotency keys, read-before-write reconciliation, or human review for payments, sends, publishes, and destructive actions.
+:::
+
 > **You used to repeat the context every turn. Now you set a goal once, the worker follows.**
 
 You say "deploy this blog to fly.io" in one turn, the worker answers, and stops. Next turn you have to remember to ask "is DNS set? cert signed? tests run?" — you're keeping the goal in your head, not the worker.
@@ -178,6 +238,10 @@ In 1.4.0 the evaluator gave a completion score (0–1) and a one-line "what's mi
 Both modes use **structured output** — the evaluator returns a typed object (criterion `id` + `passed` + `evidence`), not free text we have to parse.
 
 **Completion is deterministic.** Only when **every criterion passes** is the goal done. 19 of 20 passed (a 0.95 score) is still "continue" — miss one and one is missing, no fuzzy threshold.
+
+::: warning Verify deliverable evidence for long tasks
+An async child task's `status=succeeded` and `progress=100` are lifecycle terminal signals, not evidence that a criterion passed. For files, long-form writing, test cases, and similar deliverables, make criteria reproducible: for example, “the target file exists and can be read back,” “body text contains at least N characters,” or “at least N independent scenarios can be enumerated.” If a write or execution tool failed, only an outline was produced, or work remains pending, keep that criterion unpassed.
+:::
 
 **Three ways to add a checklist:**
 

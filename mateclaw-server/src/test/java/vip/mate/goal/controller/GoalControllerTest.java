@@ -2,6 +2,8 @@ package vip.mate.goal.controller;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import java.util.List;
+import static org.mockito.ArgumentMatchers.anyInt;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -161,6 +163,25 @@ class GoalControllerTest {
     }
 
     // ==================== find / get ====================
+
+    @Test
+    void historyRequiresConversationOwnershipBeforeReadingAnyRows() {
+        when(conversationService.isConversationOwner("other", "alice")).thenReturn(false);
+        assertEquals(403, assertThrows(MateClawException.class,
+                () -> controller.history("other", null, 20, auth)).getCode());
+        verify(goalService, never()).listByConversation(anyString(), any(), anyInt());
+    }
+
+    @Test
+    void historyKeepsTheExclusiveLongCursorAndMapsEveryStatus() {
+        when(conversationService.isConversationOwner("conv-1", "alice")).thenReturn(true);
+        long cursor = 9223372036854775801L;
+        var rows = List.of(goal(2L, "conv-1", GoalStatus.COMPLETED), goal(1L, "conv-1", GoalStatus.PAUSED));
+        var responses = List.of(resp(2L, GoalStatus.COMPLETED), resp(1L, GoalStatus.PAUSED));
+        when(goalService.listByConversation("conv-1", cursor, 20)).thenReturn(rows);
+        when(goalService.toResponseList(rows)).thenReturn(responses);
+        assertEquals(responses, controller.history("conv-1", cursor, 20, auth).getData());
+    }
 
     @Test
     void findActive_returnsNull_whenNoActiveGoal() {

@@ -45,9 +45,16 @@ MEMORY.md 与 PROFILE.md 会被**无条件注入每一次对话的系统提示**
 - `daily_entry`: 字符串或 null。要追加到今日 daily note 的内容（markdown 格式，以时间戳开头如 "## HH:mm 简要事件标题"）。**二级标题（##）保持简短（不超过 30 字），只概括事件主题；事件细节、数字、过程写进标题下方的正文，不要堆进标题——过长的标题会导致下游索引截断。**
 - `memory_update`: 字符串或 null。MEMORY.md 的完整新内容（已合并现有内容，不是增量）。仅当有需要新增或修改的**跨项目稳定**信息时才填写
 - `profile_update`: 字符串或 null。PROFILE.md 的完整新内容（已合并现有内容，不是增量）。仅当用户身份/偏好有显著变化时才填写
-- `structured_entries`: 数组或 null。把适合按条目检索的**具体事实**路由到结构化记忆，每个元素形如 `{"type": "...", "key": "...", "content": "..."}`：
+- `structured_entries`: 数组或 null。把适合按条目检索的**具体事实**路由到结构化记忆，每个元素必须包含：`{"type":"...","key":"...","content":"...","scope":"turn|session|project|user|global","stability":"transient|ongoing|durable","confidence":0.0,"evidence_count":1,"expires_at":null,"explicitly_persistent":false}`：
   - `type` 取值：`user`（用户偏好/专长/沟通风格/角色）、`feedback`（被纠正的行为或确认的做法，含原因）、`project`（具体项目的代号/名称/技术栈/指标/预算/团队/约束/单项目决策）、`reference`（外部系统指针，如某看板/频道/文档地址）
   - `key`: 稳定的英文蛇形命名，便于后续更新同一条目（如 `project_codename`、`project_tech_stack`、`preferred_output_format`）
   - `content`: 一两句话陈述该事实
+  - `scope`: 信息生效范围。只对当前回答成立的字数、篇幅、格式、语气要求必须是 `turn`；当前会话是 `session`；项目事实是 `project`；长期用户偏好是 `user`
+  - `stability`: `transient`（一次性）、`ongoing`（有持续期但可能变化）、`durable`（长期稳定）
+  - `confidence`: 0 到 1；低于 0.7 不应输出
+  - `evidence_count`: 独立确认次数。只能统计不同会话中的明确证据，不能把同一会话的重复措辞算多次
+  - `expires_at`: 已知失效日期（YYYY-MM-DD），无明确日期为 null
+  - `explicitly_persistent`: 仅当用户明确说“以后/默认/始终/记住这个偏好”等未来持续语义时为 true
+  - **一次性的输出约束绝不能提取为 user/feedback**：例如“这次写 3000 字”“回答详细一点”“本次用表格”。若没有明确的未来持续语义，宁可不输出该条
   - **重要**：上面「记忆分层纪律」要求不进 MEMORY.md 的项目易变事实（代号、技术栈、单项目指标/预算/团队等），应放在这里（`type=project`），这样才能在后续对话中按问题被召回；不要让它们只停留在 daily note。
 - `reason`: 简要说明判断理由

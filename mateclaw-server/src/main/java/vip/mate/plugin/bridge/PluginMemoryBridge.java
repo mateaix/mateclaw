@@ -76,4 +76,9 @@ public class PluginMemoryBridge implements MemoryProvider {
     public void onSessionEnd(Long agentId, String conversationId) {
         delegate.onSessionEnd(agentId, conversationId);
     }
+
+    @Override
+    public void close() {
+        delegate.close();
+    }
 }

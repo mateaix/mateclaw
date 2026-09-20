@@ -19,6 +19,7 @@ import vip.mate.agent.runtime.contract.RuntimeValidation;
 import vip.mate.agent.runtime.dsh.management.DshRuntimeConfigService;
 import vip.mate.agent.runtime.dsh.management.DshRuntimeConfiguration;
 import vip.mate.agent.AgentService;
+import vip.mate.config.ConversationWindowProperties;
 import vip.mate.llm.model.ModelConfigEntity;
 import vip.mate.llm.model.ModelProviderEntity;
 import vip.mate.llm.service.ModelConfigService;
@@ -53,16 +54,21 @@ public class DshRuntimeService implements AgentRuntimeProvider {
     private final ModelConfigService modelConfigService;
     private final ModelProviderService modelProviderService;
     private final DshRuntimeConfigService runtimeConfigService;
+    private final ConversationWindowProperties windowProperties;
+    private static final int DEFAULT_MAX_OUTPUT_TOKENS = 4096;
+    private static final int DEFAULT_CONTEXT_WINDOW = 128000;
 
     public DshRuntimeService(
             ObjectMapper objectMapper,
             ModelConfigService modelConfigService,
             ModelProviderService modelProviderService,
-            DshRuntimeConfigService runtimeConfigService) {
+            DshRuntimeConfigService runtimeConfigService,
+            ConversationWindowProperties windowProperties) {
         this.objectMapper = objectMapper;
         this.modelConfigService = modelConfigService;
         this.modelProviderService = modelProviderService;
         this.runtimeConfigService = runtimeConfigService;
+        this.windowProperties = windowProperties;
         DshRuntimeConfiguration configuration = runtimeConfig();
         log.info("[DSH] runtime configured: command={}, cordisConfig={}", configuration.executablePath(),
                 configuration.cordisConfigPath().isBlank() ? "<empty>" : configuration.cordisConfigPath());
@@ -245,8 +251,10 @@ public class DshRuntimeService implements AgentRuntimeProvider {
                 String dshSessionId = conversationId + "-" + UUID.randomUUID();
                 Files.createDirectories(session.workingDirectory());
                 String requestedModel = modelName == null || modelName.isBlank() ? configuration.modelName() : modelName;
-                ModelProviderEntity provider = resolveProvider(requestedModel);
-                String effectiveModelName = resolveModelName(requestedModel);
+                ModelConfigEntity model = resolveModel(requestedModel);
+                ModelProviderEntity provider = resolveProvider(model);
+                String effectiveModelName = resolveModelName(requestedModel, model);
+                int maxOutputTokens = resolveMaxOutputTokens(model, windowProperties.getDefaultMaxInputTokens());
                 log.debug("[DSH] model route: requestedModel={}, effectiveModel={}, provider={}, apiKeyConfigured={}, baseUrlConfigured={}",
                         modelName == null || modelName.isBlank() ? "<default>" : modelName,
                         effectiveModelName,
@@ -284,7 +292,8 @@ public class DshRuntimeService implements AgentRuntimeProvider {
                     send(writer, request("initialize", "init-" + conversationId, Map.of(
                             "cwd", session.workingDirectory().toString(),
                             "provider", "deepseek-official",
-                            "model", effectiveModelName)));
+                            "model", effectiveModelName,
+                            "maxTokens", maxOutputTokens)));
                     awaitResponse(reader, "init-" + conversationId);
                     long sequence = 0;
                     sink.next(RuntimeEventProjector.project(RuntimeEvent.of(
@@ -487,13 +496,15 @@ public class DshRuntimeService implements AgentRuntimeProvider {
         return primary != null && !primary.isBlank() ? primary : fallback;
     }
 
-    private ModelProviderEntity resolveProvider(String modelName) {
-        ModelConfigEntity model = null;
+    private ModelConfigEntity resolveModel(String modelName) {
         try {
-            model = modelConfigService.resolveModel(modelName);
+            return modelConfigService.resolveModel(modelName);
         } catch (RuntimeException ignored) {
-            // Fall back to the dedicated DeepSeek provider below.
+            return null;
         }
+    }
+
+    private ModelProviderEntity resolveProvider(ModelConfigEntity model) {
         if (model != null && model.getProvider() != null && !model.getProvider().isBlank()) {
             try {
                 return modelProviderService.getProviderConfig(model.getProvider());
@@ -508,16 +519,28 @@ public class DshRuntimeService implements AgentRuntimeProvider {
         }
     }
 
-    private String resolveModelName(String modelName) {
-        try {
-            ModelConfigEntity model = modelConfigService.resolveModel(modelName);
-            if (model != null && model.getModelName() != null && !model.getModelName().isBlank()) {
-                return model.getModelName();
-            }
-        } catch (RuntimeException ignored) {
-            // Fall back to the DSH catalog default for a not-yet-configured agent.
+    private static String resolveModelName(String modelName, ModelConfigEntity model) {
+        if (model != null && model.getModelName() != null && !model.getModelName().isBlank()) {
+            return model.getModelName();
         }
         return modelName == null || modelName.isBlank() ? "deepseek-v4-flash" : modelName;
+    }
+
+    /**
+     * SDK initialize.maxTokens is inherited by main and in-process child agents.
+     * Never let an unset model cap fall through to DSH's 256000-token default.
+     * As in the graph runtime, reserve at least half the known window for input.
+     * This is a static bound, not a token count of DSH's growing tool history.
+     */
+    static int resolveMaxOutputTokens(ModelConfigEntity model, int defaultWindow) {
+        int output = model != null && model.getMaxTokens() != null && model.getMaxTokens() > 0
+                ? model.getMaxTokens() : DEFAULT_MAX_OUTPUT_TOKENS;
+        int window = model != null && model.getMaxInputTokens() != null && model.getMaxInputTokens() > 0
+                ? model.getMaxInputTokens() : defaultWindow > 0 ? defaultWindow : DEFAULT_CONTEXT_WINDOW;
+        if (window < 2) {
+            throw new IllegalArgumentException("DSH 模型上下文窗口过小，无法同时容纳输入和输出，请检查模型配置");
+        }
+        return Math.min(output, window / 2);
     }
 
     RuntimeEvent mapEvent(String sessionId, long sequence, JsonNode event) {

@@ -45,6 +45,8 @@ import java.util.regex.Pattern;
 @RequiredArgsConstructor
 public class TeamTaskService {
 
+    private static final int MAX_STAGED_REPLAY_RESULT_CHARS = 8000;
+
     private static final Pattern CHECKPOINT_RANGE = Pattern.compile(
             "(?i)R(\\d{3})\\s*[-–—]\\s*R(\\d{3})");
 
@@ -375,6 +377,275 @@ public class TeamTaskService {
         return updated;
     }
 
+    /** Park a running worker task until its guarded tool call receives a human decision. */
+    public boolean parkForToolApproval(Long taskId, String pendingId, String summary) {
+        if (pendingId == null || pendingId.isBlank()) {
+            throw new IllegalArgumentException("pending approval id is required");
+        }
+        TeamTaskEntity task = taskMapper.selectById(taskId);
+        if (task == null) {
+            return false;
+        }
+        JSONObject metadata;
+        try {
+            metadata = task.getMetadata() == null || task.getMetadata().isBlank()
+                    ? new JSONObject() : JSONUtil.parseObj(task.getMetadata());
+        } catch (RuntimeException invalid) {
+            metadata = new JSONObject();
+        }
+        String detail = summary == null || summary.isBlank()
+                ? "Tool approval required" : summary.strip();
+        metadata.set("toolApproval", new JSONObject()
+                .set("pendingId", pendingId)
+                .set("summary", detail));
+        boolean parked = taskMapper.update(null, Wrappers.<TeamTaskEntity>lambdaUpdate()
+                .eq(TeamTaskEntity::getId, taskId)
+                .in(TeamTaskEntity::getStatus, TeamTaskStatus.IN_PROGRESS,
+                        TeamTaskStatus.AWAITING_APPROVAL)
+                .set(TeamTaskEntity::getStatus, TeamTaskStatus.AWAITING_APPROVAL)
+                .set(TeamTaskEntity::getReason, detail)
+                .set(TeamTaskEntity::getMetadata, metadata.toString())
+                .set(TeamTaskEntity::getLockExpiresAt, null)) == 1;
+        if (parked) {
+            recordEvent(task.getTeamId(), taskId, TeamTaskEventEntity.AWAITING_APPROVAL,
+                    AUTHOR_SYSTEM, null, pendingId + " — " + detail);
+            projectTask(taskId);
+        }
+        return parked;
+    }
+
+    /** Resume the exact guarded tool request currently recorded on a parked task. */
+    public boolean resumeAfterToolApproval(Long taskId, String pendingId) {
+        if (pendingId == null || pendingId.isBlank()) {
+            throw new IllegalArgumentException("pending approval id is required");
+        }
+        TeamTaskEntity task = requireTask(taskId);
+        if (!TeamTaskStatus.AWAITING_APPROVAL.equals(task.getStatus())) {
+            throw new IllegalStateException("task #" + task.getTaskNumber()
+                    + " is not awaiting tool approval");
+        }
+        JSONObject metadata = parseMetadata(task.getMetadata());
+        JSONObject approval = metadata.getJSONObject("toolApproval");
+        String currentPendingId = approval == null ? null : approval.getStr("pendingId");
+        if (!pendingId.equals(currentPendingId)) {
+            throw new IllegalStateException("tool approval is no longer current for task #"
+                    + task.getTaskNumber());
+        }
+        approval.set("replayInProgress", true);
+        metadata.set("toolApproval", approval);
+        boolean resumed = taskMapper.update(null, Wrappers.<TeamTaskEntity>lambdaUpdate()
+                .eq(TeamTaskEntity::getId, taskId)
+                .eq(TeamTaskEntity::getStatus, TeamTaskStatus.AWAITING_APPROVAL)
+                .set(TeamTaskEntity::getStatus, TeamTaskStatus.IN_PROGRESS)
+                .set(TeamTaskEntity::getOwnerAgentId, task.getAssigneeAgentId())
+                .set(TeamTaskEntity::getReason, null)
+                .set(TeamTaskEntity::getMetadata, metadata.toString())
+                .set(TeamTaskEntity::getLockExpiresAt, newLease())) == 1;
+        if (resumed) {
+            projectTask(taskId);
+        }
+        return resumed;
+    }
+
+    /** Settle a parked guarded tool request as denied without executing it. */
+    public boolean denyToolApproval(Long taskId, String pendingId, String requester) {
+        TeamTaskEntity task = requireTask(taskId);
+        if (!TeamTaskStatus.AWAITING_APPROVAL.equals(task.getStatus())) {
+            throw new IllegalStateException("task #" + task.getTaskNumber()
+                    + " is not awaiting tool approval");
+        }
+        JSONObject metadata = parseMetadata(task.getMetadata());
+        JSONObject approval = metadata.getJSONObject("toolApproval");
+        if (approval == null || !Objects.equals(pendingId, approval.getStr("pendingId"))) {
+            throw new IllegalStateException("tool approval is no longer current for task #"
+                    + task.getTaskNumber());
+        }
+        metadata.remove("toolApproval");
+        String reason = "Tool request denied by "
+                + (requester == null || requester.isBlank() ? "user" : requester);
+        boolean denied = taskMapper.update(null, Wrappers.<TeamTaskEntity>lambdaUpdate()
+                .eq(TeamTaskEntity::getId, taskId)
+                .eq(TeamTaskEntity::getStatus, TeamTaskStatus.AWAITING_APPROVAL)
+                .set(TeamTaskEntity::getStatus, TeamTaskStatus.FAILED)
+                .set(TeamTaskEntity::getReason, reason)
+                .set(TeamTaskEntity::getMetadata, metadata.toString())
+                .set(TeamTaskEntity::getLockExpiresAt, null)) == 1;
+        if (denied) {
+            recordEvent(task.getTeamId(), taskId, TeamTaskEventEntity.FAILED,
+                    AUTHOR_USER, requester, reason);
+            projectTask(taskId);
+        }
+        return denied;
+    }
+
+    /** Durably stage a successful replay before consuming its approval. */
+    public boolean stageToolReplayResult(Long taskId, String pendingId, String reply) {
+        TeamTaskEntity task = requireTask(taskId);
+        JSONObject metadata = parseMetadata(task.getMetadata());
+        JSONObject currentApproval = metadata.getJSONObject("toolApproval");
+        if (!TeamTaskStatus.IN_PROGRESS.equals(task.getStatus())
+                || currentApproval == null
+                || !Objects.equals(pendingId, currentApproval.getStr("pendingId"))) {
+            throw new IllegalStateException("tool approval is no longer current for task #"
+                    + task.getTaskNumber());
+        }
+        JSONObject approval = new JSONObject()
+                .set("pendingId", pendingId)
+                .set("summary", "Approved tool completed; finalizing result")
+                .set("replayResult", truncate(reply == null ? "" : reply,
+                        MAX_STAGED_REPLAY_RESULT_CHARS));
+        metadata.set("toolApproval", approval);
+        boolean staged = taskMapper.update(null, Wrappers.<TeamTaskEntity>lambdaUpdate()
+                .eq(TeamTaskEntity::getId, taskId)
+                .eq(TeamTaskEntity::getStatus, TeamTaskStatus.IN_PROGRESS)
+                .set(TeamTaskEntity::getStatus, TeamTaskStatus.AWAITING_APPROVAL)
+                .set(TeamTaskEntity::getReason, "Approved tool completed; finalizing result")
+                .set(TeamTaskEntity::getMetadata, metadata.toString())
+                .set(TeamTaskEntity::getLockExpiresAt, null)) == 1;
+        if (staged) {
+            projectTask(taskId);
+        }
+        return staged;
+    }
+
+    /** Park a failed replay without allowing an automatic second execution. */
+    public boolean parkToolReplayUncertain(Long taskId, String pendingId, String detail) {
+        TeamTaskEntity task = requireTask(taskId);
+        JSONObject metadata = parseMetadata(task.getMetadata());
+        JSONObject approval = metadata.getJSONObject("toolApproval");
+        if (approval == null || !Objects.equals(pendingId, approval.getStr("pendingId"))) {
+            return false;
+        }
+        approval.set("replayInProgress", false);
+        approval.set("replayOutcomeUncertain", true);
+        approval.set("summary", detail);
+        metadata.set("toolApproval", approval);
+        boolean parked = taskMapper.update(null, Wrappers.<TeamTaskEntity>lambdaUpdate()
+                .eq(TeamTaskEntity::getId, taskId)
+                .eq(TeamTaskEntity::getStatus, TeamTaskStatus.IN_PROGRESS)
+                .set(TeamTaskEntity::getStatus, TeamTaskStatus.AWAITING_APPROVAL)
+                .set(TeamTaskEntity::getReason, detail)
+                .set(TeamTaskEntity::getMetadata, metadata.toString())
+                .set(TeamTaskEntity::getLockExpiresAt, null)) == 1;
+        if (parked) {
+            recordEvent(task.getTeamId(), taskId, TeamTaskEventEntity.AWAITING_APPROVAL,
+                    AUTHOR_SYSTEM, null, detail);
+            projectTask(taskId);
+        }
+        return parked;
+    }
+
+    public String stagedToolReplayResult(TeamTaskEntity task) {
+        JSONObject approval = task == null ? null : parseMetadata(task.getMetadata())
+                .getJSONObject("toolApproval");
+        return approval != null && approval.containsKey("replayResult")
+                ? approval.getStr("replayResult", "") : null;
+    }
+
+    public boolean isToolReplayMessagePersisted(TeamTaskEntity task) {
+        JSONObject approval = task == null ? null : parseMetadata(task.getMetadata())
+                .getJSONObject("toolApproval");
+        return approval != null && approval.getBool("messagePersisted", false);
+    }
+
+    public boolean isToolReplayOutcomeUncertain(TeamTaskEntity task) {
+        JSONObject approval = task == null ? null : parseMetadata(task.getMetadata())
+                .getJSONObject("toolApproval");
+        return approval != null && approval.getBool("replayOutcomeUncertain", false);
+    }
+
+    public boolean markToolReplayMessagePersisted(Long taskId, String pendingId) {
+        TeamTaskEntity task = requireTask(taskId);
+        JSONObject metadata = parseMetadata(task.getMetadata());
+        JSONObject approval = metadata.getJSONObject("toolApproval");
+        if (approval == null || !Objects.equals(pendingId, approval.getStr("pendingId"))) {
+            return false;
+        }
+        approval.set("messagePersisted", true);
+        metadata.set("toolApproval", approval);
+        return taskMapper.update(null, Wrappers.<TeamTaskEntity>lambdaUpdate()
+                .eq(TeamTaskEntity::getId, taskId)
+                .eq(TeamTaskEntity::getStatus, TeamTaskStatus.AWAITING_APPROVAL)
+                .set(TeamTaskEntity::getMetadata, metadata.toString())) == 1;
+    }
+
+    /** Stop an already-claimed replay after a failed execution attempt. */
+    public boolean abortClaimedToolReplay(Long taskId, String pendingId, String requester) {
+        TeamTaskEntity task = requireTask(taskId);
+        if (!TeamTaskStatus.AWAITING_APPROVAL.equals(task.getStatus())) {
+            throw new IllegalStateException("task #" + task.getTaskNumber()
+                    + " is not awaiting replay recovery");
+        }
+        JSONObject metadata = parseMetadata(task.getMetadata());
+        JSONObject approval = metadata.getJSONObject("toolApproval");
+        if (approval == null || !Objects.equals(pendingId, approval.getStr("pendingId"))
+                || approval.containsKey("replayResult")) {
+            throw new IllegalStateException("tool replay is no longer abortable for task #"
+                    + task.getTaskNumber());
+        }
+        metadata.remove("toolApproval");
+        String actor = requester == null || requester.isBlank() ? "user" : requester;
+        String reason = "Approved tool replay aborted by " + actor
+                + "; the previous execution outcome may be uncertain";
+        boolean aborted = taskMapper.update(null, Wrappers.<TeamTaskEntity>lambdaUpdate()
+                .eq(TeamTaskEntity::getId, taskId)
+                .eq(TeamTaskEntity::getStatus, TeamTaskStatus.AWAITING_APPROVAL)
+                .set(TeamTaskEntity::getStatus, TeamTaskStatus.FAILED)
+                .set(TeamTaskEntity::getReason, reason)
+                .set(TeamTaskEntity::getMetadata, metadata.toString())
+                .set(TeamTaskEntity::getLockExpiresAt, null)) == 1;
+        if (aborted) {
+            recordEvent(task.getTeamId(), taskId, TeamTaskEventEntity.FAILED,
+                    AUTHOR_USER, requester, reason);
+            projectTask(taskId);
+        }
+        return aborted;
+    }
+
+    private static String truncate(String value, int maxChars) {
+        return value.length() <= maxChars ? value : value.substring(0, maxChars);
+    }
+
+    /** Reopen a settled worker task for one deliberate, task-scoped follow-up turn. */
+    public boolean resumeForWorkerFeedback(Long taskId) {
+        TeamTaskEntity task = requireTask(taskId);
+        if (TeamTaskStatus.IN_PROGRESS.equals(task.getStatus())) {
+            throw new IllegalStateException("worker task is already running");
+        }
+        if (TeamTaskStatus.AWAITING_APPROVAL.equals(task.getStatus())) {
+            throw new IllegalStateException("resolve the pending tool approval before sending feedback");
+        }
+        if (TeamTaskStatus.CANCELLED.equals(task.getStatus())
+                || TeamTaskStatus.PENDING.equals(task.getStatus())
+                || TeamTaskStatus.BLOCKED.equals(task.getStatus())) {
+            throw new IllegalStateException("task #" + task.getTaskNumber()
+                    + " cannot accept worker feedback while " + task.getStatus());
+        }
+        boolean resumed = taskMapper.update(null, Wrappers.<TeamTaskEntity>lambdaUpdate()
+                .eq(TeamTaskEntity::getId, taskId)
+                .in(TeamTaskEntity::getStatus, TeamTaskStatus.COMPLETED, TeamTaskStatus.FAILED,
+                        TeamTaskStatus.STALE, TeamTaskStatus.IN_REVIEW)
+                .set(TeamTaskEntity::getStatus, TeamTaskStatus.IN_PROGRESS)
+                .set(TeamTaskEntity::getOwnerAgentId, task.getAssigneeAgentId())
+                .set(TeamTaskEntity::getReason, null)
+                .set(TeamTaskEntity::getLockExpiresAt, newLease())) == 1;
+        if (resumed) {
+            projectTask(taskId);
+        }
+        return resumed;
+    }
+
+    private static JSONObject parseMetadata(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return new JSONObject();
+        }
+        try {
+            return JSONUtil.parseObj(raw);
+        } catch (RuntimeException invalid) {
+            return new JSONObject();
+        }
+    }
+
     /** Extend the execution lease (runner heartbeat). */
     public void renewLock(Long taskId) {
         taskMapper.update(null, Wrappers.<TeamTaskEntity>lambdaUpdate()
@@ -684,20 +955,48 @@ public class TeamTaskService {
                 .eq(TeamTaskEntity::getStatus, TeamTaskStatus.IN_PROGRESS)
                 .isNotNull(TeamTaskEntity::getLockExpiresAt)
                 .lt(TeamTaskEntity::getLockExpiresAt, LocalDateTime.now()));
+        int staleCount = 0;
+        int uncertainReplayCount = 0;
         for (TeamTaskEntity task : expired) {
+            JSONObject metadata = parseMetadata(task.getMetadata());
+            JSONObject approval = metadata.getJSONObject("toolApproval");
+            if (approval != null && approval.getBool("replayInProgress", false)) {
+                approval.set("replayInProgress", false);
+                approval.set("replayOutcomeUncertain", true);
+                approval.set("summary", "Approved tool replay was interrupted; outcome is uncertain");
+                metadata.set("toolApproval", approval);
+                String reason = "Approved tool replay lease expired; stop the replay or verify its outcome manually";
+                int rows = taskMapper.update(null, Wrappers.<TeamTaskEntity>lambdaUpdate()
+                        .eq(TeamTaskEntity::getId, task.getId())
+                        .eq(TeamTaskEntity::getStatus, TeamTaskStatus.IN_PROGRESS)
+                        .set(TeamTaskEntity::getStatus, TeamTaskStatus.AWAITING_APPROVAL)
+                        .set(TeamTaskEntity::getReason, reason)
+                        .set(TeamTaskEntity::getMetadata, metadata.toString())
+                        .set(TeamTaskEntity::getLockExpiresAt, null));
+                if (rows == 1) {
+                    uncertainReplayCount++;
+                    recordEvent(task.getTeamId(), task.getId(),
+                            TeamTaskEventEntity.AWAITING_APPROVAL,
+                            AUTHOR_SYSTEM, null, reason);
+                    projectTask(task);
+                }
+                continue;
+            }
             int rows = taskMapper.update(null, Wrappers.<TeamTaskEntity>lambdaUpdate()
                     .eq(TeamTaskEntity::getId, task.getId())
                     .eq(TeamTaskEntity::getStatus, TeamTaskStatus.IN_PROGRESS)
                     .set(TeamTaskEntity::getStatus, TeamTaskStatus.STALE)
                     .set(TeamTaskEntity::getReason, "execution lease expired"));
             if (rows == 1) {
+                staleCount++;
                 recordEvent(task.getTeamId(), task.getId(), TeamTaskEventEntity.STALE,
                         AUTHOR_SYSTEM, null, "execution lease expired");
                 projectTask(task);
             }
         }
-        if (!expired.isEmpty()) {
-            log.warn("Marked {} team task(s) stale after lease expiry", expired.size());
+        if (staleCount > 0 || uncertainReplayCount > 0) {
+            log.warn("Recovered expired team task leases: stale={}, replayOutcomeUncertain={}",
+                    staleCount, uncertainReplayCount);
         }
         return expired;
     }

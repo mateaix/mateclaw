@@ -112,7 +112,7 @@ class DshRuntimeServiceTest {
         provider.setBaseUrl("https://provider.example/v1");
         Map<String, String> inherited = new HashMap<>();
         inherited.put("PATH", "/usr/bin");
-        inherited.put("HOME", "/Users/mate");
+		inherited.put("HOME", "/Users/tester");
         inherited.put("AWS_SECRET_ACCESS_KEY", "must-not-leak");
         inherited.put("DEEPSEEK_API_KEY", "inherited-key");
         inherited.put("DSH_CORDIS_CONFIG", "/stale/cordis.yml");
@@ -121,7 +121,7 @@ class DshRuntimeServiceTest {
                 inherited, session, configuration, provider);
 
         assertEquals("/usr/bin", environment.get("PATH"));
-        assertEquals("/Users/mate", environment.get("HOME"));
+		assertEquals("/Users/tester", environment.get("HOME"));
         assertEquals("/workspace/project", environment.get("DSH_CWD"));
         assertEquals("/opt/dsh/cordis.yml", environment.get("DSH_CORDIS_CONFIG"));
         assertEquals("configured-key", environment.get("DEEPSEEK_API_KEY"));
@@ -141,7 +141,7 @@ class DshRuntimeServiceTest {
                 executable, "", "/tmp", "", "model", ""));
         return new DshRuntimeService(new ObjectMapper(),
                 Mockito.mock(ModelConfigService.class),
-                Mockito.mock(ModelProviderService.class), config);
+                Mockito.mock(ModelProviderService.class), config, new vip.mate.config.ConversationWindowProperties());
     }
 
     private static RuntimeSession session(Path workingDirectory) {

@@ -1,5 +1,6 @@
 package vip.mate.channel.web;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
@@ -89,6 +90,18 @@ public class ChatStreamTracker {
     private boolean iterationEventsEnabled = true;
 
     /**
+     * Coalesce the tiny token fragments produced by streaming model clients
+     * before assigning an SSE id and touching the replay buffer. This keeps
+     * rendering responsive while avoiding thousands of emitter writes for a
+     * single long answer.
+     */
+    @Value("${mateclaw.stream.content-batch-ms:25}")
+    private long contentBatchMs = 25L;
+
+    @Value("${mateclaw.stream.content-batch-chars:256}")
+    private int contentBatchChars = 256;
+
+    /**
      * Heartbeat cadence (seconds) before the first model token arrives. Short
      * because pre-token gaps strand the UI on a blank "正在生成中" placeholder
      * with no visible activity.
@@ -125,6 +138,11 @@ public class ChatStreamTracker {
 
     void setIterationEventsEnabled(boolean enabled) {
         this.iterationEventsEnabled = enabled;
+    }
+
+    void setContentBatchingForTesting(long flushMs, int maxChars) {
+        this.contentBatchMs = Math.max(1L, flushMs);
+        this.contentBatchChars = Math.max(1, maxChars);
     }
 
     public boolean isIterationEventsEnabled() {
@@ -218,6 +236,11 @@ public class ChatStreamTracker {
 
         /** 已广播的 pending approval ID 集合（用于幂等去重） */
         final java.util.Set<String> broadcastedApprovalIds = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+        /** Pending visible answer text waiting for the SSE coalescing window. Guarded by lock. */
+        String pendingContentField;
+        final StringBuilder pendingContent = new StringBuilder();
+        ScheduledFuture<?> pendingContentFlush;
 
         /** 创建时间（用于 stale 检测和清理） */
         final long createdAt = System.currentTimeMillis();
@@ -748,6 +771,99 @@ public class ChatStreamTracker {
         return true;
     }
 
+    private record ContentDelta(String field, String text) {}
+
+    /**
+     * Buffer only the two established visible-content wire shapes:
+     * {@code {"delta":"..."}} (workspace chat) and
+     * {@code {"text":"..."}} (embedded webchat). Payloads with extra
+     * metadata stay on the ordinary path so batching never discards fields.
+     */
+    private boolean tryBufferContentDelta(RunState state, String eventName,
+                                          String jsonData, boolean skipBuffer) {
+        if (!"content_delta".equals(eventName) || skipBuffer || state == null) {
+            return false;
+        }
+        ContentDelta delta = parseContentDelta(jsonData);
+        if (delta == null) {
+            return false;
+        }
+
+        boolean flushNow = false;
+        synchronized (state.lock) {
+            if (!isCurrent(state) || state.done) {
+                return true;
+            }
+            // A conversation uses one wire field for a run. If a caller does
+            // switch shapes, flush the old batch and deliver the new payload
+            // unchanged rather than mixing contracts.
+            if (state.pendingContentField != null
+                    && !state.pendingContentField.equals(delta.field())) {
+                return false;
+            }
+            state.lastEventAt = System.currentTimeMillis();
+            state.pendingContentField = delta.field();
+            state.pendingContent.append(delta.text());
+            if (state.pendingContent.length() >= Math.max(1, contentBatchChars)) {
+                flushNow = true;
+            } else if (state.pendingContentFlush == null
+                    || state.pendingContentFlush.isDone()) {
+                state.pendingContentFlush = heartbeatScheduler.schedule(
+                        () -> flushPendingContent(state),
+                        Math.max(1L, contentBatchMs), TimeUnit.MILLISECONDS);
+            }
+        }
+        if (flushNow) {
+            flushPendingContent(state);
+        }
+        return true;
+    }
+
+    private ContentDelta parseContentDelta(String jsonData) {
+        if (jsonData == null || jsonData.isEmpty()) return null;
+        try {
+            JsonNode node = objectMapper.readTree(jsonData);
+            if (node == null || !node.isObject() || node.size() != 1) return null;
+            String field = node.has("delta") ? "delta" : node.has("text") ? "text" : null;
+            if (field == null || !node.path(field).isTextual()) return null;
+            String text = node.path(field).textValue();
+            return text == null || text.isEmpty() ? null : new ContentDelta(field, text);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    /** Snapshot under the run lock, then emit through the fenced raw path. */
+    private void flushPendingContent(RunState state) {
+        String field;
+        String text;
+        synchronized (state.lock) {
+            if (state.pendingContent.length() == 0) {
+                if (state.pendingContentFlush != null) {
+                    state.pendingContentFlush.cancel(false);
+                    state.pendingContentFlush = null;
+                }
+                state.pendingContentField = null;
+                return;
+            }
+            field = state.pendingContentField;
+            text = state.pendingContent.toString();
+            state.pendingContent.setLength(0);
+            state.pendingContentField = null;
+            if (state.pendingContentFlush != null) {
+                state.pendingContentFlush.cancel(false);
+                state.pendingContentFlush = null;
+            }
+        }
+        try {
+            String json = objectMapper.writeValueAsString(Map.of(field, text));
+            broadcastNow(new RunHandle(state), "content_delta", json, false);
+        } catch (Exception e) {
+            log.warn("Failed to flush content batch for {}: {}",
+                    state.conversationId, e.getMessage());
+        }
+    }
+
     /**
      * 广播事件到所有订阅者并缓存到 buffer.
      * <p>
@@ -777,6 +893,17 @@ public class ChatStreamTracker {
 
     public void broadcast(RunHandle handle, String eventName, String jsonData, boolean skipBuffer) {
         if (handle == null) return;
+        RunState state = handle.state;
+        if (tryBufferContentDelta(state, eventName, jsonData, skipBuffer)) {
+            return;
+        }
+        if (!"heartbeat".equals(eventName)) {
+            flushPendingContent(state);
+        }
+        broadcastNow(handle, eventName, jsonData, skipBuffer);
+    }
+
+    private void broadcastNow(RunHandle handle, String eventName, String jsonData, boolean skipBuffer) {
         RunState state = handle.state;
         boolean isDone = "done".equals(eventName);
         boolean isPostTurnEvent = "goal_continuation".equals(eventName)
@@ -853,6 +980,18 @@ public class ChatStreamTracker {
      *                   high-frequency transient events (e.g. progress).
      */
     public void broadcast(String conversationId, String eventName, String jsonData, boolean skipBuffer) {
+        RunState state = runs.get(conversationId);
+        if (state == null) return;
+        if (tryBufferContentDelta(state, eventName, jsonData, skipBuffer)) {
+            return;
+        }
+        if (!"heartbeat".equals(eventName)) {
+            flushPendingContent(state);
+        }
+        broadcastNow(conversationId, eventName, jsonData, skipBuffer);
+    }
+
+    private void broadcastNow(String conversationId, String eventName, String jsonData, boolean skipBuffer) {
         RunState state = runs.get(conversationId);
 
         boolean isDone = "done".equals(eventName);
@@ -1312,6 +1451,10 @@ public class ChatStreamTracker {
 
     private boolean complete(RunState state) {
         String conversationId = state.conversationId;
+        // Some terminal paths do not publish a done envelope. Flush visible
+        // text while the run is still live so the scheduled batch cannot be
+        // rejected after state.done flips below.
+        flushPendingContent(state);
         ScheduledFuture<?> oldHeartbeat;
         synchronized (state.lock) {
             if (!isCurrent(state)) {
@@ -1354,6 +1497,7 @@ public class ChatStreamTracker {
         if (state == null) {
             return new CompletionResult(true);
         }
+        flushPendingContent(state);
         ScheduledFuture<?> oldHeartbeat;
         synchronized (state.lock) {
             if (!isCurrent(state)) {

@@ -93,10 +93,17 @@ public class StateGraphPlanExecuteAgent extends BaseAgent implements StructuredS
     @Override
     public Flux<AgentService.StreamDelta> chatWithReplayStream(String userMessage, String conversationId,
                                                                 String toolCallPayload) {
+        return chatWithReplayStream(userMessage, conversationId, toolCallPayload, "");
+    }
+
+    @Override
+    public Flux<AgentService.StreamDelta> chatWithReplayStream(String userMessage, String conversationId,
+                                                                String toolCallPayload, String requesterId) {
         setState(AgentState.RUNNING);
         try {
             log.info("[{}] Plan-Execute replay stream: conversationId={}", agentName, conversationId);
             Map<String, Object> inputs = buildInitialState(userMessage, conversationId);
+            inputs.put(MateClawStateKeys.REQUESTER_ID, requesterId != null ? requesterId : "");
 
             // 从 DB 恢复 awaiting_approval 状态的计划上下文（按 conversationId 过滤，避免并发会话误取）
             PlanningService.PlanResumeContext ctx = planningService.findAwaitingApprovalContext(conversationId);
@@ -389,6 +396,10 @@ public class StateGraphPlanExecuteAgent extends BaseAgent implements StructuredS
                         goalService.findActiveByConversation(conversationId);
                 if (active != null) {
                     inputs.put(MateClawStateKeys.ACTIVE_GOAL, active);
+                    if (active.isJsonAcceptanceRequired()) {
+                        inputs.put(MateClawStateKeys.SYSTEM_PROMPT, inputs.get(MateClawStateKeys.SYSTEM_PROMPT) + "\n\n"
+                                + vip.mate.goal.service.GoalJsonProtocolHints.INSTRUCTIONS);
+                    }
                 }
             } catch (Exception e) {
                 log.warn("[{}] findActiveByConversation failed: {}", agentName, e.getMessage());

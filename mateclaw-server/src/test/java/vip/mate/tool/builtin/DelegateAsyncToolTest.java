@@ -27,8 +27,12 @@ import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -104,13 +108,14 @@ class DelegateAsyncToolTest {
                 .thenReturn(entity);
         when(streamTracker.isRunning("parent-conv-1")).thenReturn(true);
 
-        String result = tool.delegateAsync("Researcher", "Go research things", "label-x", makeCtx("user-1", "parent-conv-1"));
+        String result = tool.delegateAsync("Researcher", "Go research things", "label-x", null, makeCtx("user-1", "parent-conv-1"));
 
         Map<String, Object> parsed = objectMapper.readValue(result, new TypeReference<>() {});
         assertThat(parsed).containsEntry("task_id", "tid-123")
                 .containsEntry("status", "running")
                 .containsEntry("agent_name", "Researcher")
-                .containsEntry("label", "label-x");
+                .containsEntry("label", "label-x")
+                .containsEntry("timeout_seconds", 3600);
         assertThat((String) parsed.get("child_conversation_id")).startsWith("child-");
         assertThat((String) parsed.get("hint")).contains("task_output");
 
@@ -132,7 +137,7 @@ class DelegateAsyncToolTest {
         when(asyncTaskService.submitOneShot(anyString(), anyString(), any(), anyString(), anyString(), any()))
                 .thenReturn(entity);
 
-        tool.delegateAsync("Researcher", "task body", "myLabel", makeCtx("user-1", "parent-conv-1"));
+        tool.delegateAsync("Researcher", "task body", "myLabel", 7200, makeCtx("user-1", "parent-conv-1"));
 
         org.mockito.ArgumentCaptor<String> jsonCaptor = org.mockito.ArgumentCaptor.forClass(String.class);
         verify(asyncTaskService).submitOneShot(
@@ -142,6 +147,7 @@ class DelegateAsyncToolTest {
         assertThat(payload).containsEntry("parentConversationId", "parent-conv-1")
                 .containsEntry("label", "myLabel")
                 .containsEntry("task", "task body")
+                .containsEntry("timeoutSeconds", 7200)
                 // Durable async identity — task_output's route-B authorization reads
                 // these persisted fields (the registry is process-local), so lock them.
                 .containsEntry("rootConversationId", "parent-conv-1")
@@ -164,7 +170,7 @@ class DelegateAsyncToolTest {
         when(asyncTaskService.submitOneShot(anyString(), anyString(), any(), anyString(), anyString(), any()))
                 .thenThrow(new IllegalStateException("已达到最大并行任务数（3），请等待现有任务完成"));
 
-        String result = tool.delegateAsync("Researcher", "task", null, makeCtx("user-1", "parent-conv-1"));
+        String result = tool.delegateAsync("Researcher", "task", null, null, makeCtx("user-1", "parent-conv-1"));
 
         Map<String, Object> parsed = objectMapper.readValue(result, new TypeReference<>() {});
         assertThat(parsed).containsEntry("error", true);
@@ -180,8 +186,8 @@ class DelegateAsyncToolTest {
     @Test
     @DisplayName("Missing agentName / task → error JSON without touching downstream services")
     void delegateAsyncMissingArgs() throws Exception {
-        String r1 = tool.delegateAsync("", "task", null, makeCtx("user-1", "parent-conv-1"));
-        String r2 = tool.delegateAsync("X", " ", null, makeCtx("user-1", "parent-conv-1"));
+        String r1 = tool.delegateAsync("", "task", null, null, makeCtx("user-1", "parent-conv-1"));
+        String r2 = tool.delegateAsync("X", " ", null, null, makeCtx("user-1", "parent-conv-1"));
         for (String r : new String[]{r1, r2}) {
             Map<String, Object> parsed = objectMapper.readValue(r, new TypeReference<>() {});
             assertThat(parsed).containsEntry("error", true);
@@ -195,7 +201,7 @@ class DelegateAsyncToolTest {
     @DisplayName("Agent not found → error JSON")
     void delegateAsyncAgentNotFound() throws Exception {
         when(agentMapper.selectOne(any())).thenReturn(null);
-        String result = tool.delegateAsync("Ghost", "task", null, makeCtx("user-1", "parent-conv-1"));
+        String result = tool.delegateAsync("Ghost", "task", null, null, makeCtx("user-1", "parent-conv-1"));
         Map<String, Object> parsed = objectMapper.readValue(result, new TypeReference<>() {});
         assertThat(parsed).containsEntry("error", true);
         assertThat((String) parsed.get("message")).contains("Ghost");
@@ -209,7 +215,7 @@ class DelegateAsyncToolTest {
         when(agentMapper.selectOne(any())).thenReturn(target);
         when(subagentRegistry.isSpawnPaused("parent-conv-1")).thenReturn(true);
 
-        String result = tool.delegateAsync("Researcher", "task", null, makeCtx("user-1", "parent-conv-1"));
+        String result = tool.delegateAsync("Researcher", "task", null, null, makeCtx("user-1", "parent-conv-1"));
         Map<String, Object> parsed = objectMapper.readValue(result, new TypeReference<>() {});
         assertThat(parsed).containsEntry("error", true);
         assertThat((String) parsed.get("message")).contains("paused");
@@ -225,11 +231,72 @@ class DelegateAsyncToolTest {
         for (int i = 0; i < 3; i++) {
             DelegationContext.enter("parent-conv-1", java.util.Set.of());
         }
-        String result = tool.delegateAsync("Researcher", "task", null, makeCtx("user-1", "parent-conv-1"));
+        String result = tool.delegateAsync("Researcher", "task", null, null, makeCtx("user-1", "parent-conv-1"));
         Map<String, Object> parsed = objectMapper.readValue(result, new TypeReference<>() {});
         assertThat(parsed).containsEntry("error", true);
         assertThat((String) parsed.get("message")).contains("depth");
         verify(asyncTaskService, never()).submitOneShot(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("delegateAsync rejects non-positive and over-cap execution budgets")
+    void delegateAsyncRejectsInvalidTimeout() throws Exception {
+        String zero = tool.delegateAsync("Researcher", "task", null, 0,
+                makeCtx("user-1", "parent-conv-1"));
+        String overCap = tool.delegateAsync("Researcher", "task", null, 86_401,
+                makeCtx("user-1", "parent-conv-1"));
+
+        for (String result : new String[]{zero, overCap}) {
+            Map<String, Object> parsed = objectMapper.readValue(result, new TypeReference<>() {});
+            assertThat(parsed).containsEntry("error", true);
+            assertThat((String) parsed.get("message")).contains("timeoutSeconds");
+        }
+        verify(asyncTaskService, never()).submitOneShot(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("delegateAsync timeout stops the child conversation and fails the persisted worker")
+    void delegateAsyncTimeoutPropagatesStop() throws Exception {
+        AgentEntity target = makeAgent(10L, "Researcher");
+        when(agentMapper.selectOne(any())).thenReturn(target);
+        when(subagentRegistry.register(anyString(), anyString(), anyLong(), anyString(), any(),
+                any(), anyInt(), anyString()))
+                .thenReturn("sa-timeout");
+        when(subagentRegistry.get("sa-timeout")).thenReturn(java.util.Optional.empty());
+
+        org.mockito.ArgumentCaptor<Callable<String>> workCaptor =
+                org.mockito.ArgumentCaptor.forClass(Callable.class);
+        org.mockito.ArgumentCaptor<String> requestCaptor =
+                org.mockito.ArgumentCaptor.forClass(String.class);
+        AsyncTaskEntity entity = new AsyncTaskEntity();
+        entity.setTaskId("tid-timeout");
+        when(asyncTaskService.submitOneShot(
+                eq("agent_delegate"), eq("parent-conv-1"), any(), requestCaptor.capture(),
+                eq("user-1"), workCaptor.capture()))
+                .thenReturn(entity);
+
+        CountDownLatch childStarted = new CountDownLatch(1);
+        when(agentService.chatWithUsage(anyLong(), anyString(), anyString(), any()))
+                .thenAnswer(invocation -> {
+                    childStarted.countDown();
+                    new CountDownLatch(1).await(5, TimeUnit.SECONDS);
+                    return AgentService.ChatResult.contentOnly("late");
+                });
+
+        tool.delegateAsync("Researcher", "slow task", null, 1,
+                makeCtx("user-1", "parent-conv-1"));
+        Callable<String> work = workCaptor.getValue();
+        String childConversationId = objectMapper.readTree(requestCaptor.getValue())
+                .path("childConversationId").asText();
+
+        assertThatThrownBy(work::call)
+                .isInstanceOf(java.util.concurrent.TimeoutException.class)
+                .hasMessageContaining("timed out after 1 seconds");
+        assertThat(childStarted.getCount()).isZero();
+        verify(streamTracker).register(childConversationId);
+        verify(streamTracker).requestStop(childConversationId);
+        verify(streamTracker).complete(childConversationId);
+        verify(subagentRegistry).unregister("sa-timeout");
     }
 
     // ---------- taskOutput ----------

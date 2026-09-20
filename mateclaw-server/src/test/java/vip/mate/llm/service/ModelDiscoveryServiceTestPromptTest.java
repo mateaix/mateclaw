@@ -100,4 +100,35 @@ class ModelDiscoveryServiceTestPromptTest {
         Map<String, Object> requestBodyFromNull = ModelDiscoveryService.buildTestPromptRequestBody("gpt-4-turbo", null);
         assertEquals(requestBody, requestBodyFromNull);
     }
+
+    @Test
+    @DisplayName("Kimi smoke test uses the same fixed temperature required by runtime")
+    void kimiForCoding_usesTemperatureOne() {
+        Map<String, Object> requestBody = ModelDiscoveryService.buildTestPromptRequestBody(
+                "kimi-for-coding", Map.of("temperature", 0.2));
+
+        assertEquals(1.0d, requestBody.get("temperature"));
+    }
+    @Test
+    @DisplayName("OpenAI reasoning probes use completion-token budgets and omit unsupported sampling parameters (#640)")
+    void reasoningProbeUsesCompletionTokens() {
+        for (String model : java.util.List.of("gpt-5.5", "gpt-5-mini", "o1", "o3", "o4-mini")) {
+            Map<String, Object> body = ModelDiscoveryService.buildTestPromptRequestBody(model,
+                    Map.of("max_tokens", 10, "temperature", 0.2, "top_p", 0.9));
+            assertFalse(body.containsKey("max_tokens"), model);
+            assertEquals(4096, body.get("max_completion_tokens"), model);
+            assertFalse(body.containsKey("temperature"), model);
+            assertFalse(body.containsKey("top_p"), model);
+        }
+    }
+
+    @Test
+    @DisplayName("GPT-4o probes retain their supported standard parameters")
+    void gpt4oProbeRemainsStandard() {
+        Map<String, Object> body = ModelDiscoveryService.buildTestPromptRequestBody("gpt-4o", Map.of());
+        assertEquals(10, body.get("max_tokens"));
+        assertEquals(0, body.get("temperature"));
+        assertFalse(body.containsKey("max_completion_tokens"));
+    }
+
 }

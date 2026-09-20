@@ -167,4 +167,35 @@ class SkillFileSyncerTest {
         e.setSha256(SkillFileService.sha256Hex(content));
         return e;
     }
+    @Test
+    void binaryAttachmentSurvivesRestoreAndStaleCacheReplacement() throws IOException {
+        SkillEntity skill = newSkill(10L, "demo");
+        byte[] bytes = {80, 75, 3, 4, 0, (byte) 255};
+        SkillFileEntity row = newRow(1L, 10L, "templates/报告.xlsx", "");
+        row.setContent(java.util.Base64.getEncoder().encodeToString(bytes));
+        row.setContentEncoding("base64");
+        row.setSha256(SkillFileService.sha256Hex(bytes));
+        when(mapper.selectList(any())).thenReturn(List.of(row));
+        Path target = tmp.resolve("1/demo/templates/报告.xlsx");
+        assertEquals(1, syncer.syncOne(skill).filesMaterialized());
+        assertArrayEquals(bytes, Files.readAllBytes(target));
+        assertEquals(1, syncer.syncOne(skill).filesAlreadyCurrent());
+        Files.write(target, new byte[]{(byte) 255, 0, 1});
+        assertEquals(1, syncer.syncOne(skill).filesMaterialized());
+        assertArrayEquals(bytes, Files.readAllBytes(target));
+    }
+
+    @Test
+    void refusesSymlinkInsideSkillWorkspace() throws IOException {
+        SkillEntity skill = newSkill(10L, "demo");
+        Path workspace = tmp.resolve("1/demo");
+        Path outside = tmp.resolve("outside");
+        Files.createDirectories(workspace);
+        Files.createDirectories(outside);
+        Files.createSymbolicLink(workspace.resolve("references"), outside);
+        when(mapper.selectList(any())).thenReturn(List.of(newRow(1L, 10L, "references/a.txt", "secret")));
+        assertEquals(0, syncer.syncOne(skill).filesMaterialized());
+        assertFalse(Files.exists(outside.resolve("a.txt")));
+    }
+
 }

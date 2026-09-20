@@ -16,7 +16,7 @@ import java.util.List;
  *
  * @author MateClaw Team
  */
-public interface MemoryProvider {
+public interface MemoryProvider extends AutoCloseable {
 
     /**
      * Unique provider identifier, e.g. "builtin", "structured", "session_search".
@@ -159,5 +159,10 @@ public interface MemoryProvider {
      * @param agentId the agent ID
      */
     default void evict(Long agentId) {
+    }
+
+    /** Release provider-owned threads, clients, and other resources. */
+    @Override
+    default void close() {
     }
 }

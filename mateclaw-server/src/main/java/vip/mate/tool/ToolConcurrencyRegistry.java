@@ -75,7 +75,7 @@ public class ToolConcurrencyRegistry {
         // Keep the legacy hardcoded names so existing deployments without
         // annotations still see the same behavior. New code should rely on
         // the @ConcurrencyUnsafe annotation rather than this list.
-        discovered.addAll(Arrays.asList("browser_use", "BrowserUseTool", "write_file", "edit_file"));
+        discovered.addAll(Arrays.asList("browser_use", "BrowserUseTool", "write_file", "append_file", "edit_file"));
         this.unsafeNames = Collections.unmodifiableSet(discovered);
         log.info("[ToolConcurrencyRegistry] Concurrency-unsafe tools ({}): {}",
                 unsafeNames.size(), unsafeNames);

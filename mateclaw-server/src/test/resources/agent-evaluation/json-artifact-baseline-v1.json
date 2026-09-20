@@ -1,0 +1,145 @@
+{
+  "schemaVersion" : 1,
+  "suiteId" : "json-artifact-boundaries-v1",
+  "suiteSha256" : "b8772a0bcd24f16ff0b1bb2ef01e0aae7988a66cd850517152b3fcef85fee1e8",
+  "revisionLabel" : "ef209228f+cycle012-working",
+  "productionClassSha256" : {
+    "vip.mate.tool.document.GeneratedFileCache" : "9db54f575cdd1a2bc750b97d62adeaf93c3590d78f189c9e80bffce271cb65b1",
+    "vip.mate.tool.document.GeneratedFileCache$ArtifactRead" : "078a1997f925cd3b4d44f0de82934de49ff18c926111177efb567a174bc7aeb6",
+    "vip.mate.execution.evidence.service.JsonArtifactRecipe" : "7b56e5fb25e12d878d683432e853187c4f8e3e0d75c759be4c9762e59353a592",
+    "vip.mate.execution.evidence.service.JsonArtifactRecipe$Result" : "4aaa1cce1fc5a8159254c10ef80f0620feed4de3b8e919be4ecb3649143b5c92"
+  },
+  "executionMode" : "offline_platform_fixture_jsoncheck",
+  "onlineModelCalls" : 0,
+  "agentTaskSuccessRate" : "not_measured",
+  "onlineCost" : "not_measured",
+  "matchedCases" : 6,
+  "mismatchedCases" : 0,
+  "cases" : [ {
+    "id" : "required-fields-present",
+    "task" : "required fields present",
+    "source" : "cycle011 JSON artifact check boundary",
+    "expected" : {
+      "status" : "MATCH",
+      "missingFields" : [ ],
+      "recipeInvoked" : true,
+      "acceptanceEligible" : false
+    },
+    "actual" : {
+      "readStatus" : "READ",
+      "status" : "MATCH",
+      "missingFields" : [ ],
+      "recipeInvoked" : true,
+      "recipeId" : "json-required-fields",
+      "recipeRevision" : 1,
+      "acceptanceEligible" : false
+    },
+    "matched" : true,
+    "error" : null
+  }, {
+    "id" : "missing-required-field",
+    "task" : "missing required field",
+    "source" : "cycle011 JSON artifact check boundary",
+    "expected" : {
+      "status" : "MISSING_FIELDS",
+      "missingFields" : [ "report" ],
+      "recipeInvoked" : true,
+      "acceptanceEligible" : false
+    },
+    "actual" : {
+      "readStatus" : "READ",
+      "status" : "MISSING_FIELDS",
+      "missingFields" : [ "report" ],
+      "recipeInvoked" : true,
+      "recipeId" : "json-required-fields",
+      "recipeRevision" : 1,
+      "acceptanceEligible" : false
+    },
+    "matched" : true,
+    "error" : null
+  }, {
+    "id" : "duplicate-json-key",
+    "task" : "duplicate json key",
+    "source" : "cycle011 JSON artifact check boundary",
+    "expected" : {
+      "status" : "INVALID_JSON",
+      "missingFields" : [ ],
+      "recipeInvoked" : true,
+      "acceptanceEligible" : false
+    },
+    "actual" : {
+      "readStatus" : "READ",
+      "status" : "INVALID_JSON",
+      "missingFields" : [ ],
+      "recipeInvoked" : true,
+      "recipeId" : "json-required-fields",
+      "recipeRevision" : 1,
+      "acceptanceEligible" : false
+    },
+    "matched" : true,
+    "error" : null
+  }, {
+    "id" : "changed-durable-file",
+    "task" : "changed durable file",
+    "source" : "cycle011 JSON artifact check boundary",
+    "expected" : {
+      "status" : "STALE",
+      "missingFields" : [ ],
+      "recipeInvoked" : false,
+      "acceptanceEligible" : false
+    },
+    "actual" : {
+      "readStatus" : "STALE",
+      "status" : "STALE",
+      "missingFields" : [ ],
+      "recipeInvoked" : false,
+      "recipeId" : "json-required-fields",
+      "recipeRevision" : 1,
+      "acceptanceEligible" : false
+    },
+    "matched" : true,
+    "error" : null
+  }, {
+    "id" : "insufficient-read-budget",
+    "task" : "insufficient read budget",
+    "source" : "cycle011 JSON artifact check boundary",
+    "expected" : {
+      "status" : "UNKNOWN",
+      "missingFields" : [ ],
+      "recipeInvoked" : false,
+      "acceptanceEligible" : false
+    },
+    "actual" : {
+      "readStatus" : "UNKNOWN",
+      "status" : "UNKNOWN",
+      "missingFields" : [ ],
+      "recipeInvoked" : false,
+      "recipeId" : "json-required-fields",
+      "recipeRevision" : 1,
+      "acceptanceEligible" : false
+    },
+    "matched" : true,
+    "error" : null
+  }, {
+    "id" : "foreign-artifact-owner",
+    "task" : "foreign artifact owner",
+    "source" : "cycle011 JSON artifact check boundary",
+    "expected" : {
+      "status" : "UNAVAILABLE",
+      "missingFields" : [ ],
+      "recipeInvoked" : false,
+      "acceptanceEligible" : false
+    },
+    "actual" : {
+      "readStatus" : "UNAVAILABLE",
+      "status" : "UNAVAILABLE",
+      "missingFields" : [ ],
+      "recipeInvoked" : false,
+      "recipeId" : "json-required-fields",
+      "recipeRevision" : 1,
+      "acceptanceEligible" : false
+    },
+    "matched" : true,
+    "error" : null
+  } ]
+}

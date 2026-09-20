@@ -46,7 +46,8 @@ public class GoalFollowupService {
         boolean persistent = Boolean.TRUE.equals(goal.getPersistentExecution());
         boolean claimedComplete = !fallback && (result.completed()
                 || GoalEvaluationResult.DECISION_COMPLETED.equals(result.decision()));
-        boolean completionUnverified = claimedComplete && persistent && !hasVerifiedChecklist(goal);
+        boolean completionUnverified = claimedComplete && (goal.isJsonAcceptanceRequired()
+                || (persistent && !hasVerifiedChecklist(goal)));
         if (claimedComplete && !completionUnverified) {
             return decision(Action.COMPLETE, null, null, "criteria_completed");
         }
@@ -125,6 +126,7 @@ public class GoalFollowupService {
         if (gap != null && !gap.isBlank()) {
             prompt.append("\nLatest evaluation: ").append(bounded(gap, 1000));
         }
+        if (goal.isJsonAcceptanceRequired()) prompt.append("\n").append(GoalJsonProtocolHints.INSTRUCTIONS);
         if (persistent) {
             prompt.append("\nIf essential input or permission is still unavailable after checking existing state, ")
                     .append("call waitForGoalInput with the precise missing requirement and ask the user once. ")

@@ -9,6 +9,7 @@ import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
 import vip.mate.tool.document.GeneratedFileCache;
+import vip.mate.execution.evidence.service.ExecutionObservationSink;
 import vip.mate.tool.document.WorkspaceArtifactSurfacer;
 
 import java.io.IOException;
@@ -63,6 +64,7 @@ public class ShellExecuteTool {
             // ChatOrigin so the workspace boundary check honors per-agent basePath.
             @Nullable ToolContext ctx) {
 
+        ExecutionObservationSink evidence = ExecutionObservationSink.from(ctx);
         int timeout = (timeoutSeconds != null && timeoutSeconds > 0) ? timeoutSeconds : DEFAULT_TIMEOUT_SECONDS;
         // 硬上限：不允许超过 300 秒
         timeout = Math.min(timeout, 300);
@@ -80,6 +82,7 @@ public class ShellExecuteTool {
             vip.mate.tool.guard.WorkspacePathGuard.validateShellCommand(command, ctx);
         } catch (IllegalArgumentException e) {
             log.warn("[ShellExecute] Sandbox rejected command: {}", e.getMessage());
+            if (evidence != null) evidence.command(-1, false, false, true);
             result.set("exitCode", -1);
             result.set("stdout", "");
             result.set("stderr", e.getMessage());
@@ -91,6 +94,7 @@ public class ShellExecuteTool {
         Path stdoutFile = null;
         Path stderrFile = null;
         Process process = null;
+        String observedDirectory = null;
 
         try {
             // 处理命令中的嵌入换行符（LLM 生成的 JSON 解码后可能包含真实换行）
@@ -98,6 +102,7 @@ public class ShellExecuteTool {
             String sanitizedCommand = collapseEmbeddedNewlines(command);
 
             ProcessBuilder pb = buildShellProcess(sanitizedCommand, ctx);
+            observedDirectory = (pb.directory() == null ? Path.of("") : pb.directory().toPath()).toAbsolutePath().normalize().toString();
             // 不继承环境变量中的敏感信息
             pb.environment().keySet().removeIf(key ->
                     key.contains("KEY") || key.contains("SECRET") || key.contains("TOKEN")
@@ -121,6 +126,7 @@ public class ShellExecuteTool {
             if (!completed) {
                 // 超时：强制终止进程（树）
                 killProcessTree(process);
+                if (evidence != null) evidence.command(null, true, false, false, observedDirectory);
                 log.warn("[ShellExecute] Command timed out after {}s: {}", timeout, truncateForLog(command));
                 result.set("exitCode", -1);
                 result.set("stdout", readFileTruncated(stdoutFile, MAX_OUTPUT_BYTES));
@@ -129,6 +135,7 @@ public class ShellExecuteTool {
                 result.set("message", i18n.msg("tool.shell.error.timeout", timeout));
             } else {
                 int exitCode = process.exitValue();
+                if (evidence != null) evidence.command(exitCode, false, false, false, observedDirectory);
                 String stdout = readFileTruncated(stdoutFile, MAX_OUTPUT_BYTES);
                 String stderr = readFileTruncated(stderrFile, MAX_OUTPUT_BYTES);
                 log.info("[ShellExecute] Command completed: exitCode={}, stdout={}chars, stderr={}chars",
@@ -155,6 +162,7 @@ public class ShellExecuteTool {
                 killProcessTree(process);
             }
             Thread.currentThread().interrupt();
+            if (evidence != null) evidence.command(null, false, true, false, observedDirectory);
             log.info("[ShellExecute] Command interrupted by cancellation");
             result.set("exitCode", -1);
             result.set("stdout", "");
@@ -162,6 +170,7 @@ public class ShellExecuteTool {
             result.set("timedOut", false);
             result.set("cancelled", true);
         } catch (Exception e) {
+            if (evidence != null) evidence.command(null, false, false, false, observedDirectory);
             log.error("[ShellExecute] Command execution failed: {}", e.getMessage(), e);
             result.set("exitCode", -1);
             result.set("stdout", "");

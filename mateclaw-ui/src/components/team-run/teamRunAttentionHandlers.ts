@@ -1,11 +1,24 @@
 import type { WorkspaceRole } from '@/composables/capabilities'
 
-export type TeamAttentionAction = 'approve' | 'retry'
+export type TeamAttentionAction = 'approve' | 'retry' | 'approve-tool' | 'deny-tool' | 'feedback'
 
 export interface TeamAttentionActionContext {
   teamId: string
   runId: string
   taskId: string
+}
+
+export function captureTeamAttentionContext(
+  run: { id: string | number; teamId: string | number; tasks: Array<{ id: string | number }> } | null,
+  currentTeamId: string | number | null,
+  taskId: string | number,
+): TeamAttentionActionContext | null {
+  if (!run || currentTeamId === null) return null
+  const teamId = String(currentTeamId)
+  const normalizedTaskId = String(taskId)
+  if (String(run.teamId) !== teamId
+    || !run.tasks.some(task => String(task.id) === normalizedTaskId)) return null
+  return { teamId, runId: String(run.id), taskId: normalizedTaskId }
 }
 
 export function canManageTeamRunAttention(

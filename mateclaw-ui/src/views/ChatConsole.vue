@@ -76,6 +76,8 @@
           <div v-else class="no-agent-hint">{{ $t('chat.selectAgent') }}</div>
         </div>
         <div class="chat-header-right">
+          <ConversationGoalsControl v-if="currentConversationId && !isEphemeralConversation(currentConversationId)"
+            :key="currentConversationId" :conversation-id="currentConversationId" />
           <!-- Model selector — Issue #81 v2 R3: always pass full providers + show-all-states
                so unhealthy rows render as dimmed entries with status chips and a Fix
                button instead of disappearing entirely. -->
@@ -302,7 +304,7 @@ let cachedAgents: import('@/types').Agent[] = []
 <script setup lang="ts">
 import { ElMessage } from 'element-plus/es/components/message/index'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index'
-import { ref, computed, onMounted, onBeforeUnmount, onActivated, onDeactivated, watch, nextTick } from 'vue'
+import { defineAsyncComponent, ref, computed, onMounted, onBeforeUnmount, onActivated, onDeactivated, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { mcToast } from '@/composables/useMcToast'
@@ -350,6 +352,8 @@ import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
 import { buildViewerModelProviders } from '@/utils/viewerModelProviders'
 import GoalSetInlinePrompt from '@/components/goal/GoalSetInlinePrompt.vue'
 import GoalSystemLine from '@/components/goal/GoalSystemLine.vue'
+
+const ConversationGoalsControl = defineAsyncComponent(() => import('@/components/goal/ConversationGoalsControl.vue'))
 
 // ============ Talk Mode ============
 const showTalkMode = ref(false)
@@ -804,6 +808,32 @@ const {
     // 流结束后刷新会话列表（更新 lastActiveTime / 标题等）
     await loadConversations()
     if (meta.conversationId && meta.conversationId === currentConversationId.value) {
+      if (meta.reason === 'error') {
+        // Keep the failed turn visible, but take approval state from the
+        // server. A rejected approval SSE error leaves its pending row open.
+        try {
+          const approvalRes: any = await chatApi.getPendingApprovals(meta.conversationId)
+          if (meta.conversationId !== currentConversationId.value) return
+          const serverIds = new Set<string>((approvalRes.data || []).map((p: any) => p.pendingId))
+          messages.value = messages.value.map((m) => {
+            const pending = (m as any).metadata?.pendingApproval
+            if (!pending?.pendingId || pending.status !== 'pending_approval') return m
+            const active = serverIds.has(pending.pendingId)
+            return {
+              ...m,
+              status: active ? 'awaiting_approval'
+                : m.status === 'awaiting_approval' ? 'failed' : m.status,
+              metadata: {
+                ...(m as any).metadata,
+                currentPhase: active ? 'awaiting_approval' : undefined,
+                pendingApproval: { ...pending, status: active ? 'pending_approval' : 'expired' },
+              },
+            }
+          })
+        } catch {
+          // Keep the local pending card if the authoritative read is unavailable.
+        }
+      }
       // Skip DB refresh for awaiting_approval / interrupted / error:
       //  - awaiting_approval / interrupted: avoids overwriting local-only state
       //    or breaking message ordering.
@@ -818,6 +848,8 @@ const {
       }
     }
   },
+  onQueuedInputSkipped: (reason) => mcToast.warning(t(reason === 'managed_goal_selection_stale'
+    ? 'chat.queuedSelectionStaleResend' : 'chat.queuedLegacyResend')),
 })
 
 const teamRunRouteQuery = computed(() => readTeamRunRouteQuery(route.query))
@@ -1398,13 +1430,11 @@ const canConfigureModels = computed(() => workspaceStore.isGlobalAdmin)
 const modelSelectorEmptyHint = computed(() => canConfigureModels.value
   ? undefined
   : t('chat.noModelsAvailableContactAdmin'))
-watch(currentConversationId, async (cid) => {
-  // Skip un-persisted conversations: a brand-new empty chat has no goal yet
-  // and the lookup would only 403 (Not the owner). The ring is hydrated by the
-  // goal_created SSE event once the first turn lands.
-  if (cid && !isEphemeralConversation(cid)) {
-    await goalStore.loadActiveForConversation(cid)
-  }
+// The route may be restored before the conversation list finishes loading.
+// Observe persistence becoming known as well as the selected conversation id.
+watch(() => currentConversationId.value && !isEphemeralConversation(currentConversationId.value)
+  ? currentConversationId.value : null, async (cid) => {
+  if (cid) await goalStore.loadActiveForConversation(cid)
 }, { immediate: true })
 
 // Re-fetch the active goal when a turn finishes. A goal can be created or
@@ -2063,10 +2093,6 @@ async function handleSendMessage(content: string, pendingApprovalId?: string) {
       return
     }
 
-    // 乐观更新审批状态
-    const decision = trimmed === '/approve' ? 'approved' : 'denied'
-    ;(pendingMsg as any).metadata.pendingApproval.status = decision
-
     inputText.value = ''
     chatInputRef.value?.clear?.()
 
@@ -2080,8 +2106,6 @@ async function handleSendMessage(content: string, pendingApprovalId?: string) {
       })
     } catch (e: any) {
       console.error('Approval stream failed:', e)
-      // 回滚乐观更新
-      ;(pendingMsg as any).metadata.pendingApproval.status = 'pending_approval'
       mcToast.error(e?.message || 'Approval failed')
     }
     return

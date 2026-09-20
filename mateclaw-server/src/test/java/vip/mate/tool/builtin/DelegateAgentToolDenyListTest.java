@@ -78,7 +78,7 @@ class DelegateAgentToolDenyListTest {
         // Memory writers (canonical Spring AI tool method names — do not include
         // any speculative names that would silently no-op).
         assertThat(defaults).contains("remember", "remember_structured", "forget_structured");
-        assertThat(defaults).contains("waitForGoalInput");
+        assertThat(defaults).contains("waitForGoalInput", "getManagedGoalJsonSlots", "publishManagedGoalJson", "checkManagedGoalJson");
         // Shell stays out by design — see comment on DEFAULT_CHILD_DENIED_TOOLS.
         assertThat(defaults).doesNotContain("execute_shell_command");
     }

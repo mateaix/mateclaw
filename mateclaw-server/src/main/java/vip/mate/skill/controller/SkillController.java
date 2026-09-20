@@ -5,6 +5,13 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
+import org.springframework.http.ResponseEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ContentDisposition;
+import org.springframework.web.server.ResponseStatusException;
+import org.springframework.http.HttpStatus;
 import vip.mate.common.result.R;
 import vip.mate.agent.AgentService;
 import vip.mate.agent.binding.model.AgentSkillBinding;
@@ -42,6 +49,8 @@ import vip.mate.skill.lifecycle.SkillCuratorReportStore;
 import vip.mate.skill.lifecycle.SkillLifecycleService;
 import vip.mate.skill.lifecycle.model.SkillSnapshotEntity;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -379,6 +388,7 @@ public class SkillController {
                     Map<String, Object> item = new LinkedHashMap<>();
                     item.put("path", row.getFilePath());
                     item.put("size", row.getContentSize());
+                    item.put("binary", row.isBinary());
                     item.put("sha256", row.getSha256());
                     item.put("updateTime", row.getUpdateTime());
                     out.add(item);
@@ -404,7 +414,8 @@ public class SkillController {
         }
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("path", row.getFilePath());
-        body.put("content", row.getContent() == null ? "" : row.getContent());
+        body.put("binary", row.isBinary());
+        body.put("content", row.isBinary() ? "" : row.getContent() == null ? "" : row.getContent());
         body.put("size", row.getContentSize());
         body.put("sha256", row.getSha256());
         body.put("updateTime", row.getUpdateTime());
@@ -428,6 +439,10 @@ public class SkillController {
         String normalized = normalizeBundlePath(body.get("path"));
         if (normalized == null) {
             return R.fail("Invalid file path — must be under scripts/, references/ or templates/, no '..'.");
+        }
+        SkillFileEntity existing = skillFileService.getFile(id, normalized);
+        if (existing != null && existing.isBinary()) {
+            return R.fail("Binary files cannot be edited as text; upload a replacement instead.");
         }
         String content = body.get("content");
         if (content == null) {
@@ -479,6 +494,58 @@ public class SkillController {
         return R.ok(Map.of("path", normalized, "removed", removed));
     }
 
+    private static final int MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+
+    @PostMapping(value = "/{id}/files/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @RequireWorkspaceRole("admin")
+    public R<Map<String, Object>> uploadBundleFile(@PathVariable Long id,
+            @RequestPart("file") MultipartFile file, @RequestParam String path,
+            @RequestParam(defaultValue = "false") boolean overwrite,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) throws IOException {
+        rejectVirtualSkillMutation(id);
+        SkillEntity skill = skillService.getSkill(id);
+        if (skill == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Skill not found");
+        verifyResourceWorkspace(skill, workspaceId);
+        if (Boolean.TRUE.equals(skill.getBuiltin())) return R.fail("Builtin skill files are read-only.");
+        String normalized = normalizeBundlePath(path);
+        if (normalized == null) return R.fail("Invalid file path: " + path);
+        if (file.getSize() > MAX_UPLOAD_BYTES) return R.fail("File exceeds the 10 MiB limit.");
+        if (!overwrite && skillFileService.getFile(id, normalized) != null) {
+            return R.fail("File already exists; confirm replacement before uploading: " + normalized);
+        }
+        byte[] bytes;
+        try (var input = file.getInputStream()) {
+            bytes = input.readNBytes(MAX_UPLOAD_BYTES + 1);
+        }
+        if (bytes.length > MAX_UPLOAD_BYTES) return R.fail("File exceeds the 10 MiB limit.");
+        SkillFileEntity row = skillFileService.upsertBytes(id, normalized, bytes);
+        if (!skillFileSyncer.syncFile(skill, row)) {
+            return R.fail("File saved, but workspace synchronization failed: " + normalized
+                    + ". Check directory permissions or conflicting paths, then upload again.");
+        }
+        skillRuntimeService.rescanSingle(skill);
+        return R.ok(Map.of("path", normalized, "size", row.getContentSize(), "binary", row.isBinary()));
+    }
+
+    @GetMapping("/{id}/files/download")
+    @RequireWorkspaceRole("member")
+    public ResponseEntity<byte[]> downloadBundleFile(@PathVariable Long id, @RequestParam String path,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        SkillEntity skill = skillService.getSkill(id);
+        if (skill == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Skill not found");
+        verifyResourceWorkspace(skill, workspaceId);
+        String normalized = normalizeBundlePath(path);
+        if (normalized == null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid file path");
+        SkillFileEntity row = skillFileService.getFile(id, normalized);
+        if (row == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "File not found");
+        return ResponseEntity.ok().contentType(MediaType.APPLICATION_OCTET_STREAM)
+                .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
+                        .filename(normalized.substring(normalized.lastIndexOf('/') + 1), StandardCharsets.UTF_8)
+                        .build().toString())
+                .header("X-Content-Type-Options", "nosniff")
+                .body(row.contentBytes());
+    }
+
     /**
      * Normalize a bundle-relative path and enforce the same envelope the
      * store and workspace cache use: forward slashes, must sit under a
@@ -491,7 +558,9 @@ public class SkillController {
     static String normalizeBundlePath(String path) {
         if (path == null || path.isBlank()) return null;
         String p = path.strip().replace('\\', '/');
-        if (p.startsWith("/") || p.contains("..") || p.contains("//") || p.endsWith("/")) return null;
+        if (p.length() > 512 || p.chars().anyMatch(c -> c < 32 || c == 127)
+                || p.contains(":") || p.contains("/./") || p.endsWith("/.")
+                || p.startsWith("/") || p.contains("..") || p.contains("//") || p.endsWith("/")) return null;
         if (!SkillBundleFiles.isDbEligible(p)) return null;
         int slash = p.indexOf('/');
         if (slash == p.length() - 1) return null;

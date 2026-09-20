@@ -46,9 +46,13 @@ public class SkillFileService {
     /** Compute SHA-256 hex of a UTF-8 string (used for idempotent diffs). */
     public static String sha256Hex(String content) {
         if (content == null) content = "";
+        return sha256Hex(content.getBytes(StandardCharsets.UTF_8));
+    }
+
+    public static String sha256Hex(byte[] bytes) {
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
-            byte[] digest = md.digest(content.getBytes(StandardCharsets.UTF_8));
+            byte[] digest = md.digest(bytes);
             StringBuilder sb = new StringBuilder(digest.length * 2);
             for (byte b : digest) sb.append(String.format("%02x", b));
             return sb.toString();
@@ -132,6 +136,7 @@ public class SkillFileService {
                 row.setSkillId(skillId);
                 row.setFilePath(path);
                 row.setContent(content);
+                row.setContentEncoding("utf8");
                 row.setContentSize(size);
                 row.setSha256(hash);
                 row.setCreateTime(now);
@@ -140,6 +145,7 @@ public class SkillFileService {
                 written++;
             } else if (!hash.equals(prior.getSha256())) {
                 prior.setContent(content);
+                prior.setContentEncoding("utf8");
                 prior.setContentSize(size);
                 prior.setSha256(hash);
                 prior.setUpdateTime(now);
@@ -193,32 +199,40 @@ public class SkillFileService {
      */
     @Transactional
     public SkillFileEntity upsertFile(Long skillId, String filePath, String content) {
-        String safeContent = content == null ? "" : content;
-        String hash = sha256Hex(safeContent);
-        LocalDateTime now = LocalDateTime.now();
+        return upsertBytes(skillId, filePath,
+                (content == null ? "" : content).getBytes(StandardCharsets.UTF_8));
+    }
 
-        SkillFileEntity existing = getFile(skillId, filePath);
-        if (existing != null) {
-            if (hash.equals(existing.getSha256())) {
-                return existing;
-            }
-            existing.setContent(safeContent);
-            existing.setContentSize(safeContent.getBytes(StandardCharsets.UTF_8).length);
-            existing.setSha256(hash);
-            existing.setUpdateTime(now);
-            mapper.updateById(existing);
-            return existing;
+    /** Preserve arbitrary bytes; only strictly valid UTF-8 without control bytes is editable text. */
+    @Transactional
+    public SkillFileEntity upsertBytes(Long skillId, String filePath, byte[] bytes) {
+        String text = null;
+        try {
+            text = StandardCharsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(bytes)).toString();
+            if (text.codePoints().anyMatch(c -> c < 32 && c != '\n' && c != '\r' && c != '\t')) text = null;
+        } catch (java.nio.charset.CharacterCodingException binary) {
+            // Keep the original bytes below.
         }
-
-        SkillFileEntity row = new SkillFileEntity();
-        row.setSkillId(skillId);
-        row.setFilePath(filePath);
-        row.setContent(safeContent);
-        row.setContentSize(safeContent.getBytes(StandardCharsets.UTF_8).length);
+        String encoding = text == null ? "base64" : "utf8";
+        String content = text == null ? java.util.Base64.getEncoder().encodeToString(bytes) : text;
+        String hash = sha256Hex(bytes);
+        SkillFileEntity row = getFile(skillId, filePath);
+        boolean insert = row == null;
+        if (!insert && hash.equals(row.getSha256())) return row;
+        LocalDateTime now = LocalDateTime.now();
+        if (insert) {
+            row = new SkillFileEntity();
+            row.setSkillId(skillId);
+            row.setFilePath(filePath);
+            row.setCreateTime(now);
+        }
+        row.setContent(content);
+        row.setContentEncoding(encoding);
+        row.setContentSize(bytes.length);
         row.setSha256(hash);
-        row.setCreateTime(now);
         row.setUpdateTime(now);
-        mapper.insert(row);
+        if (insert) mapper.insert(row);
+        else mapper.updateById(row);
         return row;
     }
 

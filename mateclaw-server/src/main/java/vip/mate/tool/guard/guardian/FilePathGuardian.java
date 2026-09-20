@@ -54,6 +54,7 @@ public class FilePathGuardian implements ToolGuardGuardian {
     private static final Map<String, String> TOOL_FILE_PARAMS = Map.of(
             "read_file", "filePath",
             "write_file", "filePath",
+            "append_file", "filePath",
             "edit_file", "filePath",
             "file_read", "file_path",
             "file_write", "file_path"

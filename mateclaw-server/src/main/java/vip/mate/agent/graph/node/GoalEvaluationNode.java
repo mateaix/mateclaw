@@ -202,7 +202,7 @@ public class GoalEvaluationNode implements NodeAction {
             // Completion is the deterministic "all criteria passed" signal the
             // evaluator already folded into result.completed() — no score gate.
             if (result.completed()) {
-                GoalEntity completed = goalService.markCompleted(refreshed.getId(), result);
+                GoalEntity completed = goalService.markRuntimeEvaluatedCompleted(refreshed.getId(), result, accessor.chatOrigin());
                 return MateClawStateAccessor.output()
                         .goalEvaluationResult(result.toMap())
                         .goalEvaluatedThisRun(true)
@@ -232,8 +232,15 @@ public class GoalEvaluationNode implements NodeAction {
         } catch (Throwable t) {
             log.warn("[GoalEvaluationNode] terminal write failed for goal={} — degrading to evaluated-only: {}",
                     refreshed.getId(), t.toString());
+            Map<String, Object> outward = result.toMap();
+            if (refreshed.isJsonAcceptanceRequired() && result.completed()) {
+                outward.put("completed", false);
+                outward.put("decision", GoalEvaluationResult.DECISION_CONTINUE);
+                outward.put("gap", "Managed JSON completion was not committed. "
+                        + vip.mate.goal.service.GoalJsonProtocolHints.INSTRUCTIONS);
+            }
             return MateClawStateAccessor.output()
-                    .goalEvaluationResult(result.toMap())
+                    .goalEvaluationResult(outward)
                     .goalEvaluatedThisRun(true)
                     .events(List.of(skippedEvent(refreshed.getId(), "terminal_write_failed")))
                     .build();
@@ -394,6 +401,7 @@ public class GoalEvaluationNode implements NodeAction {
         snapshot.put("successCheckPrompt", goal.getSuccessCheckPrompt());
         snapshot.put("status", goal.getStatus() == null ? null : goal.getStatus().getValue());
         snapshot.put("persistentExecution", goal.getPersistentExecution());
+        snapshot.put("jsonAcceptanceRequired", goal.isJsonAcceptanceRequired());
         snapshot.put("turnBudget", goal.getTurnBudget());
         snapshot.put("turnsUsed", goal.getTurnsUsed());
         snapshot.put("llmCallBudget", goal.getLlmCallBudget());

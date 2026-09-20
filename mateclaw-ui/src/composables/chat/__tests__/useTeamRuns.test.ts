@@ -26,6 +26,7 @@ function axiosResponse<T>(data: T): AxiosResponse<T> {
 
 describe('useTeamRuns', () => {
   it('uses the paged conversation API for the first page and cursor continuation', async () => {
+    const fetch = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('offline SSE fixture'))
     const page = vi.spyOn(teamRunApi, 'listByConversationPage')
       .mockResolvedValueOnce(axiosResponse({ items: [run('2')], nextCursor: 'older' }))
       .mockResolvedValueOnce(axiosResponse({ items: [run('1')], nextCursor: null }))
@@ -38,6 +39,7 @@ describe('useTeamRuns', () => {
     expect(page).toHaveBeenNthCalledWith(1, 'lead', { limit: 20 })
     expect(page).toHaveBeenNthCalledWith(2, 'lead', { cursor: 'older', limit: 20 })
     expect(legacy).not.toHaveBeenCalled()
+    expect(fetch).toHaveBeenCalledOnce()
     expect(state.runs.value.map(item => item.id)).toEqual(['2', '1'])
     scope.stop()
     vi.restoreAllMocks()

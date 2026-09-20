@@ -37,6 +37,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -315,6 +317,85 @@ class GoalServiceTest {
         assertTrue(setsProperty(update.getValue(), "persistentExecution"), update.getValue().getSqlSet());
     }
 
+    private GoalEvaluationResult completedEvaluation() {
+        return new GoalEvaluationResult(1.0, "", "completed", true, "fixture", 1, 0,
+                java.util.List.of(), null);
+    }
+
+    @Test
+    void automaticCompletionCannotForcePassNewCriteria() {
+        GoalEntity goal = verifiedPersistentGoal(GoalStatus.ACTIVE);
+        goal.setPersistentExecution(false);
+        goal.setCriteria("[{\"id\":\"C1\",\"text\":\"new requirement\",\"passed\":false,\"evidence\":\"\"}]");
+        when(goalMapper.selectById(1L)).thenReturn(goal);
+        lenient().when(goalMapper.update(any(), any(LambdaUpdateWrapper.class))).thenReturn(1);
+        assertEquals(409, assertThrows(MateClawException.class,
+                () -> service.markEvaluatedCompleted(1L, completedEvaluation())).getCode());
+        verify(goalMapper, never()).update(any(), any(LambdaUpdateWrapper.class));
+    }
+
+    @Test
+    void automaticCompletionRechecksCurrentCriteriaAfterCasMiss() {
+        GoalEntity old = verifiedPersistentGoal(GoalStatus.ACTIVE);
+        old.setPersistentExecution(false);
+        GoalEntity fresh = verifiedPersistentGoal(GoalStatus.ACTIVE);
+        fresh.setPersistentExecution(false);
+        fresh.setVersion(1);
+        fresh.setCriteria("[{\"id\":\"C1\",\"text\":\"new requirement\",\"passed\":false,\"evidence\":\"\"}]");
+        when(goalMapper.selectById(1L)).thenReturn(old, fresh);
+        when(goalMapper.update(any(), any(LambdaUpdateWrapper.class))).thenReturn(0);
+        assertEquals(409, assertThrows(MateClawException.class,
+                () -> service.markEvaluatedCompleted(1L, completedEvaluation())).getCode());
+        verify(goalMapper, times(1)).update(any(), any(LambdaUpdateWrapper.class));
+    }
+
+    @Test
+    void automaticCompletionCannotOverridePauseOrAbandonment() {
+        for (GoalStatus status : java.util.List.of(GoalStatus.PAUSED, GoalStatus.ABANDONED)) {
+            GoalEntity goal = verifiedPersistentGoal(status);
+            goal.setPersistentExecution(false);
+            when(goalMapper.selectById(1L)).thenReturn(goal);
+            assertEquals(409, assertThrows(MateClawException.class,
+                    () -> service.markEvaluatedCompleted(1L, completedEvaluation())).getCode());
+        }
+        verify(goalMapper, never()).update(any(), any(LambdaUpdateWrapper.class));
+        verify(eventMapper, never()).insert(any(GoalEventEntity.class));
+    }
+
+    @Test
+    void automaticCompletionPreservesCurrentChecklist() {
+        GoalEntity goal = verifiedPersistentGoal(GoalStatus.ACTIVE);
+        goal.setPersistentExecution(false);
+        when(goalMapper.selectById(1L)).thenReturn(goal, statusFlipped(goal, GoalStatus.COMPLETED));
+        when(goalMapper.update(any(), any(LambdaUpdateWrapper.class))).thenReturn(1);
+        assertEquals(GoalStatus.COMPLETED, service.markEvaluatedCompleted(1L, completedEvaluation()).getStatus());
+        ArgumentCaptor<LambdaUpdateWrapper> update = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(goalMapper).update(any(), update.capture());
+        assertFalse(update.getValue().getSqlSet().contains("criteria="));
+    }
+
+    @Test
+    void automaticCompletionRejectsMissingOrFallbackEvaluation() {
+        assertEquals(409, assertThrows(MateClawException.class,
+                () -> service.markEvaluatedCompleted(1L, null)).getCode());
+        assertEquals(409, assertThrows(MateClawException.class,
+                () -> service.markEvaluatedCompleted(1L, GoalEvaluationResult.fallback("unavailable"))).getCode());
+        verify(goalMapper, never()).update(any(), any(LambdaUpdateWrapper.class));
+    }
+
+    @Test
+    void explicitLegacyCompletionRetainsItsSeparateCompatibilityPath() {
+        GoalEntity goal = persisted(1L, GoalStatus.ACTIVE);
+        goal.setPersistentExecution(false);
+        goal.setCriteria("[{\"id\":\"C1\",\"text\":\"manual check\",\"passed\":false,\"evidence\":\"\"}]");
+        when(goalMapper.selectById(1L)).thenReturn(goal, statusFlipped(goal, GoalStatus.COMPLETED));
+        when(goalMapper.update(any(), any(LambdaUpdateWrapper.class))).thenReturn(1);
+        assertEquals(GoalStatus.COMPLETED, service.markCompleted(1L, completedEvaluation()).getStatus());
+        ArgumentCaptor<LambdaUpdateWrapper> update = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(goalMapper).update(any(), update.capture());
+        assertTrue(update.getValue().getSqlSet().contains("criteria="));
+    }
+
     @Test
     void persistentCompletionRequiresFreshPassedCriteriaWithEvidence() {
         GoalEntity goal = persisted(1L, GoalStatus.ACTIVE);
@@ -435,11 +516,27 @@ class GoalServiceTest {
 
     @Test
     void markCompleted_isIdempotent_onTerminal() {
+        var memory = mock(vip.mate.memory.spi.MemoryManager.class);
+        service.setMemoryManager(memory);
         GoalEntity g = persisted(1L, GoalStatus.COMPLETED);
         when(goalMapper.selectById(1L)).thenReturn(g);
         GoalEntity result = service.markCompleted(1L, null);
         assertEquals(GoalStatus.COMPLETED, result.getStatus());
         verify(goalMapper, never()).update(any(), any(LambdaUpdateWrapper.class));
+        verifyNoInteractions(eventMapper, auditEventService, memory);
+    }
+
+    @Test
+    void completionCasLoserDoesNotRepeatWinnerSideEffects() {
+        var memory = mock(vip.mate.memory.spi.MemoryManager.class);
+        service.setMemoryManager(memory);
+        GoalEntity active = persisted(1L, GoalStatus.ACTIVE);
+        GoalEntity completed = statusFlipped(active, GoalStatus.COMPLETED);
+        when(goalMapper.selectById(1L)).thenReturn(active, completed);
+        when(goalMapper.update(any(), any(LambdaUpdateWrapper.class))).thenReturn(0);
+        assertEquals(GoalStatus.COMPLETED, service.markCompleted(1L, null).getStatus());
+        verify(goalMapper, times(1)).update(any(), any(LambdaUpdateWrapper.class));
+        verifyNoInteractions(eventMapper, auditEventService, memory);
     }
 
     @Test
@@ -531,12 +628,125 @@ class GoalServiceTest {
     }
 
     @Test
+    void appendProgressUsesFreshChecklistAfterCasConflict() {
+        GoalEntity original = persisted(1L, GoalStatus.ACTIVE);
+        original.setCriteria("[{\"id\":\"C1\",\"text\":\"report\",\"passed\":true,\"evidence\":\"report written\"}]");
+        GoalEntity fresh = persisted(1L, GoalStatus.ACTIVE);
+        fresh.setVersion(1);
+        fresh.setCriteria("[{\"id\":\"C1\",\"text\":\"report\",\"passed\":true,\"evidence\":\"report written\"},"
+                + "{\"id\":\"C2\",\"text\":\"sources\",\"passed\":false,\"evidence\":\"\"}]");
+        when(goalMapper.selectById(1L)).thenReturn(original, fresh, fresh);
+        when(goalMapper.update(any(), any(LambdaUpdateWrapper.class))).thenReturn(0, 1);
+        service.appendCriterion(1L, "appendix", "alice");
+        ArgumentCaptor<LambdaUpdateWrapper> writes = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(goalMapper, times(2)).update(any(), writes.capture());
+        var first = writes.getAllValues().getFirst();
+        var retry = writes.getAllValues().getLast();
+        assertTrue(setsProperty(first, "completionScore"));
+        assertTrue(setsProperty(retry, "completionScore"));
+        assertTrue(first.getParamNameValuePairs().containsValue(0.5));
+        assertTrue(retry.getParamNameValuePairs().containsValue(1.0 / 3));
+        assertTrue(retry.getParamNameValuePairs().containsValue("Still missing: sources; appendix"));
+    }
+
+    @Test
     void appendCriterion_rejectsBlankInput() {
         // Validation happens before selectById, so we do NOT stub the mapper.
         MateClawException ex = assertThrows(MateClawException.class,
                 () -> service.appendCriterion(1L, "   ", "alice"));
         assertEquals(400, ex.getCode());
         verify(goalMapper, never()).selectById(any());
+    }
+
+    private GoalEvaluationResult bootstrapEvaluation() {
+        return new GoalEvaluationResult(0.0, "checklist created", "continue", false, "fixture", 1, 0,
+                java.util.List.of(), java.util.List.of(
+                        new vip.mate.goal.model.GoalCriterion("C1", "model draft", false, "")));
+    }
+
+    @Test
+    void bootstrapInitializesStillEmptyChecklist() {
+        GoalEntity empty = persisted(1L, GoalStatus.ACTIVE);
+        when(goalMapper.selectById(1L)).thenReturn(empty);
+        when(goalMapper.update(any(), any(LambdaUpdateWrapper.class))).thenReturn(1);
+        service.recordEvaluation(1L, bootstrapEvaluation(), 2, 1);
+        ArgumentCaptor<LambdaUpdateWrapper> writes = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(goalMapper).update(any(), writes.capture());
+        assertTrue(setsProperty(writes.getValue(), "criteria"));
+        assertTrue(writes.getValue().getParamNameValuePairs().values().stream()
+                .anyMatch(value -> String.valueOf(value).contains("model draft")));
+    }
+
+    @Test
+    void lateBootstrapPreservesChecklistEstablishedByUser() {
+        GoalEntity fresh = persisted(1L, GoalStatus.ACTIVE);
+        fresh.setCriteria("[{\"id\":\"C1\",\"text\":\"user requirement\",\"passed\":false,\"evidence\":\"\"}]");
+        when(goalMapper.selectById(1L)).thenReturn(fresh);
+        when(goalMapper.update(any(), any(LambdaUpdateWrapper.class))).thenReturn(1);
+        service.recordEvaluation(1L, bootstrapEvaluation(), 2, 1);
+        ArgumentCaptor<LambdaUpdateWrapper> writes = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(goalMapper).update(any(), writes.capture());
+        assertFalse(setsProperty(writes.getValue(), "criteria"), "late bootstrap must preserve current user criteria");
+        assertTrue(writes.getValue().getSqlSet().contains("eval_llm_calls_used = eval_llm_calls_used + 1"));
+    }
+
+    @Test
+    void bootstrapRechecksEmptyChecklistAfterCasConflict() {
+        GoalEntity empty = persisted(1L, GoalStatus.ACTIVE);
+        GoalEntity fresh = persisted(1L, GoalStatus.ACTIVE);
+        fresh.setVersion(1);
+        fresh.setCriteria("[{\"id\":\"C1\",\"text\":\"concurrent user requirement\",\"passed\":false,\"evidence\":\"\"}]");
+        when(goalMapper.selectById(1L)).thenReturn(empty, empty, fresh, fresh);
+        when(goalMapper.update(any(), any(LambdaUpdateWrapper.class))).thenReturn(0, 1);
+        service.recordEvaluation(1L, bootstrapEvaluation(), 2, 1);
+        ArgumentCaptor<LambdaUpdateWrapper> writes = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(goalMapper, times(2)).update(any(), writes.capture());
+        assertTrue(setsProperty(writes.getAllValues().get(0), "criteria"));
+        assertFalse(setsProperty(writes.getAllValues().get(1), "criteria"), "retry must not replace newly established criteria");
+    }
+
+    @Test
+    void verdictProgressRecomputesAfterCasConflict() {
+        GoalEntity original = persisted(1L, GoalStatus.ACTIVE);
+        original.setCriteria("[{\"id\":\"C1\",\"text\":\"report\",\"passed\":false,\"evidence\":\"\"}]");
+        GoalEntity fresh = persisted(1L, GoalStatus.ACTIVE);
+        fresh.setVersion(1);
+        fresh.setCriteria("[{\"id\":\"C1\",\"text\":\"report\",\"passed\":false,\"evidence\":\"\"},"
+                + "{\"id\":\"C2\",\"text\":\"appendix\",\"passed\":false,\"evidence\":\"\"}]");
+        when(goalMapper.selectById(1L)).thenReturn(original, original, fresh, fresh);
+        when(goalMapper.update(any(), any(LambdaUpdateWrapper.class))).thenReturn(0, 1);
+        var result = new GoalEvaluationResult(1.0, "", "completed", true, "fixture", 1, 0,
+                java.util.List.of(new vip.mate.goal.model.GoalChecklistVerdict.CriterionVerdict(
+                        "C1", true, "report written")), null);
+        service.recordEvaluation(1L, result, 2, 1);
+        ArgumentCaptor<LambdaUpdateWrapper> writes = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(goalMapper, times(2)).update(any(), writes.capture());
+        var first = writes.getAllValues().getFirst();
+        var retry = writes.getAllValues().getLast();
+        assertTrue(setsProperty(first, "completionScore"));
+        assertTrue(setsProperty(retry, "completionScore"));
+        assertTrue(first.getParamNameValuePairs().containsValue(1.0));
+        assertTrue(retry.getParamNameValuePairs().containsValue(0.5));
+        assertTrue(retry.getParamNameValuePairs().containsValue("Still missing: appendix"));
+    }
+
+    @Test
+    void staleEvaluationStopsProjectingAfterCasRevisionChange() {
+        GoalEntity original = persisted(1L, GoalStatus.ACTIVE);
+        original.setCriteria("[{\"id\":\"C1\",\"text\":\"report\",\"passed\":false,\"evidence\":\"\"}]");
+        GoalEntity fresh = persisted(1L, GoalStatus.ACTIVE);
+        fresh.setVersion(1); fresh.setEvaluationRevision(1L); fresh.setCriteria(original.getCriteria());
+        when(goalMapper.selectById(1L)).thenReturn(original, original, fresh, fresh);
+        when(goalMapper.update(any(), any(LambdaUpdateWrapper.class))).thenReturn(0, 1);
+        var result = new GoalEvaluationResult(1.0, "", "completed", true, "fixture", 1, 0,
+                java.util.List.of(new vip.mate.goal.model.GoalChecklistVerdict.CriterionVerdict("C1", true, "evidence")), null);
+        service.recordEvaluation(1L, result, 2, 1);
+        ArgumentCaptor<LambdaUpdateWrapper> writes = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(goalMapper, times(2)).update(any(), writes.capture());
+        assertTrue(setsProperty(writes.getAllValues().getFirst(), "criteria"));
+        assertFalse(setsProperty(writes.getAllValues().getLast(), "criteria"));
+        assertFalse(setsProperty(writes.getAllValues().getLast(), "completionScore"));
+        assertTrue(writes.getAllValues().getLast().getSqlSet().contains("eval_llm_calls_used = eval_llm_calls_used + 1"));
     }
 
     // ==================== criteria checklist ====================
@@ -658,6 +868,13 @@ class GoalServiceTest {
     void findActiveByConversation_returnsNull_forBlankInput() {
         assertNull(service.findActiveByConversation(""));
         assertNull(service.findActiveByConversation(null));
+        verify(goalMapper, never()).selectOne(any());
+    }
+
+    @Test
+    void findLatestByConversation_returnsNull_forBlankInput() {
+        assertNull(service.findLatestByConversation(""));
+        assertNull(service.findLatestByConversation(null));
         verify(goalMapper, never()).selectOne(any());
     }
 

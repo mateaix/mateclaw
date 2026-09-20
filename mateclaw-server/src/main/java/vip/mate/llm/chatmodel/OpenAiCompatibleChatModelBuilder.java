@@ -93,7 +93,7 @@ public class OpenAiCompatibleChatModelBuilder implements ChatModelBuilder {
         if (ModelFamily.detect(model.getModelName()) == ModelFamily.DEEPSEEK_V4_REASONING) {
             return new DeepSeekV4ThinkingDecorator(raw);
         }
-        return raw;
+        return VllmThinkingDecorator.supports(provider, options) ? new VllmThinkingDecorator(raw) : raw;
     }
 
     // ==================== chat options ====================
@@ -251,6 +251,9 @@ public class OpenAiCompatibleChatModelBuilder implements ChatModelBuilder {
                 restClientBuilderProvider.getIfAvailable(RestClient::builder), readTimeoutOverride);
         WebClient.Builder webClientBuilder = applyHttpTimeoutsToWebClient(
                 webClientBuilderProvider.getIfAvailable(WebClient::builder), readTimeoutOverride);
+
+        restClientBuilder.requestInterceptor(OpenAiReasoningResponseNormalizer.blockingInterceptor());
+        webClientBuilder.filter(OpenAiReasoningResponseNormalizer.streamingFilter());
 
         // Spring AI's OpenAiApi constructor sets User-Agent to "spring-ai" first, then addAll's
         // our headers, so a custom User-Agent is appended rather than replaced. For providers

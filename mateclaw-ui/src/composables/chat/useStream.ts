@@ -36,6 +36,7 @@ export type SSEEventType =
   | 'turn_interrupted'
   | 'queued_input_accepted'
   | 'queued_input_started'
+  | 'queued_input_skipped'
   // 异步任务事件
   | 'async_task_progress'
   | 'async_task_completed'
@@ -146,9 +147,16 @@ export interface UseStreamReturn {
 class SSEParser {
   private buffer = ''
   private readonly separator = '\n\n'
+  private trailingCR = false
 
   parse(chunk: string): SSEEvent[] {
-    this.buffer += chunk
+    // SSE permits LF, CRLF and CR. Normalize before framing, including a
+    // CRLF pair split across network reads, without manufacturing blank lines.
+    if (chunk.length > 0) {
+      const skipLF = this.trailingCR && chunk.startsWith('\n')
+      this.trailingCR = chunk.endsWith('\r')
+      this.buffer += (skipLF ? chunk.slice(1) : chunk).replace(/\r\n?/g, '\n')
+    }
     const events: SSEEvent[] = []
     
     // 分割事件块
@@ -178,8 +186,7 @@ class SSEParser {
   private parseEvent(part: string): SSEEvent | null {
     const lines = part.split('\n')
     let eventType: SSEEventType = 'content_delta'
-    let data: any = {}
-    let hasData = false
+    const dataLines: string[] = []
     let eventId: string | undefined
 
     for (const line of lines) {
@@ -188,24 +195,27 @@ class SSEParser {
       const colonIndex = line.indexOf(':')
       if (colonIndex === -1) continue
 
-      const key = line.slice(0, colonIndex).trim()
-      const value = line.slice(colonIndex + 1).trim()
+      const key = line.slice(0, colonIndex)
+      const rawValue = line.slice(colonIndex + 1)
+      const value = rawValue.startsWith(' ') ? rawValue.slice(1) : rawValue
 
       if (key === 'event') {
         eventType = value as SSEEventType
       } else if (key === 'id') {
         eventId = value
       } else if (key === 'data') {
-        hasData = true
-        try {
-          data = JSON.parse(value)
-        } catch {
-          data = value
-        }
+        dataLines.push(value)
       }
     }
 
-    if (!hasData) return null
+    if (dataLines.length === 0) return null
+    const rawData = dataLines.join('\n')
+    let data: any
+    try {
+      data = JSON.parse(rawData)
+    } catch {
+      data = rawData
+    }
     return eventId !== undefined
       ? { type: eventType, data, id: eventId }
       : { type: eventType, data }

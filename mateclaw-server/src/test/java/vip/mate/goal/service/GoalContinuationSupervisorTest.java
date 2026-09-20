@@ -59,6 +59,25 @@ class GoalContinuationSupervisorTest {
         verify(coordinator,times(3)).settle(eq(claimed),isA(SegmentOutcome.Continue.class),eq(now));
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+        "retry,restart_recovery,previous-attempt,true",
+        "running,legacy,,true",
+        "retry,evaluation_unavailable,,false"
+    })
+    void passesPersistedRecoveryContextToRunner(String state, String reason, String parent, boolean recovered) {
+        candidate = new GoalContinuationStore.Continuation(1L, "conv", state, now, null, null, 1, reason, null, 0);
+        var attempt = new GoalAttempt("recovery-attempt", 1L, "conv", parent, "continuation", "claimed", "new-lease",
+            now.plusSeconds(60), null, null, "safe", "claimed", null, null, null, null, now, now);
+        claimed = new GoalRunCoordinator.ClaimedRun(candidate, goal, attempt, 2);
+        when(store.due(any(), anyInt())).thenReturn(List.of(candidate));
+        when(coordinator.claim(candidate, goal, now)).thenReturn(claimed);
+        when(coordinator.markRunning(claimed, now)).thenReturn(true);
+        when(runner.run(eq(claimed), anyString(), anyBoolean())).thenReturn(new SegmentOutcome.Continue("normal"));
+        supervisor.tick();
+        verify(runner).run(eq(claimed), contains("full goal"), eq(recovered));
+    }
+
     @Test void configuredConcurrencyLimitsSubmittedSegments() {
         properties.setMaxConcurrentSegments(1);
         GoalEntity second = new GoalEntity();

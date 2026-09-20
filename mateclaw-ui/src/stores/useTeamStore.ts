@@ -24,7 +24,7 @@ export const useTeamStore = defineStore('team', () => {
   const taskRunId = ref<string | null>(null)
 
   /** Statuses that mean the board is still moving and worth polling. */
-  const ACTIVE_STATUSES = ['pending', 'in_progress', 'in_review', 'blocked']
+  const ACTIVE_STATUSES = ['pending', 'in_progress', 'awaiting_approval', 'in_review', 'blocked']
   const COMPLETED_STATUSES = ['completed']
   const CLOSED_STATUSES = ['failed', 'cancelled', 'stale']
   /** Terminal-column page size. */

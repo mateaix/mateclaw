@@ -6,7 +6,13 @@ Output a JSON array of entries. Each entry:
 {
   "type": "user" | "feedback" | "project" | "reference",
   "key": "snake_case_identifier",
-  "content": "concise description"
+  "content": "concise description",
+  "scope": "turn" | "session" | "project" | "user" | "global",
+  "stability": "transient" | "ongoing" | "durable",
+  "confidence": 0.0,
+  "evidence_count": 1,
+  "expires_at": null,
+  "explicitly_persistent": false
 }
 
 Type definitions:
@@ -18,6 +24,10 @@ Type definitions:
 Rules:
 - Only extract NEW information not already in existing memories
 - Skip ephemeral details (debugging steps, temporary state, one-off questions)
+- A one-turn word-count, length, formatting, detail, or tone request is NOT a user preference. Do not extract it as user/feedback.
+- user/feedback entries must be user/global scoped and durable, with confidence >= 0.7, and require either explicit future/default persistence or evidence from at least two independent conversations
+- project/reference entries must be project/user/global scoped and ongoing or durable
+- Set explicitly_persistent=true only when the user explicitly says the behavior should apply in future/default/always, or explicitly asks to remember it
 - Keep content concise (1-2 sentences per entry)
 - Use snake_case for keys (e.g., preferred_language, no_mock_db)
 - If nothing worth extracting, return an empty array: []

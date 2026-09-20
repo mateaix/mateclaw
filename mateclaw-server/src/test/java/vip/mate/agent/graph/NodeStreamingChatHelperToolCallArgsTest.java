@@ -78,8 +78,8 @@ class NodeStreamingChatHelperToolCallArgsTest {
     }
 
     @Test
-    @DisplayName("Truncated/invalid JSON arguments normalized to '{}'")
-    void truncatedJsonArguments_replacedWithEmptyJsonObject() {
+    @DisplayName("Truncated/invalid JSON arguments preserved for executor rejection")
+    void truncatedJsonArguments_preservedForExecutor() {
         // Simulates a stream cut mid-token: model emitted '{"q":"hel' and stopped.
         AssistantMessage.ToolCall tc = new AssistantMessage.ToolCall(
                 "id-truncated", "function", "search", "{\"q\":\"hel");
@@ -94,9 +94,9 @@ class NodeStreamingChatHelperToolCallArgsTest {
 
         assertTrue(result.hasToolCalls(), "tool call must survive");
         assertEquals(1, result.toolCalls().size());
-        assertEquals("{}", result.toolCalls().get(0).arguments(),
-                "invalid JSON arguments must be replaced with '{}' so the follow-up "
-                        + "request stays well-formed");
+        assertEquals("{\"q\":\"hel", result.toolCalls().get(0).arguments(),
+                "invalid streamed arguments must reach the executor so it can reject "
+                        + "the call without invoking the tool");
     }
 
     @Test
@@ -145,6 +145,24 @@ class NodeStreamingChatHelperToolCallArgsTest {
                 "tool name must be preserved");
         assertEquals("id-hist", out.getToolCalls().get(0).id(),
                 "tool call id must be preserved so the tool_call pairing holds");
+    }
+
+    @Test
+    @DisplayName("Prompt-history invalid arguments are normalized before provider replay")
+    void promptHistory_invalidArguments_normalizedBeforeSend() {
+        AssistantMessage.ToolCall tc = new AssistantMessage.ToolCall(
+                "id-hist-invalid", "function", "write_file", "{\"filePath\":\"x");
+        AssistantMessage historyMsg = AssistantMessage.builder()
+                .content("")
+                .toolCalls(List.of(tc))
+                .build();
+
+        Prompt normalized = NodeStreamingChatHelper.normalizeToolCallArguments(
+                new Prompt(List.of(new UserMessage("hi"), historyMsg)));
+
+        AssistantMessage out = (AssistantMessage) normalized.getInstructions().get(1);
+        assertEquals("{}", out.getToolCalls().get(0).arguments(),
+                "strict providers must never receive invalid JSON in replayed history");
     }
 
     @Test

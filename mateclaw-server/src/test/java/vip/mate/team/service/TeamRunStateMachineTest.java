@@ -47,6 +47,8 @@ class TeamRunStateMachineTest {
                         TeamRunStatus.RUNNING, null, 1, 0, 0, 50),
                 Arguments.of("blocked tasks are active", TeamRunStatus.AWAITING_REVIEW,
                         tasks(TeamTaskStatus.BLOCKED), TeamRunStatus.RUNNING, null, 0, 0, 0, 0),
+                Arguments.of("tool approval waits are active", TeamRunStatus.FINALIZING,
+                        tasks(TeamTaskStatus.AWAITING_APPROVAL), TeamRunStatus.RUNNING, null, 0, 0, 0, 0),
                 Arguments.of("review only", TeamRunStatus.RUNNING,
                         tasks(TeamTaskStatus.COMPLETED, TeamTaskStatus.IN_REVIEW),
                         TeamRunStatus.AWAITING_REVIEW, null, 1, 0, 1, 50),

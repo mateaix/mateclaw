@@ -45,6 +45,10 @@ public class Utf8SseEmitter extends SseEmitter {
     protected void extendResponse(ServerHttpResponse response) {
         super.extendResponse(response);
         HttpHeaders headers = response.getHeaders();
+        // Streaming frames must reach the client as they are emitted. Nginx
+        // honors this response header unless explicitly configured to ignore it.
+        headers.set("X-Accel-Buffering", "no");
+        headers.setCacheControl("no-store, no-transform");
         // Spring's default sets Content-Type=text/event-stream without charset.
         // Only override when no charset is already specified, so callers that
         // want to roll their own (rare) keep working.

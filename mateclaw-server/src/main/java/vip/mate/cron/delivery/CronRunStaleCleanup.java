@@ -21,7 +21,7 @@ import java.time.LocalDateTime;
  *       {@code NOT_DELIVERED} with {@code stale-pending-timeout} reason.
  *       Covers listener crashes / OOMs / forced kills after a successful
  *       {@code claimRun()} but before {@code markDelivered}.</li>
- *   <li>{@code status='running'} older than 30 min → mark {@code failed}
+ *   <li>{@code status='running'} without a heartbeat for 2 min → mark {@code failed}
  *       with {@code stale-running-timeout}. Covers
  *       {@code CronJobLifecycleService.markRunFailed()} itself failing under
  *       DB jitter (the LLM call already terminated by then).</li>
@@ -38,7 +38,7 @@ public class CronRunStaleCleanup {
     private final CronJobRunMapper runMapper;
 
     private static final Duration DELIVERY_STALE = Duration.ofMinutes(15);
-    private static final Duration RUN_STALE = Duration.ofMinutes(30);
+    private static final Duration RUN_STALE = Duration.ofMinutes(2);
 
     /**
      * RFC-03 Lane G2: in a multi-instance deployment, the sweep is purely
@@ -62,7 +62,7 @@ public class CronRunStaleCleanup {
 
         int staleRunning = runMapper.update(null, new LambdaUpdateWrapper<CronJobRunEntity>()
                 .eq(CronJobRunEntity::getStatus, "running")
-                .lt(CronJobRunEntity::getStartedAt, now.minus(RUN_STALE))
+                .apply("COALESCE(heartbeat_at, started_at) < {0}", now.minus(RUN_STALE))
                 .set(CronJobRunEntity::getStatus, "failed")
                 .set(CronJobRunEntity::getFinishedAt, now)
                 .set(CronJobRunEntity::getErrorMessage, "stale-running-timeout"));

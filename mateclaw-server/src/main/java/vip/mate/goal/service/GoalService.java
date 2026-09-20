@@ -35,8 +35,14 @@ public interface GoalService {
     /** Active goal for the conversation, or null. Used by buildInitialState. */
     GoalEntity findActiveByConversation(String conversationId);
 
+    /** Most recently created goal for the conversation, regardless of status, or null. */
+    GoalEntity findLatestByConversation(String conversationId);
+
     /** Paged list filtered by status / owner. */
     List<GoalEntity> list(String status, String username, int limit);
+
+    /** Conversation-scoped history, newest id first, with an exclusive cursor. */
+    List<GoalEntity> listByConversation(String conversationId, Long beforeId, int limit);
 
     /** Sparse update. Throws if any terminal-state goal is targeted. */
     GoalEntity update(Long id, GoalUpdateRequest req, String username);
@@ -53,8 +59,15 @@ public interface GoalService {
     GoalEntity resume(Long id, String username);
     GoalEntity abandon(Long id, String username);
 
-    /** Flip active->completed. Writes a 'completed' event. */
+    /** Trusted platform completion. Runtime callers must use markRuntimeCompleted to carry their identity. */
     GoalEntity markCompleted(Long id, GoalEvaluationResult result);
+
+    /** Trusted platform evaluation completion. Runtime callers must use markRuntimeEvaluatedCompleted. */
+    GoalEntity markEvaluatedCompleted(Long id, GoalEvaluationResult result);
+
+    /** Runtime entry points carry server-issued identity; selected JSON goals also fence the completing owner. */
+    GoalEntity markRuntimeCompleted(Long id, GoalEvaluationResult result, vip.mate.agent.context.ChatOrigin origin);
+    GoalEntity markRuntimeEvaluatedCompleted(Long id, GoalEvaluationResult result, vip.mate.agent.context.ChatOrigin origin);
 
     /** Flip active->exhausted with the reason that triggered it. */
     GoalEntity markExhausted(Long id, String reason);

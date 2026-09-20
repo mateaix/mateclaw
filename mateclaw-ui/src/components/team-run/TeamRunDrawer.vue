@@ -27,6 +27,9 @@ const emit = defineEmits<{
   'view-task': [taskId: string]
   'retry-task': [taskId: string]
   'approve-task': [taskId: string]
+  'approve-tool': [taskId: string]
+  'deny-tool': [taskId: string]
+  'feedback-task': [taskId: string, message: string]
 }>()
 const { t } = useI18n()
 const closeButton = ref<HTMLButtonElement | null>(null)
@@ -97,6 +100,9 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown))
         @view-task="emit('view-task', $event)"
         @retry-task="emit('retry-task', $event)"
         @approve-task="emit('approve-task', $event)"
+        @approve-tool="emit('approve-tool', $event)"
+        @deny-tool="emit('deny-tool', $event)"
+        @feedback-task="(taskId, message) => emit('feedback-task', taskId, message)"
       />
     </aside>
   </div>

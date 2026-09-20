@@ -58,8 +58,9 @@ public final class GoalCriteriaCodec {
 
     /**
      * Merge a per-round verdict delta into the full checklist by id. Criteria
-     * absent from the delta are preserved unchanged; the criterion text is
-     * always kept from the existing item (the verdict never carries text).
+     * absent from the delta retain their state unless their pass lacks evidence.
+     * The criterion text is always kept from the existing item (the verdict never carries text).
+     * Duplicate verdict ids are ambiguous and rejected instead of taking the last value.
      */
     public static List<GoalCriterion> merge(List<GoalCriterion> existing,
                                             List<GoalChecklistVerdict.CriterionVerdict> verdicts) {
@@ -70,25 +71,31 @@ public final class GoalCriteriaCodec {
         if (verdicts != null) {
             for (GoalChecklistVerdict.CriterionVerdict v : verdicts) {
                 if (v != null && v.id() != null) {
-                    byId.put(v.id(), v);
+                    if (byId.putIfAbsent(v.id(), v) != null) {
+                        throw new IllegalArgumentException("Duplicate criterion verdict id");
+                    }
                 }
             }
         }
         List<GoalCriterion> merged = new ArrayList<>(existing.size());
         for (GoalCriterion c : existing) {
             GoalChecklistVerdict.CriterionVerdict v = byId.get(c.id());
-            merged.add(v == null
-                    ? c
+            GoalCriterion candidate = v == null ? c
                     : new GoalCriterion(c.id(), c.text(), v.passed(),
-                    v.evidence() != null ? v.evidence() : ""));
+                            v.evidence() != null ? v.evidence() : "");
+            // A model boolean alone cannot satisfy even the legacy semantic
+            // checklist. This checks presence, not truth or execution provenance.
+            merged.add(candidate.passed() && !hasEvidence(candidate)
+                    ? new GoalCriterion(candidate.id(), candidate.text(), false, candidate.evidence())
+                    : candidate);
         }
         return merged;
     }
 
-    /** True only when the list is non-empty and every criterion is passed. */
+    /** True only when the list is non-empty and every criterion is passed with nonblank evidence. */
     public static boolean allPassed(List<GoalCriterion> criteria) {
         return criteria != null && !criteria.isEmpty()
-                && criteria.stream().allMatch(GoalCriterion::passed);
+                && criteria.stream().allMatch(c -> c != null && c.passed() && hasEvidence(c));
     }
 
     /** Criteria not yet passed (used for the continuation prompt + gap text). */
@@ -96,7 +103,11 @@ public final class GoalCriteriaCodec {
         if (criteria == null) {
             return List.of();
         }
-        return criteria.stream().filter(c -> !c.passed()).toList();
+        return criteria.stream().filter(c -> !c.passed() || !hasEvidence(c)).toList();
+    }
+
+    private static boolean hasEvidence(GoalCriterion criterion) {
+        return criterion.evidence() != null && !criterion.evidence().isBlank();
     }
 
     /** Reassign stable ids {@code C1..Cn} in list order. */

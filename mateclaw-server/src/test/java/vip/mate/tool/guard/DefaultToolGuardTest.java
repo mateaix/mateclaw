@@ -169,6 +169,15 @@ class DefaultToolGuardTest {
     }
 
     @Test
+    @DisplayName("append_file follows the file-write approval policy")
+    void shouldRequireApprovalForAppendFile() {
+        ToolGuardResult result = toolGuard.check("append_file",
+                "{\"filePath\":\"notes.md\",\"content\":\"new\"}");
+        assertFalse(result.isBlocked());
+        assertTrue(result.needsApproval());
+    }
+
+    @Test
     @DisplayName("允许带 WHERE 的 DELETE")
     void shouldAllowFilteredDelete() {
         ToolGuardResult result = toolGuard.check("executeSql", "DELETE FROM logs WHERE created_at < '2024-01-01'");

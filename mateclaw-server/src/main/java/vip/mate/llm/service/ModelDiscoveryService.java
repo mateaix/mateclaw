@@ -681,8 +681,9 @@ public class ModelDiscoveryService {
 
     /**
      * Build the smoke-test request body for the OpenAI-compatible test-prompt path.
-     * The core fields (model/messages/max_tokens/temperature) are fixed by design —
-     * this is a minimal-token connectivity probe, not a real chat turn — but any
+     * Probe limits follow the same ModelFamily constraints as runtime chat.
+     * Reasoning models need a completion budget that includes reasoning tokens;
+     * the standard ten-token probe is insufficient for those models. Any
      * unrecognized top-level {@code generateKwargs} key (e.g. vLLM's
      * {@code chat_template_kwargs} used to disable Qwen thinking mode) is forwarded
      * verbatim, same as the runtime chat path in
@@ -694,8 +695,21 @@ public class ModelDiscoveryService {
         Map<String, Object> requestBody = new LinkedHashMap<>(ProviderGenerateKwargs.collectPassthroughExtraBody(kwargs));
         requestBody.put("model", modelId);
         requestBody.put("messages", List.of(Map.of("role", "user", "content", "请回复：连接正常")));
-        requestBody.put("max_tokens", 10);
-        requestBody.put("temperature", 0);
+        ModelFamily family = ModelFamily.detect(modelId);
+        if (family.useMaxCompletionTokens()) {
+            requestBody.put("max_completion_tokens", 4096);
+            // Let OpenAI/Azure use model defaults: reasoning deployments may
+            // reject explicit sampling options even in a connectivity probe.
+        } else {
+            requestBody.put("max_tokens", 10);
+            Object probeTemperature;
+            if (family.fixedTemperatureOne()) {
+                probeTemperature = 1.0d;
+            } else {
+                probeTemperature = 0;
+            }
+            requestBody.put("temperature", probeTemperature);
+        }
         return requestBody;
     }
 

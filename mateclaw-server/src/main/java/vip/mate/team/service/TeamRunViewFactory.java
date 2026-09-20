@@ -177,6 +177,8 @@ final class TeamRunViewFactory {
         List<TeamRunView.AttentionItem> items = new ArrayList<>();
         for (TeamTaskEntity task : tasks) {
             String type = switch (task.getStatus()) {
+                case TeamTaskStatus.AWAITING_APPROVAL -> replayOutcomeUncertain(task)
+                        ? "replay_uncertain" : "approval";
                 case TeamTaskStatus.IN_REVIEW -> "review";
                 case TeamTaskStatus.FAILED -> "failure";
                 case TeamTaskStatus.BLOCKED -> "blocked";
@@ -185,7 +187,8 @@ final class TeamRunViewFactory {
             };
             if (type != null) {
                 String message = text(task.getReason());
-                int priority = TeamTaskStatus.IN_REVIEW.equals(task.getStatus()) ? 0 : 20;
+                int priority = TeamTaskStatus.IN_REVIEW.equals(task.getStatus())
+                        || TeamTaskStatus.AWAITING_APPROVAL.equals(task.getStatus()) ? 0 : 20;
                 items.add(new TeamRunView.AttentionItem("task:" + task.getId() + ":" + type,
                         type, priority == 0 ? "action" : "error", priority,
                         task.getId(), message == null ? task.getSubject() : message, task.getUpdateTime()));
@@ -203,6 +206,15 @@ final class TeamRunViewFactory {
             return priority != 0 ? priority : compareNullableDesc(left.createdAt(), right.createdAt());
         });
         return List.copyOf(items);
+    }
+
+    private static boolean replayOutcomeUncertain(TeamTaskEntity task) {
+        try {
+            JSONObject approval = JSONUtil.parseObj(task.getMetadata()).getJSONObject("toolApproval");
+            return approval != null && approval.getBool("replayOutcomeUncertain", false);
+        } catch (RuntimeException invalidMetadata) {
+            return false;
+        }
     }
 
     private static TeamRunView.Liveness liveness(String status, LocalDateTime lastActivity,

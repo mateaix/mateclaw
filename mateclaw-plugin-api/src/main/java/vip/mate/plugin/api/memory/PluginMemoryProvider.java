@@ -11,7 +11,7 @@ import java.util.List;
  *
  * @author MateClaw Team
  */
-public interface PluginMemoryProvider {
+public interface PluginMemoryProvider extends AutoCloseable {
 
     /**
      * Unique provider identifier, e.g. "vector_memory", "graph_memory".
@@ -113,5 +113,10 @@ public interface PluginMemoryProvider {
      * Session end hook.
      */
     default void onSessionEnd(Long agentId, String conversationId) {
+    }
+
+    /** Release provider-owned resources when the plugin is unloaded. */
+    @Override
+    default void close() {
     }
 }

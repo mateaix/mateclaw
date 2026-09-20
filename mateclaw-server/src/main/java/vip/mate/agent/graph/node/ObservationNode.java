@@ -54,7 +54,7 @@ public class ObservationNode implements NodeAction {
      * determined statically, and a false reminder is worse than none.
      */
     private static final java.util.Set<String> FILE_MUTATION_TOOLS =
-            java.util.Set.of("write_file", "edit_file");
+            java.util.Set.of("write_file", "append_file", "edit_file");
 
     private static final String VERIFICATION_REMINDER =
             "\n\n[✅ 验证提醒] 本轮修改了文件。在给出最终回答前，请先验证改动是否生效" +

@@ -19,10 +19,18 @@ public class GoalRunCoordinator {
     private final GoalAttemptStore attempts;
     private final GoalService goals;
     private final GoalProperties properties;
+    private final java.time.Clock clock;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public GoalRunCoordinator(GoalContinuationStore continuations,GoalAttemptStore attempts,GoalService goals,
                               GoalProperties properties) {
+        this(continuations, attempts, goals, properties, java.time.Clock.systemDefaultZone());
+    }
+
+    GoalRunCoordinator(GoalContinuationStore continuations,GoalAttemptStore attempts,GoalService goals,
+                       GoalProperties properties,java.time.Clock clock) {
         this.continuations=continuations;this.attempts=attempts;this.goals=goals;this.properties=properties;
+        this.clock=clock;
     }
 
     public record ClaimedRun(GoalContinuationStore.Continuation candidate,GoalEntity goal,
@@ -31,17 +39,28 @@ public class GoalRunCoordinator {
     @Transactional
     public ClaimedRun claim(GoalContinuationStore.Continuation candidate,GoalEntity goal,LocalDateTime now) {
         if(candidate==null || goal==null || candidate.currentAttemptId()!=null) return null;
+        if(!continuations.lockGoal(goal.getId())) return null;
+        java.time.Instant instant=currentInstant(now);
+        long nowEpoch=instant.getEpochSecond();
+        now=LocalDateTime.ofInstant(instant,java.time.ZoneId.systemDefault());
         String token=UUID.randomUUID().toString();
-        LocalDateTime until=now.plusSeconds(LEASE_SECONDS);
-        if(!continuations.claim(goal.getId(),token,now,until)) return null;
+        long untilEpoch=nowEpoch+LEASE_SECONDS;
+        LocalDateTime until=GoalLeaseTime.local(untilEpoch);
+        if(!continuations.claim(goal.getId(),token,now,until,nowEpoch,untilEpoch)) return null;
         GoalContinuationStore.Continuation claimed=continuations.get(goal.getId());
         String parentAttemptId=null;
-        if("restart_recovery".equals(candidate.reason())) {
-            var recent=attempts.listRecent(goal.getId(),1);
-            if(!recent.isEmpty()) parentAttemptId=recent.getFirst().id();
+        var recent=attempts.listRecent(goal.getId(),1);
+        if(!recent.isEmpty()) {
+            var previous=recent.getFirst();
+            // A recovered attempt may be deferred before reaching the provider.
+            // Keep that pending recovery context until a segment actually starts.
+            if("restart_recovery".equals(candidate.reason())
+                    || previous.parentAttemptId()!=null && "claimed".equals(previous.checkpointType())) {
+                parentAttemptId=previous.id();
+            }
         }
         GoalAttempt attempt=attempts.create(goal.getId(),goal.getConversationId(),parentAttemptId,
-                "continuation",token,until,null,now);
+                "continuation",token,until,null,now,untilEpoch);
         if(!continuations.bindAttempt(goal.getId(),token,attempt.id(),claimed.revision())) {
             throw new IllegalStateException("Goal attempt could not be bound to its continuation");
         }
@@ -50,29 +69,50 @@ public class GoalRunCoordinator {
 
     @Transactional
     public boolean markRunning(ClaimedRun run,LocalDateTime now) {
-        if(!current(run)) return false;
+        if(run==null || !continuations.lockGoal(run.goal().getId())) return false;
+        java.time.Instant instant=currentInstant(now);
+        long nowEpoch=instant.getEpochSecond();
+        now=LocalDateTime.ofInstant(instant,java.time.ZoneId.systemDefault());
+        if(!current(run,nowEpoch)) return false;
         return attempts.markRunning(run.attempt().id(),run.attempt().leaseToken(),now);
     }
 
     @Transactional
     public boolean renew(ClaimedRun run,LocalDateTime now) {
-        LocalDateTime until=now.plusSeconds(LEASE_SECONDS);
+        if(run==null || !continuations.lockGoal(run.goal().getId())) return false;
+        java.time.Instant instant=currentInstant(now);
+        long nowEpoch=instant.getEpochSecond();
+        now=LocalDateTime.ofInstant(instant,java.time.ZoneId.systemDefault());
+        if(!current(run,nowEpoch)) return false;
+        long untilEpoch=nowEpoch+LEASE_SECONDS;
+        LocalDateTime until=GoalLeaseTime.local(untilEpoch);
         if(!continuations.renewFenced(run.goal().getId(),run.attempt().leaseToken(),
-                run.attempt().id(),run.revision(),until)) return false;
-        return attempts.renew(run.attempt().id(),run.attempt().leaseToken(),until,now);
+                run.attempt().id(),run.revision(),until,untilEpoch)) return false;
+        if(!attempts.renew(run.attempt().id(),run.attempt().leaseToken(),until,now,untilEpoch)) {
+            throw new IllegalStateException("Goal attempt fence changed during renewal");
+        }
+        return true;
     }
 
     @Transactional
     public boolean checkpoint(ClaimedRun run,String replaySafety,String checkpointType,
                               Long assistantMessageId,LocalDateTime now) {
-        if(!current(run)) return false;
+        if(run==null || !continuations.lockGoal(run.goal().getId())) return false;
+        java.time.Instant instant=currentInstant(now);
+        long nowEpoch=instant.getEpochSecond();
+        now=LocalDateTime.ofInstant(instant,java.time.ZoneId.systemDefault());
+        if(!current(run,nowEpoch)) return false;
         return attempts.checkpoint(run.attempt().id(),run.attempt().leaseToken(),replaySafety,
                 checkpointType,assistantMessageId,now);
     }
 
     @Transactional
     public boolean settle(ClaimedRun run,SegmentOutcome outcome,LocalDateTime now) {
-        if(!current(run)) return false;
+        if(run==null || !continuations.lockGoal(run.goal().getId())) return false;
+        java.time.Instant instant=currentInstant(now);
+        long nowEpoch=instant.getEpochSecond();
+        now=LocalDateTime.ofInstant(instant,java.time.ZoneId.systemDefault());
+        if(!current(run,nowEpoch)) return false;
         GoalEntity fresh=goals.getById(run.goal().getId());
         Settlement settlement=classify(run,outcome,fresh,now);
         if((outcome instanceof SegmentOutcome.Continue || outcome instanceof SegmentOutcome.Complete)
@@ -88,15 +128,30 @@ public class GoalRunCoordinator {
         return true;
     }
 
-    private boolean current(ClaimedRun run) {
+    private java.time.Instant currentInstant(LocalDateTime requested) {
+        // Preserve absolute time across DST overlap and time spent waiting for the goal lock.
+        // Keep sub-second precision for next_run_at comparisons; only persisted leases use seconds.
+        java.time.Instant observed=clock.instant();
+        java.time.Instant supplied=requested.atZone(java.time.ZoneId.systemDefault()).toInstant();
+        return observed.isAfter(supplied) ? observed : supplied;
+    }
+
+    private boolean current(ClaimedRun run,long nowEpoch) {
         return run!=null && continuations.matchesFence(run.goal().getId(),run.attempt().leaseToken(),
-                run.attempt().id(),run.revision());
+                run.attempt().id(),run.revision(),nowEpoch)
+                && attempts.hasLiveFence(run.attempt().id(),run.attempt().leaseToken(),nowEpoch);
     }
 
     private Settlement classify(ClaimedRun run,SegmentOutcome outcome,GoalEntity fresh,LocalDateTime now) {
         int failures=run.candidate().failures();
-        if(fresh!=null && fresh.getStatus()==GoalStatus.COMPLETED || outcome instanceof SegmentOutcome.Complete) {
+        if(fresh!=null && fresh.getStatus()==GoalStatus.COMPLETED
+                || outcome instanceof SegmentOutcome.Complete && (fresh==null || !fresh.isJsonAcceptanceRequired())) {
             return new Settlement("succeeded","completed",now,0,"goal_completed",null);
+        }
+        if(outcome instanceof SegmentOutcome.Complete && fresh!=null && fresh.isJsonAcceptanceRequired()) {
+            return eligible(fresh)
+                    ? new Settlement("retryable","retry",now.plusSeconds(5),Math.min(1000,failures+1),"json_completion_not_committed","acceptance")
+                    : new Settlement("cancelled","paused",now,0,"goal_not_runnable",null);
         }
         if(fresh!=null && fresh.getStatus()==GoalStatus.PAUSED && goals.isBudgetExhausted(fresh)) {
             return new Settlement("succeeded","budget_limited",now,0,goals.exhaustionReason(fresh),null);

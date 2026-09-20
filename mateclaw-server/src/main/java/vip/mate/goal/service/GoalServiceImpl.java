@@ -11,6 +11,11 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import vip.mate.audit.service.AuditEventService;
 import vip.mate.exception.MateClawException;
 import vip.mate.goal.config.GoalProperties;
@@ -32,6 +37,7 @@ import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * Default implementation. Concurrency safety relies on:
@@ -56,6 +62,7 @@ public class GoalServiceImpl implements GoalService {
     private final AuditEventService auditEventService;
     private final ObjectMapper objectMapper;
     private ApplicationEventPublisher applicationEventPublisher;
+    private PlatformTransactionManager transactionManager;
 
     /**
      * Optional — only set when the memory subsystem is wired. On goal
@@ -65,6 +72,16 @@ public class GoalServiceImpl implements GoalService {
      * effort: memory should never block the state-machine write.
      */
     private vip.mate.memory.spi.MemoryManager memoryManager;
+    private GoalJsonBindingService jsonBindings;
+    private ManagedGoalJsonService managedArtifacts;
+
+    @Autowired
+    public void setManagedArtifacts(ManagedGoalJsonService managedArtifacts) { this.managedArtifacts = managedArtifacts; }
+
+    @Autowired
+    public void setJsonBindings(GoalJsonBindingService jsonBindings) {
+        this.jsonBindings = jsonBindings;
+    }
 
     public GoalServiceImpl(GoalMapper goalMapper,
                            GoalEventMapper eventMapper,
@@ -86,6 +103,11 @@ public class GoalServiceImpl implements GoalService {
     @Autowired(required = false)
     public void setApplicationEventPublisher(ApplicationEventPublisher publisher) {
         this.applicationEventPublisher = publisher;
+    }
+
+    @Autowired(required = false)
+    public void setTransactionManager(PlatformTransactionManager manager) {
+        this.transactionManager = manager;
     }
 
     // ==================== CRUD ====================
@@ -181,6 +203,28 @@ public class GoalServiceImpl implements GoalService {
     }
 
     @Override
+    public GoalEntity findLatestByConversation(String conversationId) {
+        if (conversationId == null || conversationId.isBlank()) {
+            return null;
+        }
+        return goalMapper.selectOne(new LambdaQueryWrapper<GoalEntity>()
+                .eq(GoalEntity::getConversationId, conversationId)
+                .orderByDesc(GoalEntity::getCreateTime)
+                .orderByDesc(GoalEntity::getId)
+                .last("LIMIT 1"));
+    }
+
+    @Override
+    public List<GoalEntity> listByConversation(String conversationId, Long beforeId, int limit) {
+        if (conversationId == null || conversationId.isBlank()) return List.of();
+        return goalMapper.selectList(new LambdaQueryWrapper<GoalEntity>()
+                .eq(GoalEntity::getConversationId, conversationId)
+                .lt(beforeId != null, GoalEntity::getId, beforeId)
+                .orderByDesc(GoalEntity::getId)
+                .last("LIMIT " + Math.max(1, Math.min(50, limit))));
+    }
+
+    @Override
     public List<GoalEntity> list(String status, String username, int limit) {
         LambdaQueryWrapper<GoalEntity> w = new LambdaQueryWrapper<GoalEntity>()
                 .orderByDesc(GoalEntity::getCreateTime);
@@ -247,10 +291,32 @@ public class GoalServiceImpl implements GoalService {
             if (!changed) {
                 return null; // idempotent no-op
             }
+            boolean exitsChanged = req.getExitCriteria() != null
+                    && !Objects.equals(req.getExitCriteria(), fresh.getExitCriteria());
+            boolean definitionChanged = exitsChanged
+                    || req.getPersistentExecution() != null
+                        && !Objects.equals(req.getPersistentExecution(), Boolean.TRUE.equals(fresh.getPersistentExecution()))
+                    || req.getTitle() != null && !req.getTitle().isBlank()
+                        && !Objects.equals(req.getTitle().trim(), fresh.getTitle())
+                    || req.getDescription() != null && !Objects.equals(req.getDescription(), fresh.getDescription())
+                    || req.getSuccessCheckPrompt() != null
+                        && !Objects.equals(req.getSuccessCheckPrompt(), fresh.getSuccessCheckPrompt());
+            if (definitionChanged) {
+                // Replacing the free-text exit definition requires a new draft.
+                // Other context edits preserve user criterion text but revoke its old verdicts.
+                String criteria = exitsChanged ? null : GoalCriteriaCodec.serialize(
+                        GoalCriteriaCodec.parse(fresh.getCriteria(), objectMapper).stream()
+                                .map(c -> new GoalCriterion(c.id(), c.text(), false, "")).toList(), objectMapper);
+                w.set(GoalEntity::getEvaluationRevision, Math.addExact(fresh.getEvaluationRevision(), 1L))
+                 .set(GoalEntity::getCriteria, criteria)
+                 .set(GoalEntity::getCompletionScore, 0.0)
+                 .set(GoalEntity::getProgressSummary, "Goal definition changed; reevaluation required");
+            }
             bumpVersionAndTime(w);
             return w;
         });
-        recordAudit("goal.updated", updated, Map.of("by", username));
+        recordAudit("goal.updated", updated, Map.of("by", username,
+                "evaluationRevision", updated.getEvaluationRevision()));
         return updated;
     }
 
@@ -328,15 +394,70 @@ public class GoalServiceImpl implements GoalService {
     @Override
     @Transactional
     public GoalEntity markCompleted(Long id, GoalEvaluationResult result) {
+        return completeGoal(id, result, false, null, false);
+    }
+
+    @Override
+    @Transactional
+    public GoalEntity markEvaluatedCompleted(Long id, GoalEvaluationResult result) {
+        if (result == null || !result.completed()
+                || !GoalEvaluationResult.DECISION_COMPLETED.equals(result.decision())) {
+            throw new MateClawException("err.goal.completion_not_verified", 409,
+                    "Automatic completion requires a completed evaluation");
+        }
+        return completeGoal(id, result, true, null, false);
+    }
+
+    @Override
+    @Transactional
+    public GoalEntity markRuntimeCompleted(Long id, GoalEvaluationResult result, vip.mate.agent.context.ChatOrigin origin) {
+        return completeGoal(id, result, false, origin, true);
+    }
+
+    @Override
+    @Transactional
+    public GoalEntity markRuntimeEvaluatedCompleted(Long id, GoalEvaluationResult result, vip.mate.agent.context.ChatOrigin origin) {
+        if (result == null || !result.completed()
+                || !GoalEvaluationResult.DECISION_COMPLETED.equals(result.decision())) {
+            throw new MateClawException("err.goal.completion_not_verified", 409,
+                    "Automatic completion requires a completed evaluation");
+        }
+        return completeGoal(id, result, true, origin, true);
+    }
+
+    private GoalEntity completeGoal(Long id, GoalEvaluationResult result, boolean evaluated,
+                                   vip.mate.agent.context.ChatOrigin origin, boolean runtimeCaller) {
+        boolean[] transitioned = {false};
+        var jsonProof = new java.util.concurrent.atomic.AtomicReference<List<GoalJsonBindingService.State>>(List.of());
         GoalEntity g = retryOptimistic(id, "markCompleted", fresh -> {
-            if (fresh.getStatus().isTerminal()) return null; // idempotent
+            // A failed CAS may retry against another worker's completed row.
+            transitioned[0] = false;
+            jsonProof.set(List.of());
+            if (fresh.getStatus().isTerminal()) {
+                if (evaluated && fresh.getStatus() != GoalStatus.COMPLETED) {
+                    throw new MateClawException("err.goal.completion_not_verified", 409,
+                            "Automatic completion cannot replace another terminal state");
+                }
+                return null; // idempotent
+            }
+            ManagedGoalJsonService.RuntimeScope runtime = null;
+            if (runtimeCaller && fresh.isJsonAcceptanceRequired()) {
+                if (managedArtifacts == null) throw new MateClawException(409, "Managed JSON runtime verification is unavailable");
+                runtime = managedArtifacts.runtimeGoal(origin);
+                if (runtime.goal().id() != fresh.getId()) throw new MateClawException(403, "Completion runtime goal mismatch");
+            }
+            if (evaluated && result.evaluationRevision() != fresh.getEvaluationRevision()) {
+                throw new MateClawException("err.goal.completion_not_verified", 409,
+                        "Automatic completion requires the current evaluation definition revision");
+            }
             boolean persistent = Boolean.TRUE.equals(fresh.getPersistentExecution());
             List<GoalCriterion> existing = GoalCriteriaCodec.parse(fresh.getCriteria(), objectMapper);
-            if (persistent && (fresh.getStatus() != GoalStatus.ACTIVE || existing.isEmpty()
-                    || existing.stream().anyMatch(c -> c == null || !c.passed()
-                            || c.evidence() == null || c.evidence().isBlank()))) {
+            // Rechecked against the fresh row on every CAS retry. A stale
+            // evaluator result must never force-pass newly added criteria.
+            if ((persistent || evaluated) && (fresh.getStatus() != GoalStatus.ACTIVE
+                    || !GoalCriteriaCodec.allPassed(existing))) {
                 throw new MateClawException("err.goal.completion_not_verified", 409,
-                        "Persistent completion requires an active goal and evidence for every current criterion");
+                        "Completion requires an active goal and evidence for every current criterion");
             }
             LambdaUpdateWrapper<GoalEntity> w = baseLockedUpdate(fresh)
                     .set(GoalEntity::getStatus, GoalStatus.COMPLETED);
@@ -344,9 +465,9 @@ public class GoalServiceImpl implements GoalService {
                 w.set(GoalEntity::getCompletionScore, result.score())
                  .set(GoalEntity::getProgressSummary, result.gap());
             }
-            // Preserve verified persistent evidence verbatim. Legacy manual
+            // Preserve automatically evaluated and persistent evidence verbatim. Legacy manual
             // completion retains its historical force-passed checklist snapshot.
-            if (!persistent && !existing.isEmpty()) {
+            if (!persistent && !evaluated && !existing.isEmpty()) {
                 List<GoalCriterion> allPassed = existing.stream()
                         .map(c -> c.passed() ? c : new GoalCriterion(c.id(), c.text(), true,
                                 c.evidence() == null || c.evidence().isBlank()
@@ -354,35 +475,68 @@ public class GoalServiceImpl implements GoalService {
                         .toList();
                 w.set(GoalEntity::getCriteria, GoalCriteriaCodec.serialize(allPassed, objectMapper));
             }
+            if (fresh.isJsonAcceptanceRequired()) {
+                if (jsonBindings == null) throw new MateClawException("err.goal.json_acceptance_required", 409,
+                        "Managed JSON verification service is unavailable");
+                jsonProof.set(jsonBindings.requireForCompletion(fresh));
+                if (runtime != null) ManagedGoalJsonService.verifyLease(runtime);
+            }
             bumpVersionAndTime(w);
+            transitioned[0] = true;
             return w;
         });
+        if (!transitioned[0]) return g;
         Map<String, Object> detail = new LinkedHashMap<>();
         detail.put("finalScore", result != null ? result.score() : null);
         detail.put("agentLlmCallsUsed", g.getAgentLlmCallsUsed());
         detail.put("evalLlmCallsUsed", g.getEvalLlmCallsUsed());
         detail.put("criteria", GoalCriteriaCodec.parse(g.getCriteria(), objectMapper));
+        if (g.isJsonAcceptanceRequired()) {
+            detail.put("jsonAcceptanceRequired", true);
+            detail.put("jsonBindings", jsonProof.get());
+        }
         writeEvent(id, GoalEventType.COMPLETED, null, detail);
         recordAudit("goal.completed", g, detail);
 
-        // Forward to long-term memory on completion. Best-effort: a failing
-        // memory pipeline must not roll back the DB transition.
-        if (memoryManager != null) {
+        syncCompletionMemoryAfterCommit(g, result);
+        return g;
+    }
+
+    private void syncCompletionMemoryAfterCommit(GoalEntity goal, GoalEvaluationResult result) {
+        var target = memoryManager;
+        if (target == null) return;
+        // Snapshot values before returning the mutable entity to the caller.
+        Long agentId = goal.getAgentId();
+        String conversationId = goal.getConversationId();
+        String subject = "[goal completed] " + goal.getTitle();
+        String summary = goal.getProgressSummary() != null && !goal.getProgressSummary().isBlank()
+                ? goal.getProgressSummary() : "Final score: " + (result != null ? result.score() : "—");
+        Runnable sync = () -> {
             try {
-                String summary = g.getProgressSummary() != null && !g.getProgressSummary().isBlank()
-                        ? g.getProgressSummary()
-                        : "Final score: " + (result != null ? result.score() : "—");
-                memoryManager.syncAll(
-                        g.getAgentId(),
-                        g.getConversationId(),
-                        "[goal completed] " + g.getTitle(),
-                        summary);
+                if (transactionManager != null) {
+                    // afterCommit still has the old transaction's resources bound.
+                    // Adapter DB writes need their own transaction to commit reliably.
+                    TransactionTemplate independent = new TransactionTemplate(transactionManager);
+                    independent.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+                    independent.executeWithoutResult(status -> target.syncAll(agentId, conversationId, subject, summary));
+                } else {
+                    target.syncAll(agentId, conversationId, subject, summary);
+                }
             } catch (Exception e) {
                 log.debug("[GoalService] memory syncAll on goal completion failed: {}", e.getMessage());
             }
+        };
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            if (TransactionSynchronizationManager.isSynchronizationActive()) {
+                TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                    @Override public void afterCommit() { sync.run(); }
+                });
+            } else {
+                log.debug("[GoalService] skipped completion memory: no commit synchronization available");
+            }
+        } else {
+            sync.run(); // Direct/non-transactional callers retain best-effort behavior.
         }
-
-        return g;
     }
 
     @Override
@@ -437,16 +591,24 @@ public class GoalServiceImpl implements GoalService {
                     .set(GoalEntity::getLastEvaluationAt, LocalDateTime.now());
             // Late model results still consume usage, but cannot overwrite a
             // persistent pause/input boundary established while the call ran.
-            if (result != null && (!Boolean.TRUE.equals(fresh.getPersistentExecution())
-                    || fresh.getStatus() == GoalStatus.ACTIVE)) {
-                w.set(GoalEntity::getCompletionScore, result.score())
-                 .set(GoalEntity::getProgressSummary, result.gap());
+            if (result != null && result.evaluationRevision() == fresh.getEvaluationRevision()
+                    && (!Boolean.TRUE.equals(fresh.getPersistentExecution()) || fresh.getStatus() == GoalStatus.ACTIVE)) {
                 // Persist the checklist by carrier: bootstrap writes the fresh
                 // draft; verdict merges the per-criterion delta into the
                 // current list (re-read on the locked `fresh` to avoid races).
                 String criteriaJson = nextCriteriaJson(fresh, result);
                 if (criteriaJson != null) {
                     w.set(GoalEntity::getCriteria, criteriaJson);
+                }
+                List<GoalCriterion> current = GoalCriteriaCodec.parse(
+                        criteriaJson != null ? criteriaJson : fresh.getCriteria(), objectMapper);
+                if (!current.isEmpty() && !GoalEvaluationResult.DECISION_FALLBACK.equals(result.decision())) {
+                    // The model may have seen fewer criteria. Derive the public
+                    // projection from the same fresh checklist this CAS writes.
+                    setChecklistProgress(w, current);
+                } else {
+                    w.set(GoalEntity::getCompletionScore, result.score())
+                     .set(GoalEntity::getProgressSummary, result.gap());
                 }
             }
             bumpVersionAndTime(w);
@@ -455,9 +617,14 @@ public class GoalServiceImpl implements GoalService {
 
         Map<String, Object> detail = new LinkedHashMap<>();
         if (result != null) {
-            detail.put("completionScore", result.score());
-            detail.put("gap", result.gap());
+            detail.put("completionScore", g.getCompletionScore());
+            detail.put("gap", g.getProgressSummary());
             detail.put("decision", result.decision());
+            detail.put("evaluatorScore", result.score());
+            detail.put("evaluatorGap", result.gap());
+            detail.put("evaluatedRevision", result.evaluationRevision());
+            detail.put("currentEvaluationRevision", g.getEvaluationRevision());
+            detail.put("staleEvaluation", result.evaluationRevision() != g.getEvaluationRevision());
             detail.put("evaluatorModel", result.evaluatorModel());
             detail.put("latencyMs", result.latencyMs());
         }
@@ -472,11 +639,17 @@ public class GoalServiceImpl implements GoalService {
     /**
      * Compute the next criteria JSON for a record-evaluation write, or
      * {@code null} when the result carries no checklist change. Bootstrap
-     * results replace the list with the freshly derived draft; verdict
+     * results initialize a still-empty list with the derived draft; verdict
      * results merge their per-criterion delta into the locked-row list.
      */
     private String nextCriteriaJson(GoalEntity fresh, GoalEvaluationResult result) {
         if (result.bootstrapCriteria() != null && !result.bootstrapCriteria().isEmpty()) {
+            // A user append or another evaluator may have initialized the
+            // checklist while this model call ran. The fresh canonical list
+            // wins, including after an optimistic-lock retry.
+            if (!GoalCriteriaCodec.parse(fresh.getCriteria(), objectMapper).isEmpty()) {
+                return null;
+            }
             return GoalCriteriaCodec.serialize(result.bootstrapCriteria(), objectMapper);
         }
         if (result.criterionVerdicts() != null && !result.criterionVerdicts().isEmpty()) {
@@ -553,6 +726,7 @@ public class GoalServiceImpl implements GoalService {
             LambdaUpdateWrapper<GoalEntity> w = baseLockedUpdate(fresh)
                     .set(GoalEntity::getCriteria, criteriaJson)
                     .set(GoalEntity::getExitCriteria, mergedText);
+            setChecklistProgress(w, list);
             bumpVersionAndTime(w);
             return w;
         });
@@ -564,6 +738,16 @@ public class GoalServiceImpl implements GoalService {
                 "criteria", full,
                 "by", username));
         return g;
+    }
+
+    /** Both evaluation and user edits project the checklist written by this CAS. */
+    private static void setChecklistProgress(LambdaUpdateWrapper<GoalEntity> update, List<GoalCriterion> criteria) {
+        List<GoalCriterion> remaining = GoalCriteriaCodec.remaining(criteria);
+        double score = criteria.isEmpty() ? 0.0 : (double) (criteria.size() - remaining.size()) / criteria.size();
+        String gap = remaining.isEmpty() ? "" : "Still missing: " + remaining.stream()
+                .map(GoalCriterion::text).collect(java.util.stream.Collectors.joining("; "));
+        update.set(GoalEntity::getCompletionScore, score)
+                .set(GoalEntity::getProgressSummary, gap);
     }
 
     // ==================== Internals ====================
@@ -609,6 +793,7 @@ public class GoalServiceImpl implements GoalService {
         r.setExitCriteria(e.getExitCriteria());
         r.setSuccessCheckPrompt(e.getSuccessCheckPrompt());
         r.setStatus(e.getStatus());
+        r.setJsonAcceptanceRequired(e.isJsonAcceptanceRequired());
         r.setPersistentExecution(Boolean.TRUE.equals(e.getPersistentExecution()));
         r.setTurnBudget(e.getTurnBudget());
         r.setTurnsUsed(e.getTurnsUsed());

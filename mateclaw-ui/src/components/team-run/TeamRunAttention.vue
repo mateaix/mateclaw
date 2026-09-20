@@ -15,13 +15,17 @@ const emit = defineEmits<{
   'view-task': [taskId: string]
   'retry-task': [taskId: string]
   'approve-task': [taskId: string]
+  'approve-tool': [taskId: string]
+  'deny-tool': [taskId: string]
 }>()
 
 const { t } = useI18n()
 const items = computed(() => runAttention(props.run))
 const retryable = (type: string) => ['failed', 'failure', 'stale'].includes(type.toLowerCase())
 const reviewable = (type: string) => ['review', 'in_review'].includes(type.toLowerCase())
-const isPending = (taskId: string, action: 'retry' | 'approve') => props.pendingActions.includes(`${taskId}:${action}`)
+const toolApproval = (type: string) => ['approval', 'replay_uncertain'].includes(type.toLowerCase())
+const toolApprovalCanExecute = (type: string) => type.toLowerCase() === 'approval'
+const isPending = (taskId: string, action: 'retry' | 'approve' | 'approve-tool' | 'deny-tool') => props.pendingActions.includes(`${taskId}:${action}`)
 </script>
 
 <template>
@@ -62,6 +66,24 @@ const isPending = (taskId: string, action: 'retry' | 'approve') => props.pending
             :aria-busy="isPending(item.taskId, 'approve')"
             @click="emit('approve-task', item.taskId)"
           >{{ t('common.approve') }}</button>
+          <button
+            v-if="toolApprovalCanExecute(item.type)"
+            type="button"
+            class="is-primary"
+            :data-attention-approve-tool="item.taskId"
+            :disabled="isPending(item.taskId, 'approve-tool') || isPending(item.taskId, 'deny-tool')"
+            :aria-busy="isPending(item.taskId, 'approve-tool')"
+            @click="emit('approve-tool', item.taskId)"
+          >{{ t('common.approve') }}</button>
+          <button
+            v-if="toolApproval(item.type)"
+            type="button"
+            class="is-danger"
+            :data-attention-deny-tool="item.taskId"
+            :disabled="isPending(item.taskId, 'approve-tool') || isPending(item.taskId, 'deny-tool')"
+            :aria-busy="isPending(item.taskId, 'deny-tool')"
+            @click="emit('deny-tool', item.taskId)"
+          >{{ t('common.reject') }}</button>
         </div>
       </li>
     </ul>
@@ -79,6 +101,7 @@ li.is-error { border-left-color: #c13d3d; background: #fff5f5; }
 .run-attention__actions { display: flex; min-width: 0; flex: none; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
 .run-attention__actions button { min-height: 28px; padding: 4px 8px; border: 1px solid var(--mc-border, #d9e1e7); border-radius: 5px; background: #fff; color: var(--mc-text-secondary, #475569); cursor: pointer; font: inherit; white-space: nowrap; }
 .run-attention__actions button.is-primary { border-color: #16835b; color: #126c4d; }
+.run-attention__actions button.is-danger { border-color: #d58d8d; color: #a82929; }
 .run-attention__actions button:disabled { cursor: wait; opacity: 0.6; }
 .run-attention__actions button:focus-visible { outline: 2px solid #16835b; outline-offset: 2px; }
 p { margin: 0; color: var(--mc-text-tertiary); font-size: 12px; }

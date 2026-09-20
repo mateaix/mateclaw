@@ -68,6 +68,41 @@ class FileMutationToolContextTest {
         assertThat(defaultRoot.resolve("deck.md")).doesNotExist();
     }
 
+    @Test
+    @DisplayName("append_file is workspace-scoped and duplicate retries are idempotent")
+    void appendFileUsesWorkspaceAndDeduplicatesRetry(@TempDir Path tempDir) throws Exception {
+        Path defaultRoot = Files.createDirectory(tempDir.resolve("default-root"));
+        Path contextRoot = Files.createDirectory(tempDir.resolve("context-root"));
+        WorkspacePathGuard.setDefaultRoot(defaultRoot.toString());
+        Files.writeString(contextRoot.resolve("checkpoints.md"), "# Checkpoints\n", StandardCharsets.UTF_8);
+        AppendFileTool tool = new AppendFileTool(i18n());
+        var ctx = ChatOrigin.web("conv-617", "alice", 1L, contextRoot.toString()).toToolContext();
+
+        String first = tool.append_file("checkpoints.md", "\n## CHK-020\nDone\n", "# Checkpoints\n", ctx);
+        String retry = tool.append_file("checkpoints.md", "\n## CHK-020\nDone\n", null, ctx);
+
+        assertThat(JSONUtil.parseObj(first).getBool("error", false)).isFalse();
+        assertThat(JSONUtil.parseObj(retry).getBool("alreadyApplied", false)).isTrue();
+        assertThat(contextRoot.resolve("checkpoints.md"))
+                .hasContent("# Checkpoints\n\n## CHK-020\nDone\n");
+        assertThat(defaultRoot.resolve("checkpoints.md")).doesNotExist();
+    }
+
+    @Test
+    @DisplayName("append_file rejects a stale expected tail without changing the file")
+    void appendFileRejectsExpectedTailMismatch(@TempDir Path tempDir) throws Exception {
+        Path contextRoot = Files.createDirectory(tempDir.resolve("context-root"));
+        Path file = contextRoot.resolve("checkpoints.md");
+        Files.writeString(file, "current tail", StandardCharsets.UTF_8);
+        AppendFileTool tool = new AppendFileTool(i18n());
+
+        String result = tool.append_file("checkpoints.md", "new section", "different tail",
+                ChatOrigin.web("conv-617", "alice", 1L, contextRoot.toString()).toToolContext());
+
+        assertThat(JSONUtil.parseObj(result).getStr("code")).isEqualTo("PRECONDITION_FAILED");
+        assertThat(file).hasContent("current tail");
+    }
+
     private static I18nService i18n() {
         return mock(I18nService.class, inv ->
                 "msg".equals(inv.getMethod().getName()) ? inv.getArgument(0) : null);

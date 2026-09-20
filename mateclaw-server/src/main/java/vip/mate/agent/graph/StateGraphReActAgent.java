@@ -700,6 +700,10 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
                         goalService.findActiveByConversation(conversationId);
                 if (active != null) {
                     inputs.put(MateClawStateKeys.ACTIVE_GOAL, active);
+                    if (active.isJsonAcceptanceRequired()) {
+                        inputs.put(SYSTEM_PROMPT, inputs.get(SYSTEM_PROMPT) + "\n\n"
+                                + vip.mate.goal.service.GoalJsonProtocolHints.INSTRUCTIONS);
+                    }
                 }
             } catch (Exception e) {
                 log.warn("[{}] findActiveByConversation failed: {}", agentName, e.getMessage());

@@ -43,6 +43,12 @@
       "required": false,
       "secret": false,
       "description": "HTTP timeout in milliseconds for both recall and sync. Default 3000."
+    },
+    "syncQueueCapacity": {
+      "type": "integer",
+      "required": false,
+      "secret": false,
+      "description": "Maximum pending asynchronous sync turns. New writes are dropped when full. Default 256."
     }
   }
 }

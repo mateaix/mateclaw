@@ -149,7 +149,7 @@ public class DocumentExtractTool {
             String forcedMethod = extractOption(options, "method");
             if ("tika".equalsIgnoreCase(forcedMethod)) {
                 long t = System.currentTimeMillis();
-                String text = TikaExtractor.extract(path);
+                String text = TikaExtractor.extract(path, MAX_OUTPUT_LENGTH + 1);
                 attempts.add("user-forced method=tika: skipped automatic fallback chain");
                 if (text == null || text.isBlank()) {
                     attempts.add("tika: 失败或不可用 (" + (System.currentTimeMillis() - t) + "ms)");
@@ -161,7 +161,7 @@ public class DocumentExtractTool {
                 boolean trunc = false;
                 if (capped.length() > MAX_OUTPUT_LENGTH) {
                     capped = capped.substring(0, MAX_OUTPUT_LENGTH)
-                            + "\n\n... [内容已截断，总长度: " + text.length() + " 字符]";
+                            + "\n\n... [内容已截断，总长度至少: " + text.length() + " 字符]";
                     trunc = true;
                 }
                 result.set("text", capped);
@@ -195,7 +195,7 @@ public class DocumentExtractTool {
             String text = content.text();
             boolean truncated = false;
             if (text.length() > MAX_OUTPUT_LENGTH) {
-                text = text.substring(0, MAX_OUTPUT_LENGTH) + "\n\n... [内容已截断，总长度: " + content.text().length() + " 字符]";
+                text = text.substring(0, MAX_OUTPUT_LENGTH) + "\n\n... [内容已截断，总长度至少: " + content.text().length() + " 字符]";
                 truncated = true;
             }
 
@@ -878,7 +878,9 @@ public class DocumentExtractTool {
 
     private ExtractedContent extractXlsx(Path path, String options, List<String> attempts) throws Exception {
         long t = System.currentTimeMillis();
-        String text = TikaExtractor.extract(path);
+        // Stop at the response budget instead of parsing millions of unused
+        // characters. The extra character preserves the truncation marker.
+        String text = TikaExtractor.extract(path, MAX_OUTPUT_LENGTH + 1);
         long elapsed = System.currentTimeMillis() - t;
         if (text != null && !text.isBlank()) {
             attempts.add("tika: 成功 (" + elapsed + "ms)");

@@ -8,6 +8,7 @@ import TeamRunAttention from '../TeamRunAttention.vue'
 import TeamRunContributions from '../TeamRunContributions.vue'
 import TeamRunRuntime from '../TeamRunRuntime.vue'
 import TeamRunCard from '../TeamRunCard.vue'
+import { captureTeamAttentionContext } from '../teamRunAttentionHandlers'
 
 const messages = { teamRuns: {
   outcome: 'Outcome', noSummary: 'No summary', deliverables: 'Deliverables', noDeliverables: 'No deliverables',
@@ -45,6 +46,14 @@ function mount(component: Component, props: Record<string, unknown>) {
 afterEach(() => { apps.splice(0).forEach(app => app.unmount()); document.body.innerHTML = '' })
 
 describe('Team Run projection primitives', () => {
+  it('normalizes numeric API ids before dispatching management actions', () => {
+    expect(captureTeamAttentionContext(
+      { id: 20, teamId: 10, tasks: [{ id: 101 }] },
+      '10',
+      '101',
+    )).toEqual({ teamId: '10', runId: '20', taskId: '101' })
+  })
+
   it('filters unsafe canonical deliverables before rendering', () => {
     const value = run({ deliverables: [
       { id: 'safe', name: 'Safe', url: '/api/v1/files/generated/safe.pdf', type: 'pdf', sourceTaskIds: [], sourceAgentIds: [], createdAt: null, verificationStatus: 'available' },
@@ -102,6 +111,25 @@ describe('Team Run projection primitives', () => {
     host.querySelector<HTMLButtonElement>('[data-attention-view-task="4"]')!.click()
     await nextTick()
     expect(actions).toEqual(['view:1', 'retry:1', 'retry:2', 'approve:3', 'view:4'])
+  })
+
+  it('offers approve and deny controls for worker tool approval attention', async () => {
+    const actions: string[] = []
+    const value = run({ attentionItems: [
+      { id: 'approval', type: 'approval', severity: 'action', priority: 0, taskId: '9', message: 'Run shell command', createdAt: null },
+    ] })
+    const host = mount(TeamRunAttention, {
+      run: value,
+      managementActions: true,
+      onApproveTool: (id: string) => actions.push(`approve:${id}`),
+      onDenyTool: (id: string) => actions.push(`deny:${id}`),
+    })
+
+    host.querySelector<HTMLButtonElement>('[data-attention-approve-tool="9"]')!.click()
+    host.querySelector<HTMLButtonElement>('[data-attention-deny-tool="9"]')!.click()
+    await nextTick()
+
+    expect(actions).toEqual(['approve:9', 'deny:9'])
   })
 
   it('keeps shared attention cards read-only outside Teams management context', () => {

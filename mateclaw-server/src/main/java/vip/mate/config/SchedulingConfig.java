@@ -41,6 +41,9 @@ public class SchedulingConfig implements SchedulingConfigurer {
         scheduler.setPoolSize(POOL_SIZE);
         scheduler.setThreadNamePrefix("sched-");
         scheduler.setRemoveOnCancelPolicy(true);
+        // Pending future ticks belong to the next application lifetime. Keeping
+        // them queued would consume the grace period and outlive bean teardown.
+        scheduler.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
         scheduler.setAwaitTerminationSeconds(30);
         scheduler.setWaitForTasksToCompleteOnShutdown(true);
         return scheduler;

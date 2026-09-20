@@ -188,4 +188,63 @@ class SkillControllerBundleFilesTest {
         assertThat(resp.getMsg()).contains("read-only");
         verify(fileService, never()).deleteFile(any(), any());
     }
+    @Test
+    void uploadsAndDownloadsOriginalDocumentBytes() throws Exception {
+        when(skillService.getSkill(SID)).thenReturn(skill(false));
+        byte[] bytes = {80, 75, 3, 4, 0, (byte) 255};
+        var file = new org.springframework.mock.web.MockMultipartFile("file", "报告.docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document", bytes);
+        var row = row("references/资料/报告.docx", java.util.Base64.getEncoder().encodeToString(bytes));
+        row.setContentEncoding("base64");
+        row.setContentSize(bytes.length);
+        when(fileService.upsertBytes(SID, row.getFilePath(), bytes)).thenReturn(row);
+        when(fileSyncer.syncFile(any(SkillEntity.class), any(SkillFileEntity.class))).thenReturn(true);
+        var result = controller.uploadBundleFile(SID, file, row.getFilePath(), false, null);
+        assertThat(result.getData()).containsEntry("binary", true).containsEntry("size", bytes.length);
+        verify(fileSyncer).syncFile(any(SkillEntity.class), any(SkillFileEntity.class));
+        when(fileService.getFile(SID, row.getFilePath())).thenReturn(row);
+        assertThat(controller.downloadBundleFile(SID, row.getFilePath(), null).getBody()).isEqualTo(bytes);
+        assertThat(controller.getBundleFileContent(SID, row.getFilePath(), null).getData())
+                .containsEntry("binary", true).containsEntry("content", "");
+        assertThat(controller.putBundleFileContent(SID,
+                Map.of("path", row.getFilePath(), "content", "corrupt"), null).getMsg()).contains("Binary");
+    }
+
+    @Test
+    void uploadRejectsUnsafePathsReadonlyAndUnconfirmedReplacement() throws Exception {
+        var file = new org.springframework.mock.web.MockMultipartFile("file", "a.txt", "text/plain", new byte[]{1});
+        when(skillService.getSkill(SID)).thenReturn(skill(false));
+        for (String path : List.of("references/../bad", "references/./bad", "references/a\u0000b", "/tmp/a")) {
+            assertThat(controller.uploadBundleFile(SID, file, path, false, null).getMsg()).contains("Invalid");
+        }
+        when(fileService.getFile(SID, "references/a.txt")).thenReturn(row("references/a.txt", "old"));
+        assertThat(controller.uploadBundleFile(SID, file, "references/a.txt", false, null).getMsg()).contains("already exists");
+        when(skillService.getSkill(SID)).thenReturn(skill(true));
+        assertThat(controller.uploadBundleFile(SID, file, "references/a.txt", true, null).getMsg()).contains("read-only");
+        verify(fileService, never()).upsertBytes(any(), any(), any());
+    }
+
+    @Test
+    void uploadRejectsOversizedFilesBeforeReading() throws Exception {
+        when(skillService.getSkill(SID)).thenReturn(skill(false));
+        var file = mock(org.springframework.web.multipart.MultipartFile.class);
+        when(file.getSize()).thenReturn(10L * 1024 * 1024 + 1);
+        assertThat(controller.uploadBundleFile(SID, file, "references/a.docx", false, null).getMsg()).contains("10 MiB");
+        verify(file, never()).getInputStream();
+    }
+
+    @Test
+    void attachmentEndpointsRejectOtherWorkspacesBeforeReadingBytes() {
+        when(skillService.getSkill(SID)).thenReturn(skill(false));
+        var file = mock(org.springframework.web.multipart.MultipartFile.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                controller.uploadBundleFile(SID, file, "references/a.docx", false, 2L))
+                .isInstanceOf(vip.mate.exception.MateClawException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                controller.downloadBundleFile(SID, "references/a.docx", 2L))
+                .isInstanceOf(vip.mate.exception.MateClawException.class);
+        verify(fileService, never()).getFile(any(), any());
+        verify(fileService, never()).upsertBytes(any(), any(), any());
+    }
+
 }

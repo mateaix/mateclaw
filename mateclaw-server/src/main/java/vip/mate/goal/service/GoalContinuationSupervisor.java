@@ -66,7 +66,7 @@ public class GoalContinuationSupervisor {
     public void tick() {
         if (closing || !properties.isEnabled() || !properties.isAllowAutoFollowup()) return;
         LocalDateTime now = LocalDateTime.now(clock);
-        recovery.recoverExpired(now);
+        recovery.recoverExpired(clock.instant());
         active.forEach((id, claimed) -> {
             GoalEntity goal = goals.getById(id);
             boolean cancelled = goal.getStatus()==GoalStatus.PAUSED || goal.getStatus()==GoalStatus.ABANDONED
@@ -124,7 +124,11 @@ public class GoalContinuationSupervisor {
                 case CONTINUE -> { }
             }
             if(!coordinator.markRunning(claimed,now)) return;
-            SegmentOutcome outcome = runner.run(claimed,decision.prompt(),"running".equals(claimed.candidate().state()));
+            // Recovery requeues the projection as retry and gives the new attempt
+            // a durable parent; the old running-state check alone loses its guidance.
+            boolean recovered = claimed.attempt().parentAttemptId()!=null
+                    || "running".equals(claimed.candidate().state());
+            SegmentOutcome outcome = runner.run(claimed,decision.prompt(),recovered);
             if (outcome instanceof SegmentOutcome.Retry retry
                     && ("provider".equals(retry.category()) || "evaluation".equals(retry.category()))) {
                 activateProviderBackoff(LocalDateTime.now(clock));

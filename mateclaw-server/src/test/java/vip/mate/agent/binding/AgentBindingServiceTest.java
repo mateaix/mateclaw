@@ -534,6 +534,8 @@ class AgentBindingServiceTest {
         Set<String> effective = bindingService.getEffectiveToolNames(agentId);
         assertNotNull(effective, "toolsDisabled=true 时绝不能返回 null（那会让全局默认工具又流回来）");
         assertTrue(effective.contains("record_lesson"), "system-level memory 工具必须保留");
+        assertTrue(effective.containsAll(Set.of("getManagedGoalJsonSlots", "publishManagedGoalJson", "checkManagedGoalJson")),
+                "选中的 JSON 要求不能因业务技能绑定失去受管发布和检查入口");
         boolean hasMcp = effective.stream().anyMatch(n -> n != null && n.startsWith("mcp_"));
         assertFalse(hasMcp,
                 "toolsDisabled=true 时 enabled MCP 工具绝不能自动并入 —— 否则用户的 '禁用所有工具' 意图被违背。"

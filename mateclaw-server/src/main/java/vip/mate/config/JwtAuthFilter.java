@@ -95,6 +95,10 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             String username = claims.getSubject();
             UserEntity user = authService.findByUsername(username);
             if (user == null || !Boolean.TRUE.equals(user.getEnabled())) return;
+            // A reused username must not turn an old signed token into the new account's identity.
+            // AuthService issues userId; missing or malformed claims require a fresh login.
+            Long tokenUserId = claims.get("userId", Long.class);
+            if (tokenUserId == null || !tokenUserId.equals(user.getId())) return;
 
             var auth = new UsernamePasswordAuthenticationToken(
                     username, null,
@@ -105,7 +109,8 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
             // 滑动窗口续期：Token 接近过期时自动签发新 Token
             if (authService.isNearExpiry(claims)) {
-                String newToken = authService.renewToken(username);
+                // Renew the validated identity, without resolving a potentially reassigned username again.
+                String newToken = authService.generateToken(user);
                 if (newToken != null) {
                     response.setHeader("X-New-Token", newToken);
                     response.setHeader("Access-Control-Expose-Headers", "X-New-Token");

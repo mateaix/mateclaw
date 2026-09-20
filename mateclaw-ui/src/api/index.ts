@@ -63,9 +63,9 @@ http.interceptors.response.use(
       // 403 = authorization failure (e.g. workspace permission denied) → keep session, surface error to caller
       if (data.code === 401) {
         handleAuthFailure()
-        return Promise.reject(new Error(data.msg || 'Unauthorized'))
+        return Promise.reject(Object.assign(new Error(data.msg || 'Unauthorized'), { code: data.code }))
       }
-      return Promise.reject(new Error(data.msg || 'Request failed'))
+      return Promise.reject(Object.assign(new Error(data.msg || 'Request failed'), { code: data.code }))
     }
     return data
   },
@@ -275,6 +275,15 @@ export const skillApi = {
    * re-resolve the skill.
    */
   listFiles: (id: string | number) => http.get(`/skills/${id}/files`),
+  uploadFile: (id: string | number, file: File, path: string, overwrite = false) => {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('path', path)
+    form.append('overwrite', String(overwrite))
+    return http.post(`/skills/${id}/files/upload`, form, { timeout: 120000 })
+  },
+  downloadFile: (id: string | number, path: string): Promise<Blob> =>
+    http.get(`/skills/${id}/files/download`, { params: { path }, responseType: 'blob' }) as unknown as Promise<Blob>,
   getFileContent: (id: string | number, path: string) =>
     http.get(`/skills/${id}/files/content`, { params: { path } }),
   saveFileContent: (id: string | number, path: string, content: string) =>
@@ -1013,6 +1022,12 @@ export const teamApi = {
   ) => http.post(`/teams/${id}/tasks`, data),
   listTaskEvents: (id: string, taskId: string) => http.get(`/teams/${id}/tasks/${taskId}/events`),
   approveTask: (id: string, taskId: string) => http.post(`/teams/${id}/tasks/${taskId}/approve`),
+  approveWorkerTool: (id: string, taskId: string, pendingId: string) =>
+    http.post(`/teams/${id}/tasks/${taskId}/worker/approve`, { pendingId }),
+  denyWorkerTool: (id: string, taskId: string, pendingId: string) =>
+    http.post(`/teams/${id}/tasks/${taskId}/worker/deny`, { pendingId }),
+  feedbackWorker: (id: string, taskId: string, message: string) =>
+    http.post(`/teams/${id}/tasks/${taskId}/worker/feedback`, { message }),
   rejectTask: (id: string, taskId: string, reason?: string) =>
     http.post(`/teams/${id}/tasks/${taskId}/reject`, { reason }),
   retryTask: (id: string, taskId: string) => http.post(`/teams/${id}/tasks/${taskId}/retry`),
@@ -1780,6 +1795,7 @@ export interface GoalCriterion {
 }
 
 export interface Goal {
+  jsonAcceptanceRequired?: boolean
   id: string
   conversationId: string
   agentId: string
@@ -1836,6 +1852,9 @@ export const goalApi = {
 
   findActive: (conversationId: string) =>
     http.get<Goal | null>(`/goals/by-conversation/${encId(conversationId)}`),
+
+  history: (conversationId: string, beforeId?: string) =>
+    http.get<Goal[]>(`/goals/by-conversation/${encId(conversationId)}/history`, { params: { beforeId, limit: 20 } }),
 
   get: (id: string) => http.get<Goal>(`/goals/${id}`),
 

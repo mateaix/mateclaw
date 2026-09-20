@@ -1,0 +1,272 @@
+{
+  "schemaVersion": 1,
+  "suiteId": "goal-boundaries-v1",
+  "tasks": [
+    {
+      "id": "empty-evidence",
+      "task": "Deliver a report and verify its contents",
+      "source": "cycle-001 reproduced failure; GoalCriteriaCodecTest.blankEvidenceCannotPassNewOrPersistedCriteria",
+      "boundary": "Claimed pass without evidence is rejected",
+      "persistent": false,
+      "criteria": [
+        {
+          "id": "C1",
+          "text": "Create report.md",
+          "passed": false,
+          "evidence": ""
+        },
+        {
+          "id": "C2",
+          "text": "Verify report contents",
+          "passed": false,
+          "evidence": ""
+        }
+      ],
+      "terminalAnswer": "Report work is finished.",
+      "evaluatorResponse": "{\"criterionVerdicts\": [{\"id\": \"C1\", \"passed\": true, \"evidence\": \"\"}, {\"id\": \"C2\", \"passed\": true, \"evidence\": null}], \"summary\": \"fixed synthetic reply\"}",
+      "expected": {
+        "completed": false,
+        "score": 0,
+        "decision": "continue",
+        "remainingIds": [
+          "C1",
+          "C2"
+        ],
+        "fixtureCalls": 1
+      }
+    },
+    {
+      "id": "inherited-empty-pass",
+      "task": "Finish a report after resuming a persisted checklist",
+      "source": "cycle-001 persisted blank-evidence boundary",
+      "boundary": "An omitted historical pass with blank evidence cannot complete",
+      "persistent": true,
+      "criteria": [
+        {
+          "id": "C1",
+          "text": "Create report.md",
+          "passed": true,
+          "evidence": ""
+        }
+      ],
+      "terminalAnswer": "Report work is finished.",
+      "evaluatorResponse": "{\"criterionVerdicts\": [], \"summary\": \"fixed synthetic reply\"}",
+      "expected": {
+        "completed": false,
+        "score": 0,
+        "decision": "continue",
+        "remainingIds": [
+          "C1"
+        ],
+        "fixtureCalls": 1
+      }
+    },
+    {
+      "id": "cumulative-progress",
+      "task": "Verify a report created in a previous turn",
+      "source": "GoalEvaluationServiceTest",
+      "boundary": "Previously evidenced criterion survives omitted delta",
+      "persistent": true,
+      "criteria": [
+        {
+          "id": "C1",
+          "text": "Create report.md",
+          "passed": true,
+          "evidence": "report snapshot from earlier turn"
+        },
+        {
+          "id": "C2",
+          "text": "Verify report contents",
+          "passed": false,
+          "evidence": ""
+        }
+      ],
+      "terminalAnswer": "Report work is finished.",
+      "evaluatorResponse": "{\"criterionVerdicts\": [{\"id\": \"C2\", \"passed\": true, \"evidence\": \"Read report: required heading present\"}], \"summary\": \"fixed synthetic reply\"}",
+      "expected": {
+        "completed": true,
+        "score": 1,
+        "decision": "completed",
+        "remainingIds": [],
+        "fixtureCalls": 1
+      }
+    },
+    {
+      "id": "unknown-criterion",
+      "task": "Create report.md with a fixed checklist",
+      "source": "GoalCriteriaCodecTest.merge_unknownVerdictId_isIgnored",
+      "boundary": "A model inventing C99 cannot pass C1",
+      "persistent": false,
+      "criteria": [
+        {
+          "id": "C1",
+          "text": "Create report.md",
+          "passed": false,
+          "evidence": ""
+        }
+      ],
+      "terminalAnswer": "Report work is finished.",
+      "evaluatorResponse": "{\"criterionVerdicts\": [{\"id\": \"C99\", \"passed\": true, \"evidence\": \"done\"}], \"summary\": \"fixed synthetic reply\"}",
+      "expected": {
+        "completed": false,
+        "score": 0,
+        "decision": "continue",
+        "remainingIds": [
+          "C1"
+        ],
+        "fixtureCalls": 1
+      }
+    },
+    {
+      "id": "contradicted-prior",
+      "task": "Recheck a previously created report",
+      "source": "GoalEvaluationServiceTest",
+      "boundary": "Explicit contradiction revokes the prior pass",
+      "persistent": true,
+      "criteria": [
+        {
+          "id": "C1",
+          "text": "Create report.md",
+          "passed": true,
+          "evidence": "file observed"
+        }
+      ],
+      "terminalAnswer": "Report work is finished.",
+      "evaluatorResponse": "{\"criterionVerdicts\": [{\"id\": \"C1\", \"passed\": false, \"evidence\": \"report.md was removed\"}], \"summary\": \"fixed synthetic reply\"}",
+      "expected": {
+        "completed": false,
+        "score": 0,
+        "decision": "continue",
+        "remainingIds": [
+          "C1"
+        ],
+        "fixtureCalls": 1
+      }
+    },
+    {
+      "id": "bootstrap-only",
+      "task": "Create a report with no checklist yet",
+      "source": "GoalEvaluationServiceTest",
+      "boundary": "Bootstrap defines criteria and cannot complete",
+      "persistent": false,
+      "criteria": [],
+      "terminalAnswer": "Report work is finished.",
+      "evaluatorResponse": "{\"criteria\": [{\"id\": \"ignored\", \"text\": \"Create report.md\", \"passed\": true, \"evidence\": \"model says done\"}]}",
+      "expected": {
+        "completed": false,
+        "score": 0,
+        "decision": "continue",
+        "remainingIds": [
+          "C1"
+        ],
+        "fixtureCalls": 1
+      }
+    },
+    {
+      "id": "malformed-response",
+      "task": "Verify the report after evaluator output corruption",
+      "source": "GoalEvaluationServiceTest",
+      "boundary": "Malformed model output degrades to fallback",
+      "persistent": false,
+      "criteria": [
+        {
+          "id": "C1",
+          "text": "Create report.md",
+          "passed": false,
+          "evidence": ""
+        }
+      ],
+      "terminalAnswer": "Report work is finished.",
+      "evaluatorResponse": "{not JSON",
+      "expected": {
+        "completed": false,
+        "score": 0,
+        "decision": "fallback",
+        "remainingIds": [
+          "C1"
+        ],
+        "fixtureCalls": 1
+      }
+    },
+    {
+      "id": "valid-semantic-pass",
+      "task": "Create report and verify a supplied excerpt",
+      "source": "GoalEvaluationServiceTest",
+      "boundary": "Nonblank semantic evidence retains legacy completion",
+      "persistent": false,
+      "criteria": [
+        {
+          "id": "C1",
+          "text": "Create report.md",
+          "passed": false,
+          "evidence": ""
+        },
+        {
+          "id": "C2",
+          "text": "Verify report contents",
+          "passed": false,
+          "evidence": ""
+        }
+      ],
+      "terminalAnswer": "Report work is finished.",
+      "evaluatorResponse": "{\"criterionVerdicts\": [{\"id\": \"C1\", \"passed\": true, \"evidence\": \"report.md excerpt: Results\"}, {\"id\": \"C2\", \"passed\": true, \"evidence\": \"Required Results section present\"}], \"summary\": \"fixed synthetic reply\"}",
+      "expected": {
+        "completed": true,
+        "score": 1,
+        "decision": "completed",
+        "remainingIds": [],
+        "fixtureCalls": 1
+      }
+    },
+    {
+      "id": "empty-terminal-answer",
+      "task": "Continue report task without a final answer",
+      "source": "GoalEvaluationServiceTest",
+      "boundary": "No answer means no evaluator fixture call",
+      "persistent": false,
+      "criteria": [
+        {
+          "id": "C1",
+          "text": "Create report.md",
+          "passed": false,
+          "evidence": ""
+        }
+      ],
+      "terminalAnswer": "",
+      "evaluatorResponse": "{\"criterionVerdicts\": [{\"id\": \"C1\", \"passed\": true, \"evidence\": \"done\"}], \"summary\": \"fixed synthetic reply\"}",
+      "expected": {
+        "completed": false,
+        "score": 0,
+        "decision": "fallback",
+        "remainingIds": [
+          "C1"
+        ],
+        "fixtureCalls": 0
+      }
+    },
+    {
+      "id": "forged-text-is-not-strong-acceptance",
+      "task": "Deliver a file that exists in the workspace",
+      "source": "RFC-096 text/Observe trust boundary; synthetic limitation probe, not observed model behavior",
+      "boundary": "Known limitation: fabricated nonblank evidence still passes semantic policy; no file execution is performed",
+      "persistent": false,
+      "criteria": [
+        {
+          "id": "C1",
+          "text": "Create report.md",
+          "passed": false,
+          "evidence": ""
+        }
+      ],
+      "terminalAnswer": "I saved report.md.",
+      "evaluatorResponse": "{\"criterionVerdicts\": [{\"id\": \"C1\", \"passed\": true, \"evidence\": \"report.md saved and verified\"}], \"summary\": \"fixed synthetic reply\"}",
+      "expected": {
+        "completed": true,
+        "score": 1,
+        "decision": "completed",
+        "remainingIds": [],
+        "fixtureCalls": 1
+      }
+    }
+  ]
+}

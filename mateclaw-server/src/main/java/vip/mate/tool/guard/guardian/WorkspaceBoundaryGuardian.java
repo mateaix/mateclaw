@@ -65,6 +65,7 @@ public class WorkspaceBoundaryGuardian implements ToolGuardGuardian {
     private static final Map<String, String> FILE_PATH_PARAMS = Map.of(
             "read_file", "filePath",
             "write_file", "filePath",
+            "append_file", "filePath",
             "edit_file", "filePath"
     );
 

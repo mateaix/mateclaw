@@ -87,6 +87,28 @@ class ConversationWindowManagerSummaryBudgetTest {
                 "iterative-update: literal placeholder must not leak into the SystemMessage (the bug regression guard)");
     }
 
+    @Test
+    @DisplayName("Token-limit summaries are rejected and never become iterative state")
+    void lengthFinishReasonRejectsTruncatedSummary() throws Exception {
+        stubResponse("TRUNCATED BUT NONEMPTY", "length");
+
+        String result = invokeGenerateSummary("conv-truncated", null);
+
+        assertNull(result);
+        assertFalse(previousSummaries().containsKey("conv-truncated"));
+    }
+
+    @Test
+    @DisplayName("Normally stopped summaries remain accepted")
+    void stopFinishReasonAcceptsCompleteSummary() throws Exception {
+        stubResponse("COMPLETE SUMMARY", "stop");
+
+        String result = invokeGenerateSummary("conv-complete", null);
+
+        assertEquals("COMPLETE SUMMARY", result);
+        assertEquals("COMPLETE SUMMARY", previousSummaries().get("conv-complete"));
+    }
+
     /**
      * Reflectively invoke the private {@code generateSummary} method and capture
      * the {@link Prompt} sent to the mocked {@link ChatModel}.
@@ -105,5 +127,27 @@ class ConversationWindowManagerSummaryBudgetTest {
         ArgumentCaptor<Prompt> captor = ArgumentCaptor.forClass(Prompt.class);
         org.mockito.Mockito.verify(chatModel).call(captor.capture());
         return captor.getValue();
+    }
+
+    private String invokeGenerateSummary(String conversationId, String memoryExtra) throws Exception {
+        List<Message> oldMessages = List.of(new UserMessage("hello"), new UserMessage("world"));
+        Method method = ConversationWindowManager.class.getDeclaredMethod(
+                "generateSummary", List.class, ChatModel.class, String.class, int.class, String.class);
+        method.setAccessible(true);
+        return (String) method.invoke(manager, oldMessages, chatModel, conversationId, 1500, memoryExtra);
+    }
+
+    private void stubResponse(String text, String finishReason) {
+        Generation generation = new Generation(
+                new org.springframework.ai.chat.messages.AssistantMessage(text),
+                ChatGenerationMetadata.builder().finishReason(finishReason).build());
+        when(chatModel.call(any(Prompt.class))).thenReturn(new ChatResponse(List.of(generation)));
+    }
+
+    @SuppressWarnings("unchecked")
+    private ConcurrentHashMap<String, String> previousSummaries() throws Exception {
+        Field field = ConversationWindowManager.class.getDeclaredField("previousSummaries");
+        field.setAccessible(true);
+        return (ConcurrentHashMap<String, String>) field.get(manager);
     }
 }

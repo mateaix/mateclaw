@@ -6,8 +6,13 @@ import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.AutoDetectParser;
 import org.apache.tika.parser.ParseContext;
 import org.apache.tika.sax.BodyContentHandler;
+import org.xml.sax.Attributes;
+import org.xml.sax.SAXException;
 
+import java.io.FilterInputStream;
+import java.io.IOException;
 import java.io.InputStream;
+import java.io.InterruptedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -64,12 +69,39 @@ public final class TikaExtractor {
         }
         int cap = maxChars <= 0 ? DEFAULT_MAX_CHARS : maxChars;
 
-        BodyContentHandler handler = new BodyContentHandler(cap);
+        BodyContentHandler handler = new BodyContentHandler(cap) {
+            @Override
+            public void characters(char[] chars, int start, int length) throws SAXException {
+                checkParseInterrupted();
+                super.characters(chars, start, length);
+            }
+
+            @Override
+            public void startElement(String uri, String localName, String name, Attributes attributes)
+                    throws SAXException {
+                checkParseInterrupted();
+                super.startElement(uri, localName, name, attributes);
+            }
+        };
         AutoDetectParser parser = new AutoDetectParser();
         Metadata metadata = new Metadata();
         ParseContext context = new ParseContext();
 
-        try (InputStream is = Files.newInputStream(path)) {
+        try (InputStream is = new FilterInputStream(Files.newInputStream(path)) {
+            @Override public int read() throws IOException {
+                checkInterrupted();
+                return super.read();
+            }
+            @Override public int read(byte[] bytes, int offset, int length) throws IOException {
+                checkInterrupted();
+                return super.read(bytes, offset, length);
+            }
+            @Override public long skip(long count) throws IOException {
+                checkInterrupted();
+                return super.skip(count);
+            }
+        }) {
+            checkInterrupted();
             parser.parse(is, handler, metadata, context);
             return handler.toString();
         } catch (WriteLimitReachedException truncated) {
@@ -81,11 +113,31 @@ public final class TikaExtractor {
                     partial.length(), path.getFileName());
             return partial.isBlank() ? null : partial;
         } catch (Throwable t) {
+            // Office parsers may wrap the SAX write-limit exception. A bounded
+            // spreadsheet preview is still a successful extraction in that case.
+            if (!Thread.currentThread().isInterrupted() && WriteLimitReachedException.isWriteLimitReached(t)) {
+                String partial = handler.toString();
+                return partial.isBlank() ? null : partial;
+            }
             // Catching Throwable on purpose: Tika can throw NoClassDefFoundError /
             // LinkageError when an obscure transitive parser is missing on a
             // minimal classpath, and that should not crash the extract chain.
             log.warn("[Tika] Parse failed for {}: {}", path.getFileName(), t.getMessage());
             return null;
+        }
+    }
+
+    private static void checkInterrupted() throws InterruptedIOException {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new InterruptedIOException("Document extraction interrupted");
+        }
+    }
+
+    private static void checkParseInterrupted() throws SAXException {
+        try {
+            checkInterrupted();
+        } catch (InterruptedIOException e) {
+            throw new SAXException(e);
         }
     }
 }

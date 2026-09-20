@@ -63,6 +63,7 @@ class MemorySummarizationGateTest {
                 MemorySummarizationGate.evaluate(List.of(user, assistant));
 
         assertTrue(decision.shouldAnalyze());
+        assertTrue(decision.bypassCooldown());
     }
 
     @Test
@@ -127,6 +128,7 @@ class MemorySummarizationGateTest {
 
         assertTrue(decision.shouldAnalyze(),
                 "return_direct represents a successful tool-driven answer; should reach analysis");
+        assertFalse(decision.bypassCooldown());
     }
 
     private static MessageEntity message(String role, String content, String metadata) {

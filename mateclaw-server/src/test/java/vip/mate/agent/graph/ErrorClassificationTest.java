@@ -246,6 +246,27 @@ class ErrorClassificationTest {
                 classify(new RuntimeException("AccountBalanceNotEnough: balance not enough")));
     }
 
+    @Test
+    @DisplayName("Volcengine InvalidSubscription → BILLING instead of CLIENT_ERROR")
+    void volcengineExpiredCodingPlanIsBilling() throws Exception {
+        assertEquals(NodeStreamingChatHelper.ErrorType.BILLING,
+                classify(new RuntimeException("400 InvalidSubscription: CodingPlan subscription has expired")));
+    }
+
+    @Test
+    @DisplayName("DashScope Arrearage / good-standing error → BILLING")
+    void dashscopeArrearageIsBilling() throws Exception {
+        assertEquals(NodeStreamingChatHelper.ErrorType.BILLING,
+                classify(new RuntimeException("400 Arrearage: Access denied, make sure your account is in good standing")));
+    }
+
+    @Test
+    @DisplayName("MiniMax insufficient balance body → BILLING")
+    void minimaxInsufficientBalanceIsBilling() throws Exception {
+        assertEquals(NodeStreamingChatHelper.ErrorType.BILLING,
+                classify(new RuntimeException("insufficient_balance_error: insufficient balance (1008)")));
+    }
+
     // ===== Infrastructure-fatal errors → AUTH_ERROR (HARD, no same-model retry) =====
     //
     // DNS / TLS-trust failures do not self-heal on retry. They are routed through

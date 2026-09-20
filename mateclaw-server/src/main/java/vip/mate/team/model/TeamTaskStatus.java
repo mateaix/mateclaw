@@ -9,6 +9,7 @@ import java.util.Set;
  * pending ──claim/assign──▶ in_progress ──complete──▶ completed
  *    │                          │  (require_approval) ▶ in_review ──approve──▶ completed
  *    │                          │                                └──reject───▶ cancelled
+ *    │                          ├──guarded tool──▶ awaiting_approval ──approve──▶ in_progress
  *    │                          ├──blocker/error──▶ failed ──retry──▶ pending
  *    │                          └──lease expired──▶ stale  ──retry──▶ pending
  *    ├──blocked_by set──▶ blocked ──all blockers released──▶ pending
@@ -21,6 +22,7 @@ public final class TeamTaskStatus {
 
     public static final String PENDING = "pending";
     public static final String IN_PROGRESS = "in_progress";
+    public static final String AWAITING_APPROVAL = "awaiting_approval";
     public static final String IN_REVIEW = "in_review";
     public static final String COMPLETED = "completed";
     public static final String FAILED = "failed";

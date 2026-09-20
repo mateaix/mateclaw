@@ -131,6 +131,18 @@ springdoc:
 
 # MateClaw 自定义配置
 mateclaw:
+  execution-evidence:
+    # Observe receipts only. Enforcement requires managed verification scopes and is not available yet.
+    mode: observe
+    # On-demand detail probe only; matching bytes remain UNKNOWN without managed scopes. 0 disables.
+    artifact-version-check-max-bytes: 1048576
+    retention-days: 90
+    max-summary-bytes: 2048
+    max-observations: 32
+    default-list-limit: 20
+    max-list-limit: 100
+    cleanup-interval-ms: 60000
+    cleanup-max-batches: 10
   a2a:
     enabled: ${MATECLAW_A2A_ENABLED:false}
     # Public base URL for Agent Cards. Production deployments should set this
@@ -402,6 +414,10 @@ mateclaw:
     # models (Kimi / GLM / MiniMax) routinely take 90–290 s per LLM turn
     # when the child must produce multi-section structured output.
     parallel-timeout-seconds: 300
+    # Default wall-clock budget for detached delegateAsync children. A caller
+    # may request a different positive timeout up to 86400 seconds; keeping a
+    # default bound prevents abandoned background children from running forever.
+    async-timeout-seconds: 3600
 
 # MateClaw Agent 配置
 mate:
@@ -509,6 +525,10 @@ mate:
     soul-update-interval: 20                   # 20 writes trigger one SOUL.md LLM update (0 = off)
     provider-retry-attempts: 1                 # 1 = no retry (enable when external providers added)
     provider-metrics-enabled: false            # actuator dependency now present; enable when external providers added
+    provider-prefetch-timeout-ms: 1500          # per-provider recall deadline; 0 = unlimited
+    provider-prefetch-total-budget-ms: 2500     # deadline for the complete recall chain; 0 = unlimited
+    provider-circuit-failure-threshold: 3       # consecutive recall failures before opening the circuit
+    provider-circuit-cooldown-seconds: 30       # open-circuit delay before one half-open probe
     # Phase 3: fact projection
     fact:
       projection-enabled: true

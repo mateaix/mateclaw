@@ -48,10 +48,6 @@ public class MemorySummarizationService {
     private final ObjectMapper objectMapper;
     private final StructuredMemoryService structuredMemoryService;
 
-    /** Typed-memory categories the summarizer may route entries into. */
-    private static final java.util.Set<String> STRUCTURED_TYPES =
-            java.util.Set.of("user", "feedback", "project", "reference");
-
     /** Per-(agent, owner) 锁，防止并发写入 */
     private final ConcurrentHashMap<String, ReentrantLock> agentLocks = new ConcurrentHashMap<>();
 
@@ -85,30 +81,17 @@ public class MemorySummarizationService {
         // extraction never starves another owner sharing the same agent.
         String lockKey = agentId + ":" + (ownerKey == null ? "" : ownerKey);
 
-        // 冷却检查
-        if (isInCooldown(lockKey)) {
-            log.debug("[Memory] Agent {} (owner {}) is in cooldown, skipping summarization", agentId, ownerKey);
-            return;
-        }
-
-        ReentrantLock lock = agentLocks.computeIfAbsent(lockKey, k -> new ReentrantLock());
-        if (!lock.tryLock()) {
-            log.debug("[Memory] Agent {} (owner {}) is already being summarized, skipping", agentId, ownerKey);
-            return;
-        }
-
-        try {
-            doAnalyzeAndUpdate(agentId, conversationId, ownerKey);
-            lastRunTimes.put(lockKey, Instant.now());
-        } finally {
-            lock.unlock();
-        }
-    }
-
-    private void doAnalyzeAndUpdate(Long agentId, String conversationId, String ownerKey) {
-        // 1. 加载对话消息
+        // Load and classify before applying cooldown. An explicit user request
+        // to remember something must always get a chance to run, and skipped /
+        // unsupported conversations must not poison the next real request.
         List<MessageEntity> messages = conversationService.listMessages(conversationId);
-        if (messages.size() < properties.getMinMessagesForSummarize()) {
+        if (messages == null || messages.isEmpty()) {
+            log.debug("[Memory] Conversation {} has no messages, skipping", conversationId);
+            return;
+        }
+        String latestUser = latestMessageContent(messages, "user");
+        boolean explicitRemember = MemorySummarizationGate.isExplicitRememberRequest(latestUser);
+        if (!explicitRemember && messages.size() < properties.getMinMessagesForSummarize()) {
             log.debug("[Memory] Conversation {} has only {} messages, skipping",
                     conversationId, messages.size());
             return;
@@ -120,7 +103,31 @@ public class MemorySummarizationService {
             return;
         }
 
-        // 2. 加载现有记忆文件内容（按 owner 隔离）
+        // 冷却检查
+        if (!decision.bypassCooldown() && isInCooldown(lockKey)) {
+            log.debug("[Memory] Agent {} (owner {}) is in cooldown, skipping summarization", agentId, ownerKey);
+            return;
+        }
+
+        ReentrantLock lock = agentLocks.computeIfAbsent(lockKey, k -> new ReentrantLock());
+        if (!lock.tryLock()) {
+            log.debug("[Memory] Agent {} (owner {}) is already being summarized, skipping", agentId, ownerKey);
+            return;
+        }
+
+        try {
+            AnalysisOutcome outcome = doAnalyzeAndUpdate(agentId, conversationId, ownerKey, messages);
+            if (outcome == AnalysisOutcome.COMPLETED) {
+                lastRunTimes.put(lockKey, Instant.now());
+            }
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private AnalysisOutcome doAnalyzeAndUpdate(Long agentId, String conversationId, String ownerKey,
+                                               List<MessageEntity> messages) {
+        // 1. 加载现有记忆文件内容（按 owner 隔离）
         String profileContent = readFileContentSafe(agentId, "PROFILE.md", ownerKey);
         String memoryContent = readFileContentSafe(agentId, "MEMORY.md", ownerKey);
         String dailyFilename = "memory/" + LocalDate.now() + ".md";
@@ -129,7 +136,7 @@ public class MemorySummarizationService {
         // 3. 构建对话 transcript
         String transcript = buildTranscript(messages);
         if (transcript.isBlank()) {
-            return;
+            return AnalysisOutcome.SKIPPED;
         }
 
         // 4. 调用 LLM 分析
@@ -154,22 +161,25 @@ public class MemorySummarizationService {
             llmResponse = callLlmWithRetry(chatModel, prompt, 2);
             if (llmResponse == null) {
                 log.warn("[Memory] LLM returned null after retries for agent={}, conv={}", agentId, conversationId);
-                return;
+                return AnalysisOutcome.FAILED;
             }
         } catch (Exception e) {
             log.warn("[Memory] LLM call failed for agent={}, conv={}: {}",
                     agentId, conversationId, e.getMessage());
-            return;
+            return AnalysisOutcome.FAILED;
         }
 
         // 5. 解析 JSON 响应
         try {
             JsonNode root = parseJsonResponse(llmResponse);
-            if (root == null || !root.path("should_update").asBoolean(false)) {
-                String reason = root != null ? root.path("reason").asText("") : "parse failed";
+            if (root == null) {
+                return AnalysisOutcome.FAILED;
+            }
+            if (!root.path("should_update").asBoolean(false)) {
+                String reason = root.path("reason").asText("");
                 log.info("[Memory] No update needed for agent={}, conv={}: {}",
                         agentId, conversationId, reason);
-                return;
+                return AnalysisOutcome.COMPLETED;
             }
 
             // 6. 应用更新
@@ -177,11 +187,30 @@ public class MemorySummarizationService {
 
             String reason = root.path("reason").asText("");
             log.info("[Memory] Memory updated for agent={}, conv={}: {}", agentId, conversationId, reason);
+            return AnalysisOutcome.COMPLETED;
 
         } catch (Exception e) {
             log.warn("[Memory] Failed to parse/apply memory update for agent={}, conv={}: {}",
                     agentId, conversationId, e.getMessage());
+            return AnalysisOutcome.FAILED;
         }
+    }
+
+    private static String latestMessageContent(List<MessageEntity> messages, String role) {
+        if (messages == null) return "";
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            MessageEntity message = messages.get(i);
+            if (role.equals(message.getRole()) && message.getContent() != null) {
+                return message.getContent();
+            }
+        }
+        return "";
+    }
+
+    private enum AnalysisOutcome {
+        COMPLETED,
+        SKIPPED,
+        FAILED
     }
 
     private void applyUpdates(Long agentId, JsonNode root, String dailyFilename,
@@ -232,20 +261,18 @@ public class MemorySummarizationService {
         }
         int written = 0;
         for (JsonNode entry : entriesNode) {
-            String type = entry.path("type").asText("").trim().toLowerCase();
-            String key = entry.path("key").asText("").trim();
-            String content = entry.path("content").asText("").trim();
-            if (!STRUCTURED_TYPES.contains(type) || key.isEmpty() || content.isEmpty()) {
+            var candidate = StructuredMemoryCandidate.fromJson(entry);
+            if (candidate.isEmpty() || !candidate.get().isAdmissible(LocalDate.now())) {
                 log.debug("[Memory] Skipping invalid structured entry (type={}, key={}) for agent={}",
-                        type, key, agentId);
+                        entry.path("type").asText(""), entry.path("key").asText(""), agentId);
                 continue;
             }
             try {
-                structuredMemoryService.remember(agentId, type, key, content, "auto-summary", ownerKey);
+                structuredMemoryService.remember(agentId, candidate.get(), "auto-summary", ownerKey);
                 written++;
             } catch (Exception e) {
                 log.warn("[Memory] Failed to write structured entry '{}' (type={}) for agent={}: {}",
-                        key, type, agentId, e.getMessage());
+                        candidate.get().key(), candidate.get().type(), agentId, e.getMessage());
             }
         }
         if (written > 0) {

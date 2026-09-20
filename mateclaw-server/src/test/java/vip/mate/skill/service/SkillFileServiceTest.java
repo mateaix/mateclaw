@@ -114,4 +114,36 @@ class SkillFileServiceTest {
         e.setSha256(SkillFileService.sha256Hex(content));
         return e;
     }
+    @Test
+    void binaryUploadPreservesBytesSizeAndHash() {
+        byte[] bytes = {80, 75, 3, 4, 0, (byte) 255, (byte) 128};
+        SkillFileEntity row = service.upsertBytes(42L, "templates/报告.xlsx", bytes);
+        assertTrue(row.isBinary());
+        assertArrayEquals(bytes, row.contentBytes());
+        assertEquals(bytes.length, row.getContentSize());
+        assertEquals(SkillFileService.sha256Hex(bytes), row.getSha256());
+        verify(mapper).insert(row);
+    }
+
+    @Test
+    void uploadedUtf8RemainsEditableAndLegacyRowsDecodeUnchanged() {
+        String text = "制度说明\n中文";
+        SkillFileEntity row = service.upsertBytes(42L, "references/制度.md",
+                text.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        assertFalse(row.isBinary());
+        assertEquals(text, row.getContent());
+        row.setContentEncoding(null);
+        assertArrayEquals(text.getBytes(java.nio.charset.StandardCharsets.UTF_8), row.contentBytes());
+    }
+
+    @Test
+    void replacingBinaryWithTextClearsEncoding() {
+        SkillFileEntity prior = newRow(1L, "references/file", "AA==");
+        prior.setContentEncoding("base64");
+        when(mapper.selectOne(any())).thenReturn(prior);
+        SkillFileEntity row = service.upsertBytes(42L, "references/file", "hello".getBytes());
+        assertFalse(row.isBinary());
+        assertArrayEquals("hello".getBytes(), row.contentBytes());
+    }
+
 }

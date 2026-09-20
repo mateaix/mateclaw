@@ -1,0 +1,102 @@
+{
+  "schemaVersion": 1,
+  "suiteId": "goal-service-boundaries-v1",
+  "tasks": [
+    {
+      "id": "current-revision-completion",
+      "task": "current revision completion",
+      "source": "cycles 004/006/010/013 real service boundaries",
+      "operation": "CURRENT_REVISION_COMPLETION",
+      "expected": {
+        "status": "COMPLETED",
+        "score": 1.0,
+        "criteriaCount": 1,
+        "passedCount": 1,
+        "firstCriterionText": "report",
+        "evaluationRevision": 1,
+        "recordedEvalCallsUsed": 1,
+        "completionCode": 200
+      }
+    },
+    {
+      "id": "append-before-verdict",
+      "task": "append before verdict",
+      "source": "cycles 004/006/010/013 real service boundaries",
+      "operation": "APPEND_BEFORE_VERDICT",
+      "expected": {
+        "status": "ACTIVE",
+        "score": 0.5,
+        "criteriaCount": 2,
+        "passedCount": 1,
+        "firstCriterionText": "report",
+        "evaluationRevision": 0,
+        "recordedEvalCallsUsed": 1,
+        "completionCode": 409
+      }
+    },
+    {
+      "id": "pause-before-verdict",
+      "task": "pause before verdict",
+      "source": "cycles 004/006/010/013 real service boundaries",
+      "operation": "PAUSE_BEFORE_VERDICT",
+      "expected": {
+        "status": "PAUSED",
+        "score": 0.0,
+        "criteriaCount": 1,
+        "passedCount": 0,
+        "firstCriterionText": "report",
+        "evaluationRevision": 0,
+        "recordedEvalCallsUsed": 2,
+        "completionCode": 409
+      }
+    },
+    {
+      "id": "append-before-bootstrap",
+      "task": "append before bootstrap",
+      "source": "cycles 004/006/010/013 real service boundaries",
+      "operation": "APPEND_BEFORE_BOOTSTRAP",
+      "expected": {
+        "status": "ACTIVE",
+        "score": 0.0,
+        "criteriaCount": 1,
+        "passedCount": 0,
+        "firstCriterionText": "user appendix",
+        "evaluationRevision": 0,
+        "recordedEvalCallsUsed": 1,
+        "completionCode": 0
+      }
+    },
+    {
+      "id": "replace-definition",
+      "task": "replace definition",
+      "source": "cycles 004/006/010/013 real service boundaries",
+      "operation": "REPLACE_DEFINITION",
+      "expected": {
+        "status": "ACTIVE",
+        "score": 0.0,
+        "criteriaCount": 0,
+        "passedCount": 0,
+        "firstCriterionText": null,
+        "evaluationRevision": 1,
+        "recordedEvalCallsUsed": 2,
+        "completionCode": 409
+      }
+    },
+    {
+      "id": "aba-definition",
+      "task": "aba definition",
+      "source": "cycles 004/006/010/013 real service boundaries",
+      "operation": "ABA_DEFINITION",
+      "expected": {
+        "status": "ACTIVE",
+        "score": 0.0,
+        "criteriaCount": 0,
+        "passedCount": 0,
+        "firstCriterionText": null,
+        "evaluationRevision": 2,
+        "recordedEvalCallsUsed": 1,
+        "completionCode": 0
+      }
+    }
+  ]
+}

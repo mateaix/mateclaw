@@ -5,6 +5,7 @@ import org.springframework.stereotype.Component;
 import reactor.core.Disposable;
 import vip.mate.agent.AgentService;
 import vip.mate.agent.context.ChatOrigin;
+import vip.mate.agent.context.ExecutionAttribution;
 import vip.mate.agent.context.GoalContinuationContext;
 import vip.mate.agent.runtime.ConversationTurnGate;
 import vip.mate.approval.ApprovalWorkflowService;
@@ -17,6 +18,7 @@ import vip.mate.goal.model.SegmentOutcome;
 import vip.mate.workspace.conversation.ConversationService;
 import vip.mate.workspace.conversation.model.MessageEntity;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.time.LocalDateTime;
@@ -50,6 +52,8 @@ public class GoalSegmentRunner {
     private GoalService goals;
     @org.springframework.beans.factory.annotation.Autowired
     private GoalRunCoordinator coordinator;
+    @org.springframework.beans.factory.annotation.Autowired
+    private GoalApprovalRunService approvalRuns;
 
     public GoalSegmentRunner(AgentService agents, ConversationService conversations,
             ApprovalWorkflowService approvals, ChatStreamTracker streams, ObjectMapper mapper,
@@ -126,8 +130,11 @@ public class GoalSegmentRunner {
             String guidance=recovered ? "The previous execution was interrupted by a runtime restart. "
                     + "Inspect the workspace, progress ledger and existing async handles before acting. "
                     + "Do not replay side effects whose outcome is unknown; request review if their outcome cannot be verified.\n" : "";
-            ChatOrigin origin=ChatOrigin.web(convId,goal.getCreatedBy(),goal.getWorkspaceId(),null).withAgent(goal.getAgentId());
-            SegmentResult result;
+            ChatOrigin origin=ChatOrigin.web(convId,goal.getCreatedBy(),goal.getWorkspaceId(),null).withAgent(goal.getAgentId())
+                    .withExecutionAttribution(new ExecutionAttribution(goal.getId(),
+                            claimedRun == null ? null : claimedRun.attempt().id(), null, null,
+                            claimedRun == null ? null : claimedRun.attempt().leaseToken()));
+            SegmentResult result=null;
             ConversationInputQueueStore.QueuedInput queued=claimNextInput(convId,claimedRun);
             do {
                 String input=guidance+prompt;
@@ -138,15 +145,37 @@ public class GoalSegmentRunner {
                         claimedInput.set(null);
                         throw new IllegalStateException("Queued input targets a different agent; user review required");
                     }
-                    Long originMessageId=queued.persistedMessageId();
-                    if (originMessageId==null) {
-                        var saved=conversations.saveMessage(convId,"user",queued.message(),queued.contentParts(),"queued");
-                        originMessageId=saved==null ? null : saved.getId();
-                        if (originMessageId==null || !inputQueue.bindMessage(queued.id(),queued.claimedByAttemptId(),
-                                originMessageId,LocalDateTime.now())) {
-                            throw new IllegalStateException("Queued input could not be bound to its persisted message");
+                    GoalEntity currentGoal=goals==null ? goal : goals.getById(goal.getId());
+                    if (currentGoal!=null && currentGoal.getStatus()==vip.mate.goal.model.GoalStatus.PAUSED)
+                        return new SegmentOutcome.Cancelled("paused");
+                    boolean required=currentGoal!=null && currentGoal.isJsonAcceptanceRequired();
+                    boolean selected=queued.selectedGoalId()!=null && queued.selectedGoalId()>0;
+                    boolean unavailable=currentGoal==null
+                            || currentGoal.getStatus()!=vip.mate.goal.model.GoalStatus.ACTIVE;
+                    boolean ambiguousLegacy=queued.selectedGoalId()==null && !required && approvalRuns!=null
+                            && approvalRuns.hasManagedGoalHistory(convId,String.valueOf(goal.getAgentId()));
+                    if (required || selected || ambiguousLegacy || unavailable) {
+                        var queuedOrigin=ChatOrigin.web(convId,queued.createdBy(),goal.getWorkspaceId(),
+                                null,null,queued.requesterUserId()).withAgent(goal.getAgentId())
+                                .withSelectedGoalId(queued.selectedGoalId());
+                        if (unavailable || !required
+                                || !Objects.equals(queued.selectedGoalId(),goal.getId())
+                                || approvalRuns==null || !approvalRuns.queuedSelectionStillCurrent(queuedOrigin)) {
+                            persistQueuedInput(convId,queued);
+                            if (!inputQueue.consume(queued.id(),queued.claimedByAttemptId(),LocalDateTime.now()))
+                                throw new IllegalStateException("Rejected queued input claim was lost");
+                            claimedInput.set(null);
+                            conversations.saveMessage(convId,"assistant",
+                                    "Queued input was not run because its selected Goal or account is no longer current. Review and resend it.",
+                                    List.of(),"completed");
+                            streams.broadcastObject(convId,"warning",Map.of("message",
+                                    "Queued input selected a different or unavailable Goal; text was saved for review."));
+                            queued=claimNextInput(convId,claimedRun);
+                            if (queued==null) break;
+                            continue;
                         }
                     }
+                    Long originMessageId=persistQueuedInput(convId,queued);
                     if (!inputQueue.consume(queued.id(),queued.claimedByAttemptId(),LocalDateTime.now())) {
                         throw new IllegalStateException("Queued input claim was lost before execution");
                     }
@@ -163,6 +192,7 @@ public class GoalSegmentRunner {
                 if ("stopped".equals(result.finishReason())) return new SegmentOutcome.Cancelled("stopped");
                 queued=claimNextInput(convId,claimedRun);
             } while (queued!=null);
+            if(result==null) return new SegmentOutcome.Continue("queued_input_rejected");
             if(result.evaluationUnavailable()) return new SegmentOutcome.Retry("evaluation","evaluation_unavailable");
             if("error_fallback".equals(result.finishReason())) {
                 return new SegmentOutcome.Blocked("graph","graph_error_requires_review");
@@ -282,6 +312,17 @@ public class GoalSegmentRunner {
                                                                    GoalRunCoordinator.ClaimedRun claimedRun) {
         String claimant=claimedRun==null ? UUID.randomUUID().toString() : claimedRun.attempt().id();
         return inputQueue.claimNext(conversationId,claimant,LocalDateTime.now()).orElse(null);
+    }
+
+    private Long persistQueuedInput(String conversationId,ConversationInputQueueStore.QueuedInput queued) {
+        if (queued.persistedMessageId()!=null) return queued.persistedMessageId();
+        var saved=conversations.saveMessage(conversationId,"user",queued.message(),queued.contentParts(),"queued");
+        Long messageId=saved==null ? null : saved.getId();
+        if (messageId==null || !inputQueue.bindMessage(queued.id(),queued.claimedByAttemptId(),
+                messageId,LocalDateTime.now())) {
+            throw new IllegalStateException("Queued input could not be bound to its persisted message");
+        }
+        return messageId;
     }
 
     private String queuedPrompt(ConversationInputQueueStore.QueuedInput queued) {

@@ -44,6 +44,7 @@ public class ToolGuardRuleSeedService implements ApplicationRunner {
     private static final Map<String, String> TOOL_NAME_RENAMES = Map.of(
             "ShellExecuteTool", "execute_shell_command",
             "WriteFileTool", "write_file",
+            "AppendFileTool", "append_file",
             "EditFileTool", "edit_file"
     );
 

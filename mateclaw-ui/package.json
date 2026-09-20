@@ -1,15 +1,15 @@
 {
   "name": "mateclaw-ui",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "private": true,
   "type": "module",
   "description": "MateClaw - Personal AI Assistant Web Console",
   "scripts": {
     "dev": "vite",
-    "build": "bash ../scripts/check-snowflake-precision.sh && node --max-old-space-size=6144 ./node_modules/vue-tsc/bin/vue-tsc.js --noEmit && node --max-old-space-size=6144 ./node_modules/vite/bin/vite.js build",
+    "build": "node scripts/check-snowflake-precision.mjs && node --max-old-space-size=6144 ./node_modules/vue-tsc/bin/vue-tsc.js --noEmit && node --max-old-space-size=6144 ./node_modules/vite/bin/vite.js build",
     "preview": "vite preview",
-    "lint": "eslint src --fix && bash ../scripts/check-snowflake-precision.sh",
-    "lint:precision": "bash ../scripts/check-snowflake-precision.sh",
+    "lint": "eslint src --fix && node scripts/check-snowflake-precision.mjs",
+    "lint:precision": "node scripts/check-snowflake-precision.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },

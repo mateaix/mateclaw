@@ -56,12 +56,17 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { dshApi } from '@/api'
 import { mcToast } from '@/composables/useMcToast'
+import {
+  createEmptyDshConfigForm,
+  formToManagedConfig,
+  managedConfigToForm,
+} from './configMapping'
 
 const loading = ref(true)
 const busy = ref(false)
 const error = ref('')
 const status = reactive<any>({ state: 'NOT_INSTALLED', installed: false, enabled: false, config: {}, artifactManifestConfigured: false })
-const form = reactive<Record<string, string>>({ executable_path: '', cordis_config_path: '', working_directory: '', base_url: '', model_name: '', api_key: '' })
+const form = reactive(createEmptyDshConfigForm())
 const state = computed(() => String(status.state || 'NOT_INSTALLED'))
 const stateLabel = computed(() => ({ NOT_INSTALLED: '未安装', INSTALLING: '安装中', INSTALLED_UNCONFIGURED: '已安装待验证', CONFIG_INVALID: '配置不完整', CHECKING: '检测中', CHECK_FAILED: '检测失败', READY: '已就绪', ENABLED: '已启用' } as Record<string, string>)[state.value] || state.value)
 const canEnable = computed(() => status.installed && status.config?.workingDirectory && state.value !== 'CONFIG_INVALID')
@@ -75,14 +80,12 @@ const steps = computed(() => [
 function applyResponse(response: any) {
   const data = response?.data ?? response
   Object.assign(status, data)
-  const managed = data?.managed || {}
-  for (const key of Object.keys(form)) form[key] = managed[key] || ''
-  if (form.api_key.startsWith('****')) form.api_key = ''
+  Object.assign(form, managedConfigToForm(data?.managed || {}))
 }
 
 async function load() { loading.value = true; error.value = ''; try { applyResponse(await dshApi.status()) } catch (e: any) { error.value = e?.message || '读取 DSH 状态失败' } finally { loading.value = false } }
 async function run(action: () => Promise<any>, message: string) { busy.value = true; error.value = ''; try { applyResponse(await action()); mcToast.success(message) } catch (e: any) { error.value = e?.message || '操作失败'; mcToast.error(error.value) } finally { busy.value = false } }
-function save() { return run(() => dshApi.saveConfig(form), 'DSH 配置已保存') }
+function save() { return run(() => dshApi.saveConfig(formToManagedConfig(form)), 'DSH 配置已保存') }
 function verify() { return run(dshApi.verify, 'DSH 配置验证完成') }
 function install() { return run(dshApi.install, 'DSH 安装完成') }
 function testConnection() { return run(async () => { const response: any = await dshApi.testConnection(); const data = response?.data ?? response; if (data?.success === false) throw new Error(data.message || 'DSH 进程测试失败'); return response }, 'DSH 进程测试通过') }

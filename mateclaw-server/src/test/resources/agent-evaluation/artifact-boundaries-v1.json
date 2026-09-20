@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 1,
+  "suiteId": "artifact-boundaries-v1",
+  "tasks": [
+    {
+      "id": "register",
+      "task": "Register a durable report and reopen it after restart",
+      "source": "TrustedExecutionObservationTest.onlyDurablyReadableArtifactsProduceSnapshots",
+      "operation": "REGISTER",
+      "content": "registered report",
+      "expected": {
+        "hotContent": "registered report",
+        "coldContent": "registered report",
+        "observations": [
+          "ARTIFACT_SNAPSHOT:OBSERVED"
+        ],
+        "hotMatchesSnapshot": true,
+        "coldMatchesSnapshot": true
+      }
+    },
+    {
+      "id": "mutate-input",
+      "task": "Producer reuses its buffer after registering a report",
+      "source": "cycle003 reproduced input byte alias failure",
+      "operation": "MUTATE_INPUT",
+      "content": "registered report",
+      "expected": {
+        "hotContent": "registered report",
+        "coldContent": "registered report",
+        "observations": [
+          "ARTIFACT_SNAPSHOT:OBSERVED"
+        ],
+        "hotMatchesSnapshot": true,
+        "coldMatchesSnapshot": true
+      }
+    },
+    {
+      "id": "mutate-download",
+      "task": "Consumer modifies a returned download buffer",
+      "source": "cycle003 reproduced returned byte alias failure",
+      "operation": "MUTATE_DOWNLOAD",
+      "content": "registered report",
+      "expected": {
+        "hotContent": "registered report",
+        "coldContent": "registered report",
+        "observations": [
+          "ARTIFACT_SNAPSHOT:OBSERVED"
+        ],
+        "hotMatchesSnapshot": true,
+        "coldMatchesSnapshot": true
+      }
+    },
+    {
+      "id": "restart-mutate-download",
+      "task": "Consumer modifies bytes reloaded after restart",
+      "source": "GeneratedFileCachePersistenceTest persistence contract",
+      "operation": "RESTART_MUTATE_DOWNLOAD",
+      "content": "registered report",
+      "expected": {
+        "hotContent": "registered report",
+        "coldContent": "registered report",
+        "observations": [
+          "ARTIFACT_SNAPSHOT:OBSERVED"
+        ],
+        "hotMatchesSnapshot": true,
+        "coldMatchesSnapshot": true
+      }
+    },
+    {
+      "id": "storage-unavailable",
+      "task": "Register a report when the durable storage path is not a directory",
+      "source": "TrustedExecutionObservationTest durable storage failure",
+      "operation": "STORAGE_UNAVAILABLE",
+      "content": "registered report",
+      "expected": {
+        "hotContent": "registered report",
+        "coldContent": null,
+        "observations": [],
+        "hotMatchesSnapshot": null,
+        "coldMatchesSnapshot": null
+      }
+    },
+    {
+      "id": "direct-return",
+      "task": "Deliver a direct-return file without recording content evidence",
+      "source": "TrustedExecutionObservationTest direct-return privacy boundary",
+      "operation": "DIRECT_RETURN",
+      "content": "registered report",
+      "expected": {
+        "hotContent": "registered report",
+        "coldContent": "registered report",
+        "observations": [],
+        "hotMatchesSnapshot": null,
+        "coldMatchesSnapshot": null
+      }
+    },
+    {
+      "id": "missing-owner",
+      "task": "Register a file without canonical workspace/conversation ownership",
+      "source": "GeneratedFileCache.put typed observation owner checks",
+      "operation": "MISSING_OWNER",
+      "content": "registered report",
+      "expected": {
+        "hotContent": "registered report",
+        "coldContent": "registered report",
+        "observations": [],
+        "hotMatchesSnapshot": null,
+        "coldMatchesSnapshot": null
+      }
+    },
+    {
+      "id": "rewrite-disk",
+      "task": "Reopen a report after an external writer replaces its persisted bytes",
+      "source": "RFC096 unmanaged shared-directory boundary; known Observe limitation",
+      "operation": "REWRITE_DISK",
+      "content": "registered report",
+      "expected": {
+        "hotContent": "registered report",
+        "coldContent": "externally replaced",
+        "observations": [
+          "ARTIFACT_SNAPSHOT:OBSERVED"
+        ],
+        "hotMatchesSnapshot": true,
+        "coldMatchesSnapshot": false
+      }
+    }
+  ]
+}

@@ -112,4 +112,36 @@ class NodeStreamingChatHelperThinkingCapTest {
         assertEquals(hugeThinking, result.thinking(),
                 "Thinking transcript is preserved so the UI can show it in a collapse panel");
     }
+    @Test
+    void reasoningOnlyTokenLimitIsIncompleteRatherThanEmptyOrSuccessful() {
+        var message = AssistantMessage.builder().content("")
+                .properties(Map.of("reasoningContent", "still reasoning")).build();
+        var generation = new Generation(message, ChatGenerationMetadata.builder().finishReason("length").build());
+        var model = mock(ChatModel.class);
+        when(model.stream(any(Prompt.class))).thenReturn(Flux.just(new ChatResponse(List.of(generation))));
+        var result = new NodeStreamingChatHelper(streamTracker)
+                .streamCall(model, smallPrompt(), "conv-length", "reasoning");
+        assertTrue(result.partial());
+        assertEquals("thinking_token_limit", result.errorMessage());
+        assertEquals("still reasoning", result.thinking());
+        assertEquals("", result.text());
+        assertEquals(NodeStreamingChatHelper.ErrorType.NONE, result.errorType());
+    }
+
+    @Test
+    void tokenLimitWithContentOrToolsIsNotMisclassifiedAsThinkingOnly() {
+        for (var message : List.of(
+                AssistantMessage.builder().content("partial answer")
+                        .properties(Map.of("reasoningContent", "reasoning")).build(),
+                AssistantMessage.builder().content("").properties(Map.of("reasoningContent", "reasoning"))
+                        .toolCalls(List.of(new AssistantMessage.ToolCall("id", "function", "search", "{}"))).build())) {
+            var generation = new Generation(message, ChatGenerationMetadata.builder().finishReason("length").build());
+            var model = mock(ChatModel.class);
+            when(model.stream(any(Prompt.class))).thenReturn(Flux.just(new ChatResponse(List.of(generation))));
+            var result = new NodeStreamingChatHelper(streamTracker)
+                    .streamCall(model, smallPrompt(), "conv-length-progress", "reasoning");
+            assertNotEquals("thinking_token_limit", result.errorMessage());
+        }
+    }
+
 }

@@ -1,5 +1,6 @@
 package vip.mate.channel.webchat;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -84,6 +85,7 @@ import static org.mockito.ArgumentMatchers.isNull;
 })
 class WebChatStreamE2ETest {
 
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final String SECRET = "webchat-it-secret-0123456789";
     private static final String API_KEY = "testkey1e2etest01"; // key8 = "testkey1"
     private static final long CHANNEL_ID = 9_148_001L;
@@ -224,10 +226,23 @@ class WebChatStreamE2ETest {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    private static String concatenatedContent(List<SseEvent> events) {
+        return events.stream()
+                .filter(e -> "content_delta".equals(e.name))
+                .map(e -> {
+                    try {
+                        return OBJECT_MAPPER.readTree(e.data).path("text").asText();
+                    } catch (IOException ex) {
+                        throw new AssertionError("Invalid content_delta JSON: " + e.data, ex);
+                    }
+                })
+                .reduce("", String::concat);
+    }
+
     // ==================== tests ====================
 
     @Test
-    @DisplayName("happy path: meta → content_delta* → done; assistant reply persisted")
+    @DisplayName("happy path: meta → batched content_delta* → done; assistant reply persisted")
     void happyPath() throws Exception {
         org.mockito.Mockito.when(agentService.chatStructuredStream(
                         eq(AGENT_ID), anyString(), anyString(), anyString(), isNull(), any()))
@@ -240,7 +255,8 @@ class WebChatStreamE2ETest {
                 streamPost(API_KEY, "{\"message\":\"hi\",\"visitorId\":\"" + visitorId + "\"}"));
 
         List<String> names = events.stream().map(e -> e.name).toList();
-        assertThat(names).containsSequence("meta", "content_delta", "content_delta", "done");
+        assertThat(names).containsSequence("meta", "content_delta", "done");
+        assertThat(concatenatedContent(events)).isEqualTo("Hello world!");
 
         SseEvent meta = events.stream().filter(e -> "meta".equals(e.name)).findFirst().orElseThrow();
         assertThat(meta.data)
@@ -310,8 +326,9 @@ class WebChatStreamE2ETest {
             byName.computeIfAbsent(e.name, k -> new ArrayList<>()).add(e);
         }
         assertThat(byName).containsKeys("meta", "thinking_delta", "content_delta", "done");
-        // 2 content_delta events, 1 thinking_delta, exactly one done.
-        assertThat(byName.get("content_delta")).hasSize(2);
+        // Adjacent upstream chunks may be coalesced on the SSE wire. The
+        // protocol guarantees complete ordered text, not one event per chunk.
+        assertThat(concatenatedContent(events)).isEqualTo("Final answer.");
         assertThat(byName.get("thinking_delta")).hasSize(1);
         assertThat(byName.get("done")).hasSize(1);
         assertThat(byName.get("meta")).hasSize(1);

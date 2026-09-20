@@ -88,6 +88,13 @@ MateClaw 的 **LLM Wiki** 把它消化成结构化页面，页面之间自己长
 ### Agent Runtime：Native 或 DSH（2.2.0+）
 `AgentRuntimeProvider` contract 把员工与实际执行回合的引擎分开。**Native Runtime** 在 MateClaw 内运行 ReAct、Plan-and-Execute、Persistent Goal 与 Team Run；**DSH Runtime** 把 `dsh-jsonrpc-agent` 作为认证子进程管理，并将思考、文本、工具调用、用量、完成与取消统一映射为 runtime event。DSH 掌管外部 Agent loop，MateClaw 继续掌管 session、workspace、凭证、工具、审批、消息和 UI 投影。启动前会校验 runtime 可用性与能力；控制台可完成 DSH 的安装、配置、校验、连接测试和启停。[配置 DeepSeek Harness →](https://claw.mate.vip/docs/zh/deepseek-harness)
 
+### 持久长任务：检查点、重启、继续（2.2.0+）
+Persistent Goal 把需要数小时的工作拆成有界、可恢复的执行段。数据库会保存目标清单、continuation 状态、attempt、冷却、lease，以及员工忙碌期间已经接收的用户输入。单后端实例重启后，supervisor 会先核对被中断的 attempt，读取持久检查点和已有产物，再调度下一段安全工作，不要求用户重新描述任务。
+
+对于写文件的任务，应要求员工维护进度账本、以小块追加可验证内容、恢复时先检查文件尾部，并且只有在可复现验收全部通过后才完成 Goal。运行时不承诺任意外部副作用严格一次；付款、发送、发布和破坏性操作仍需使用服务商幂等键或人工复核。[运行并验证持久目标 →](https://claw.mate.vip/docs/zh/goals)
+
+> 提示词模板：“第一步创建持续目标；把计划和进度保存在工作区；按小检查点写入；发生错误或重启后从已有证据继续；只有每条验收标准都有可验证证据时才调用 `completeGoal`。”
+
 ### Team Run（2.1.0+）
 一次请求对应一个持久化的 **Team Run**。稳定的 `runId` 串起用户目标、任务 DAG、成员执行、最终汇总与交付物。Chat 是成果交付面，Agents Live 按运行聚合成员并展示实时状态，Teams 管理历史与治理；三处读取同一份服务端投影。成员子会话不再挤进普通会话列表，摘要和文件优先展示，任务、证据、审批与只读成员记录按需下钻。底层继续使用 2.0 的共享任务板，保留依赖编排、并行派发、前置结果传递、执行租约、取消中断和人工审批卡点。
 

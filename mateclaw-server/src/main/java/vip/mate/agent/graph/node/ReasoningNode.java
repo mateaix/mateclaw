@@ -148,7 +148,7 @@ public class ReasoningNode implements NodeAction {
             "(?i)(word|docx|pdf|pptx|xlsx|markdown|\\bmd\\b|下载|附件|文档|文件|保存|落盘|导出)");
     private static final List<String> ARTIFACT_DELIVERY_TOOL_PREFIXES = List.of(
             "renderDocx", "renderPdf", "renderPptx", "renderXlsx", "send_file", "sendFile",
-            "write_file", "local_write_file", "edit_file", "local_edit_file");
+            "write_file", "append_file", "local_write_file", "edit_file", "local_edit_file");
 
     /** Continuation nudge appended to the prompt when the model returns an empty turn. */
     private static final String EMPTY_COMPLETION_NUDGE =
@@ -1160,21 +1160,20 @@ public class ReasoningNode implements NodeAction {
         // soft cap would be re-promoted to ERROR_FALLBACK and we'd lose the
         // INCOMPLETE semantics.
 
-        if (result.partial() && "thinking_only_no_content".equals(result.errorMessage())) {
-            // Soft thinking-only loop: the helper disposed the upstream stream
-            // because the model accumulated >= THINKING_ONLY_HARD_CAP_CHARS of
-            // reasoning_content without emitting any visible content or tool
-            // calls. Treat as INCOMPLETE rather than fatal — the thinking text
-            // has already been streamed and is preserved for the UI's collapse
-            // panel; the user gets a short fallback line they can retry from.
+        if (result.partial() && ("thinking_only_no_content".equals(result.errorMessage())
+                || "thinking_token_limit".equals(result.errorMessage()))) {
+            // Either our thinking-only cap or the provider's output-token budget
+            // ended reasoning before any answer/tool call. Preserve the transcript
+            // and surface INCOMPLETE rather than retrying a supposed empty response.
             String partialThinking = result.thinking() != null ? result.thinking() : "";
-            log.warn("[ReasoningNode] Thinking-only soft cap hit ({} thinking chars, no content/tools); " +
-                            "INCOMPLETE",
-                    partialThinking.length());
+            log.warn("[ReasoningNode] Thinking-only turn ended: {} ({} thinking chars); INCOMPLETE",
+                    result.errorMessage(), partialThinking.length());
             var builder = reasonOutput()
                     .needsToolCall(false)
                     .shouldSummarize(false)
-                    .finalAnswer("（模型在思考阶段停留过久且未给出最终答案，请重试或拆分问题。）")
+                    .finalAnswer("thinking_token_limit".equals(result.errorMessage())
+                            ? "（模型在输出最终答案前已耗尽输出 token 预算。请关闭思考、适当增加模型最大输出 token 数，或拆分问题后重试。）"
+                            : "（模型在思考阶段停留过久且未给出最终答案，请重试或拆分问题。）")
                     .llmCallCount(nextLlmCallCount)
                     .finishReason(FinishReason.INCOMPLETE)
                     .contentStreamed(false)
@@ -1240,6 +1239,28 @@ public class ReasoningNode implements NodeAction {
                     .finishReason(FinishReason.ERROR_FALLBACK)
                     .contentStreamed(true)
                     .thinkingStreamed(true)
+                    .mergeUsage(state, result)
+                    .build();
+        }
+
+        // Compatibility safety net for providers/adapters that return the
+        // runtime's reserved error placeholder as an HTTP-successful content
+        // response. Without this guard the long-form completion gate treats
+        // the placeholder as a short draft and can repeat it until the graph's
+        // iteration cap. Cron and other synchronous callers consume the
+        // resulting structured ERROR_FALLBACK; they do not need to infer from
+        // user-facing text.
+        if (isRuntimeErrorPlaceholder(result.text())) {
+            String errorText = result.text();
+            log.error("[ReasoningNode] Runtime error placeholder returned as normal content; failing turn");
+            return reasonOutput()
+                    .needsToolCall(false)
+                    .shouldSummarize(false)
+                    .finalAnswer(errorText)
+                    .llmCallCount(nextLlmCallCount)
+                    .finishReason(FinishReason.ERROR_FALLBACK)
+                    .contentStreamed(true)
+                    .thinkingStreamed(result.thinking() != null && !result.thinking().isEmpty())
                     .mergeUsage(state, result)
                     .build();
         }
@@ -1427,6 +1448,10 @@ public class ReasoningNode implements NodeAction {
                     .events(buildEvents(phaseEvent, iterStartEvent, iterEndEvent))
                     .build();
         }
+    }
+
+    static boolean isRuntimeErrorPlaceholder(String text) {
+        return text != null && text.stripLeading().startsWith("[错误]");
     }
 
     private static String evidenceWarning(List<String> unsupportedReferences) {

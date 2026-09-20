@@ -1469,6 +1469,7 @@ public class ChannelMessageRouter {
                 replayOrigin = chatOriginFactory.from(
                         channelEntity, triggerMessage, conversationId, /* workspaceBasePath */ null);
             }
+            replayOrigin = replayOrigin.withApprovalId(consumed.getPendingId());
             AgentService.ChatResult replayResult = agentService.chatWithReplayWithUsage(
                     agentId, replayPrompt, conversationId, consumed.getToolCallPayload(), replayOrigin);
             String reply = replayResult.content();

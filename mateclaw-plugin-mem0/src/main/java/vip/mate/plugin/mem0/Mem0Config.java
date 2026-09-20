@@ -13,6 +13,7 @@ package vip.mate.plugin.mem0;
  * @param syncEnabled   whether syncTurn should POST to Mem0 /memories/
  * @param maxResults    cap on memories returned per recall
  * @param timeoutMs     HTTP timeout for both recall and sync
+ * @param syncQueueCapacity maximum number of turns waiting for asynchronous sync
  * @author MateClaw Team
  */
 record Mem0Config(
@@ -21,10 +22,18 @@ record Mem0Config(
         boolean searchEnabled,
         boolean syncEnabled,
         int maxResults,
-        int timeoutMs
+        int timeoutMs,
+        int syncQueueCapacity
 ) {
     static final int DEFAULT_MAX_RESULTS = 5;
     static final int DEFAULT_TIMEOUT_MS = 3000;
+    static final int DEFAULT_SYNC_QUEUE_CAPACITY = 256;
+
+    Mem0Config(String baseUrl, String apiKey, boolean searchEnabled, boolean syncEnabled,
+               int maxResults, int timeoutMs) {
+        this(baseUrl, apiKey, searchEnabled, syncEnabled, maxResults, timeoutMs,
+                DEFAULT_SYNC_QUEUE_CAPACITY);
+    }
 
     /**
      * Whether this provider should participate at all.

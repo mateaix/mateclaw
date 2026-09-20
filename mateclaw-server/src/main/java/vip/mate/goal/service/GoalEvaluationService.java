@@ -70,6 +70,7 @@ public class GoalEvaluationService implements Evaluator {
     private static final int MAX_OUTPUT_TOKENS = 2000;
     private static final int MAX_CONVERSATION_CHARS = 6_000;
     private static final int MAX_TERMINAL_ANSWER_CHARS = 4_000;
+    private static final int MAX_SUCCESS_CHECK_CHARS = 4_000;
     private static final int MIN_BOOTSTRAP_CRITERIA = 1;
     private static final int MAX_BOOTSTRAP_CRITERIA = 8;
     /** Skip-retry template — the goal node has its own try/catch. */
@@ -80,10 +81,8 @@ public class GoalEvaluationService implements Evaluator {
     private final ProviderChatModelFactory chatModelFactory;
     private final ObjectMapper objectMapper;
 
-    private final BeanOutputConverter<GoalCriteriaDraft> draftConverter =
-            new BeanOutputConverter<>(GoalCriteriaDraft.class);
-    private final BeanOutputConverter<GoalChecklistVerdict> verdictConverter =
-            new BeanOutputConverter<>(GoalChecklistVerdict.class);
+    private final BeanOutputConverter<GoalCriteriaDraft> draftConverter;
+    private final BeanOutputConverter<GoalChecklistVerdict> verdictConverter;
 
     public GoalEvaluationService(GoalProperties properties,
                                  ModelConfigService modelConfigService,
@@ -93,6 +92,14 @@ public class GoalEvaluationService implements Evaluator {
         this.modelConfigService = modelConfigService;
         this.chatModelFactory = chatModelFactory;
         this.objectMapper = objectMapper;
+        // Preserve converter tolerance for extra fields, but never silently
+        // choose the last value of an ambiguous model-produced JSON key.
+        ObjectMapper evaluatorJson = objectMapper.copy()
+                .disable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
+                .enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+                .enable(com.fasterxml.jackson.core.JsonParser.Feature.STRICT_DUPLICATE_DETECTION);
+        this.draftConverter = new BeanOutputConverter<>(GoalCriteriaDraft.class, evaluatorJson);
+        this.verdictConverter = new BeanOutputConverter<>(GoalChecklistVerdict.class, evaluatorJson);
     }
 
     /**
@@ -122,6 +129,7 @@ public class GoalEvaluationService implements Evaluator {
 
         List<GoalCriterion> existing = GoalCriteriaCodec.parse(goal.getCriteria(), objectMapper);
         boolean bootstrap = existing.isEmpty();
+        long evaluationRevision = goal.getEvaluationRevision();
 
         long start = System.currentTimeMillis();
         try {
@@ -148,16 +156,18 @@ public class GoalEvaluationService implements Evaluator {
             if (body == null || body.isBlank()) {
                 log.warn("[GoalEvaluation] empty response from evaluator model={}", model.getModelName());
                 // The call was really spent — bill it.
-                return GoalEvaluationResult.fallbackAfterCall("empty_response", model.getModelName(), elapsed);
+                return GoalEvaluationResult.fallbackAfterCall("empty_response", model.getModelName(), elapsed)
+                        .withEvaluationRevision(evaluationRevision);
             }
 
-            return bootstrap
+            return (bootstrap
                     ? parseBootstrap(body, model.getModelName(), elapsed)
-                    : parseVerdict(body, existing, model.getModelName(), elapsed);
+                    : parseVerdict(body, existing, model.getModelName(), elapsed))
+                    .withEvaluationRevision(evaluationRevision);
         } catch (Throwable t) {
             long elapsed = System.currentTimeMillis() - start;
             log.warn("[GoalEvaluation] evaluator call failed after {}ms: {}", elapsed, t.toString());
-            return GoalEvaluationResult.fallback("call_failed");
+            return GoalEvaluationResult.fallback("call_failed").withEvaluationRevision(evaluationRevision);
         }
     }
 
@@ -229,7 +239,8 @@ public class GoalEvaluationService implements Evaluator {
                     + "Revoke it when such contradictory evidence exists, citing that evidence. "
                     + "An attempted action, a goal description or a claim of completion is not proof. "
                     + "Newly passed criteria require concrete observable evidence. Return only changed "
-                    + "criterion verdicts; omitted criteria retain their previous state. Keep evidence concise. "
+                    + "criterion verdicts; omitted criteria retain their previous state. Return at most one "
+                    + "verdict per criterion id. Keep evidence concise. "
                     + "Output only the requested JSON.";
 
     private String buildUserPrompt(GoalEntity goal,
@@ -246,6 +257,16 @@ public class GoalEvaluationService implements Evaluator {
             sb.append("Exit criteria (free text):\n").append(safe(goal.getExitCriteria())).append('\n');
         }
         sb.append('\n');
+
+        String guidance = goal.getSuccessCheckPrompt();
+        if (guidance != null && !guidance.isBlank()) {
+            sb.append("Goal-specific success-check guidance (within the checklist evidence and JSON output rules):\n");
+            sb.append(guidance, 0, Math.min(guidance.length(), MAX_SUCCESS_CHECK_CHARS));
+            if (guidance.length() > MAX_SUCCESS_CHECK_CHARS) {
+                sb.append("\n[success-check guidance truncated]");
+            }
+            sb.append("\n\n");
+        }
 
         if (!bootstrap) {
             sb.append("Current checklist (judge each by id):\n");

@@ -45,40 +45,41 @@ public class GeneratedFileController {
         if (user == null) {
             return ResponseEntity.status(401).body(Map.of("error", "Unauthorized"));
         }
-        return cache.get(id)
-                .filter(entry -> canDownload(entry, workspaceId, user))
-                .<ResponseEntity<?>>map(entry -> {
-                    String encodedName = URLEncoder.encode(entry.filename(), StandardCharsets.UTF_8)
-                            .replace("+", "%20");
-                    HttpHeaders headers = new HttpHeaders();
-                    String mime = entry.mimeType() == null || entry.mimeType().isBlank()
-                            ? "application/octet-stream"
-                            : entry.mimeType();
-                    headers.setContentType(MediaType.parseMediaType(mime));
-                    // RFC 5987 filename* lets non-ASCII names round-trip in browsers.
-                    // Images and HTML previews render inline; everything else downloads.
-                    boolean isImage = mime != null && mime.startsWith("image/");
-                    boolean isHtml = mime != null && mime.toLowerCase().startsWith("text/html");
-                    String disposition = (isImage || isHtml) ? "inline" : "attachment";
-                    if (isHtml) {
-                        // The bytes are model/tool-generated HTML served from the app's
-                        // own origin. A strict CSP neutralises XSS: scripts, plugins and
-                        // framing are forbidden, only inline styles + images/fonts load.
-                        // This makes an on-demand "open the article" preview safe.
-                        headers.add("Content-Security-Policy",
-                                "default-src 'none'; img-src * data:; style-src 'unsafe-inline'; "
-                                        + "font-src * data:; media-src *; base-uri 'none'; form-action 'none'");
-                        headers.add("X-Content-Type-Options", "nosniff");
-                    }
-                    headers.add(HttpHeaders.CONTENT_DISPOSITION,
-                            disposition + "; filename=\"" + sanitizeAscii(entry.filename())
-                                    + "\"; filename*=UTF-8''" + encodedName);
-                    headers.setContentLength(entry.bytes().length);
-                    return ResponseEntity.ok().headers(headers).body(entry.bytes());
-                })
-                .orElseGet(() -> cache.get(id).isPresent()
-                        ? ResponseEntity.status(403).body(Map.of("error", "Workspace permission denied"))
-                        : ResponseEntity.status(404).body(Map.of("error", "File not found or expired")));
+        var access = cache.getAuthorized(id, owner -> canDownload(owner.workspaceId(), workspaceId, user));
+        if (access.status() == GeneratedFileCache.AccessStatus.FORBIDDEN) {
+            return ResponseEntity.status(403).body(Map.of("error", "Workspace permission denied"));
+        }
+        if (access.status() == GeneratedFileCache.AccessStatus.MISSING) {
+            return ResponseEntity.status(404).body(Map.of("error", "File not found or expired"));
+        }
+        var entry = access.entry();
+        String encodedName = URLEncoder.encode(entry.filename(), StandardCharsets.UTF_8)
+                .replace("+", "%20");
+        HttpHeaders headers = new HttpHeaders();
+        String mime = entry.mimeType() == null || entry.mimeType().isBlank()
+                ? "application/octet-stream"
+                : entry.mimeType();
+        headers.setContentType(MediaType.parseMediaType(mime));
+        // RFC 5987 filename* lets non-ASCII names round-trip in browsers.
+        // Images and HTML previews render inline; everything else downloads.
+        boolean isImage = mime != null && mime.startsWith("image/");
+        boolean isHtml = mime != null && mime.toLowerCase().startsWith("text/html");
+        String disposition = (isImage || isHtml) ? "inline" : "attachment";
+        // Every generated document is untrusted, including SVG served
+        // inline as an image. Isolate document origins and active content;
+        // retain static styles/media and explicit downloads for previews.
+        headers.add("Content-Security-Policy",
+                "sandbox allow-downloads; default-src 'none'; img-src * data:; "
+                        + "style-src 'unsafe-inline'; font-src * data:; media-src *; "
+                        + "base-uri 'none'; form-action 'none'");
+        headers.add("X-Content-Type-Options", "nosniff");
+        headers.add(HttpHeaders.CONTENT_DISPOSITION,
+                disposition + "; filename=\"" + sanitizeAscii(entry.filename())
+                        + "\"; filename*=UTF-8''" + encodedName);
+        byte[] content = entry.bytes();
+        headers.setContentLength(content.length);
+        return ResponseEntity.ok().headers(headers).body(content);
+
     }
 
     private UserEntity resolveUser(Authentication authentication) {
@@ -88,8 +89,7 @@ public class GeneratedFileController {
         return authService.findByUsername(authentication.getName());
     }
 
-    private boolean canDownload(GeneratedFileCache.Entry entry, Long currentWorkspaceId, UserEntity user) {
-        Long ownerWorkspaceId = entry.workspaceId();
+    private boolean canDownload(Long ownerWorkspaceId, Long currentWorkspaceId, UserEntity user) {
         if (ownerWorkspaceId == null) {
             return true;
         }

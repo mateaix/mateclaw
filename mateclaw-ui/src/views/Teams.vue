@@ -243,11 +243,14 @@
       :pending-actions="attentionPendingActions"
       @close="closeRun"
       @cancel="cancelRun"
-      @select-task="openRunTask"
+      @select-task="selectRunTask"
       @navigate="router.push"
       @view-task="openAttentionTask"
       @retry-task="retryAttentionTask"
       @approve-task="approveAttentionTask"
+      @approve-tool="approveWorkerTool"
+      @deny-tool="denyWorkerTool"
+      @feedback-task="feedbackWorker"
       @retry-detail="runHistory.ensureSelectedRunDetail(runHistory.selectedRunId.value!, runHistory.selectedTaskId.value)"
     />
 
@@ -601,6 +604,7 @@ import TeamRunDrawer from '@/components/team-run/TeamRunDrawer.vue'
 import TeamRunsPanel from '@/components/team-run/TeamRunsPanel.vue'
 import {
   canManageTeamRunAttention,
+  captureTeamAttentionContext,
   refreshAttentionTaskContext,
   runAttentionTaskAction,
   type TeamAttentionAction,
@@ -657,7 +661,7 @@ let routeReconciliationRevision = 0
 const COLUMN_DEFS = [
   { key: 'todo', statuses: ['pending', 'blocked'], terminal: false },
   { key: 'in_progress', statuses: ['in_progress'], terminal: false },
-  { key: 'in_review', statuses: ['in_review'], terminal: false },
+  { key: 'in_review', statuses: ['awaiting_approval', 'in_review'], terminal: false },
   { key: 'completed', statuses: ['completed'], terminal: true },
   { key: 'closed', statuses: ['failed', 'cancelled', 'stale'], terminal: true },
 ] as const
@@ -1226,8 +1230,12 @@ async function openRunTask(
   }
 }
 
+function selectRunTask(task: TeamRunTask) {
+  runHistory.select(String(task.runId), String(task.id))
+}
+
 function selectedRunTask(taskId: string) {
-  return runHistory.selectedRun.value?.tasks.find(task => task.id === taskId) ?? null
+  return runHistory.selectedRun.value?.tasks.find(task => String(task.id) === String(taskId)) ?? null
 }
 
 async function openAttentionTask(taskId: string) {
@@ -1236,10 +1244,11 @@ async function openAttentionTask(taskId: string) {
 }
 
 function captureAttentionContext(taskId: string): TeamAttentionActionContext | null {
-  const run = runHistory.selectedRun.value
-  const teamId = String(store.currentTeam?.team.id ?? '')
-  if (!run || !teamId || run.teamId !== teamId || !run.tasks.some(task => task.id === taskId)) return null
-  return { teamId, runId: run.id, taskId }
+  return captureTeamAttentionContext(
+    runHistory.selectedRun.value,
+    store.currentTeam?.team.id ?? null,
+    taskId,
+  )
 }
 
 async function refreshAfterTaskAction(context: TeamAttentionActionContext) {
@@ -1270,6 +1279,46 @@ async function performAttentionAction(taskId: string, action: TeamAttentionActio
   })
 }
 
+function pendingApprovalId(taskId: string): string | null {
+  const metadata = selectedRunTask(taskId)?.metadata
+  if (!metadata) return null
+  try {
+    const value = JSON.parse(metadata)?.toolApproval?.pendingId
+    return typeof value === 'string' && value ? value : null
+  } catch {
+    return null
+  }
+}
+
+async function performWorkerAction(
+  taskId: string,
+  action: 'approve-tool' | 'deny-tool' | 'feedback',
+  message?: string,
+) {
+  const context = captureAttentionContext(taskId)
+  if (!context || !canManageSelectedRun.value) return false
+  const pendingId = action === 'feedback' ? null : pendingApprovalId(taskId)
+  if (action !== 'feedback' && !pendingId) {
+    ElMessage.error(t('teamRuns.approvalExpired'))
+    await refreshAfterTaskAction(context)
+    return false
+  }
+  return runAttentionTaskAction({
+    context,
+    action,
+    pending: pendingAttentionActions,
+    execute: () => action === 'approve-tool'
+      ? teamApi.approveWorkerTool(context.teamId, context.taskId, pendingId!)
+      : action === 'deny-tool'
+        ? teamApi.denyWorkerTool(context.teamId, context.taskId, pendingId!)
+        : teamApi.feedbackWorker(context.teamId, context.taskId, message ?? ''),
+    refresh: () => refreshAfterTaskAction(context),
+    onError: cause => ElMessage.error(
+      cause instanceof Error && cause.message ? cause.message : t('teams.actionFailed', 'Operation failed'),
+    ),
+  })
+}
+
 async function approveTaskById(taskId: string) {
   if (!store.currentTeam) return
   await teamApi.approveTask(store.currentTeam.team.id, taskId)
@@ -1289,6 +1338,18 @@ async function approveAttentionTask(taskId: string) {
 
 async function retryAttentionTask(taskId: string) {
   await performAttentionAction(taskId, 'retry')
+}
+
+async function approveWorkerTool(taskId: string) {
+  if (await performWorkerAction(taskId, 'approve-tool')) ElMessage.success(t('teamRuns.toolApproved'))
+}
+
+async function denyWorkerTool(taskId: string) {
+  if (await performWorkerAction(taskId, 'deny-tool')) ElMessage.success(t('teamRuns.toolDenied'))
+}
+
+async function feedbackWorker(taskId: string, message: string) {
+  if (await performWorkerAction(taskId, 'feedback', message)) ElMessage.success(t('teamRuns.feedbackSent'))
 }
 
 async function openTask(vo: TeamTaskVO, shouldApply: () => boolean = () => true) {
@@ -1577,7 +1638,7 @@ async function cancelTask() {
 }
 .pill--completed { color: #16a34a; background: rgba(22, 163, 74, 0.08); border-color: rgba(22, 163, 74, 0.25); }
 .pill--in_progress { color: var(--mc-primary); background: var(--mc-primary-bg); border-color: var(--mc-primary); }
-.pill--in_review { color: #d97706; background: rgba(217, 119, 6, 0.08); border-color: rgba(217, 119, 6, 0.3); }
+.pill--in_review, .pill--awaiting_approval { color: #d97706; background: rgba(217, 119, 6, 0.08); border-color: rgba(217, 119, 6, 0.3); }
 .pill--failed, .pill--cancelled { color: #dc2626; background: rgba(220, 38, 38, 0.07); border-color: rgba(220, 38, 38, 0.25); }
 
 /* ==================== detail header ==================== */
@@ -1731,7 +1792,7 @@ async function cancelTask() {
 }
 .dot--todo { background: var(--mc-text-tertiary); }
 .dot--in_progress { background: var(--mc-primary); }
-.dot--in_review { background: #d97706; }
+.dot--in_review, .dot--awaiting_approval { background: #d97706; }
 .dot--completed { background: #16a34a; }
 .dot--closed { background: #dc2626; }
 

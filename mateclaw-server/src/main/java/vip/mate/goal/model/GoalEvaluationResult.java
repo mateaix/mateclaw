@@ -37,7 +37,22 @@ public record GoalEvaluationResult(
         int llmCallsConsumed,
         long latencyMs,
         List<GoalChecklistVerdict.CriterionVerdict> criterionVerdicts,
-        List<GoalCriterion> bootstrapCriteria) {
+        List<GoalCriterion> bootstrapCriteria,
+        long evaluationRevision) {
+
+    /** Compatibility for pre-revision callers: valid only for an unedited definition (revision zero). */
+    public GoalEvaluationResult(double score, String gap, String decision, boolean completed,
+            String evaluatorModel, int llmCallsConsumed, long latencyMs,
+            List<GoalChecklistVerdict.CriterionVerdict> criterionVerdicts, List<GoalCriterion> bootstrapCriteria) {
+        this(score, gap, decision, completed, evaluatorModel, llmCallsConsumed, latencyMs,
+                criterionVerdicts, bootstrapCriteria, 0L);
+    }
+
+    /** Stamp the server-captured revision; the model does not choose this value. */
+    public GoalEvaluationResult withEvaluationRevision(long revision) {
+        return new GoalEvaluationResult(score, gap, decision, completed, evaluatorModel, llmCallsConsumed,
+                latencyMs, criterionVerdicts, bootstrapCriteria, revision);
+    }
 
     public static final String DECISION_COMPLETED = "completed";
     public static final String DECISION_CONTINUE = "continue";

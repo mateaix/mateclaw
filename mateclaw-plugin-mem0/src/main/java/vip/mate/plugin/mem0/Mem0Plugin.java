@@ -39,6 +39,7 @@ public class Mem0Plugin implements MateClawPlugin {
     private static final String CONFIG_SYNC_ENABLED = "syncEnabled";
     private static final String CONFIG_MAX_RESULTS = "maxResults";
     private static final String CONFIG_TIMEOUT_MS = "timeoutMs";
+    private static final String CONFIG_SYNC_QUEUE_CAPACITY = "syncQueueCapacity";
 
     private Logger log;
 
@@ -54,11 +55,16 @@ public class Mem0Plugin implements MateClawPlugin {
 
         Mem0Client client = new Mem0Client(config);
         Mem0Provider provider = new Mem0Provider(config, client, log);
-        context.registerMemoryProvider(provider);
+        try {
+            context.registerMemoryProvider(provider);
+        } catch (RuntimeException e) {
+            provider.close();
+            throw e;
+        }
 
-        log.info("Mem0 plugin loaded: baseUrl={}, searchEnabled={}, syncEnabled={}, maxResults={}, timeoutMs={}",
+        log.info("Mem0 plugin loaded: baseUrl={}, searchEnabled={}, syncEnabled={}, maxResults={}, timeoutMs={}, syncQueueCapacity={}",
                 maskUrl(config.baseUrl()), config.searchEnabled(), config.syncEnabled(),
-                config.maxResults(), config.timeoutMs());
+                config.maxResults(), config.timeoutMs(), config.syncQueueCapacity());
     }
 
     @Override
@@ -78,6 +84,7 @@ public class Mem0Plugin implements MateClawPlugin {
         Boolean syncEnabled = ctx.getConfig(CONFIG_SYNC_ENABLED, Boolean.class);
         Integer maxResults = ctx.getConfig(CONFIG_MAX_RESULTS, Integer.class);
         Integer timeoutMs = ctx.getConfig(CONFIG_TIMEOUT_MS, Integer.class);
+        Integer syncQueueCapacity = ctx.getConfig(CONFIG_SYNC_QUEUE_CAPACITY, Integer.class);
 
         return new Mem0Config(
                 baseUrl,
@@ -85,7 +92,9 @@ public class Mem0Plugin implements MateClawPlugin {
                 searchEnabled == null ? true : searchEnabled,
                 syncEnabled == null ? true : syncEnabled,
                 maxResults == null ? Mem0Config.DEFAULT_MAX_RESULTS : maxResults,
-                timeoutMs == null ? Mem0Config.DEFAULT_TIMEOUT_MS : timeoutMs
+                timeoutMs == null ? Mem0Config.DEFAULT_TIMEOUT_MS : timeoutMs,
+                syncQueueCapacity == null ? Mem0Config.DEFAULT_SYNC_QUEUE_CAPACITY
+                        : Math.max(1, syncQueueCapacity)
         );
     }
 

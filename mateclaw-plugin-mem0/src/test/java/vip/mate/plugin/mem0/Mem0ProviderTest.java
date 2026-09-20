@@ -14,8 +14,11 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class Mem0ProviderTest {
 
@@ -43,6 +46,7 @@ class Mem0ProviderTest {
 
     @AfterEach
     void tearDown() {
+        if (provider != null) provider.close();
         if (server != null) server.stop(0);
     }
 
@@ -129,16 +133,15 @@ class Mem0ProviderTest {
     }
 
     @Test
-    void threeArgPrefetch_returnsEmptyOnServerError() {
-        // Replace handler to fail; the provider should swallow and return "".
+    void threeArgPrefetch_propagatesServerErrorToPlatformCircuitBreaker() {
         server.removeContext("/");
         server.createContext("/", ex -> {
             ex.sendResponseHeaders(500, 0);
             ex.close();
         });
 
-        String result = provider.prefetch(1L, "q", "user:42");
-        assertThat(result).isEmpty();
+        assertThatThrownBy(() -> provider.prefetch(1L, "q", "user:42"))
+                .isInstanceOf(Mem0Exception.class);
     }
 
     @Test
@@ -215,5 +218,42 @@ class Mem0ProviderTest {
         Mem0Provider p = new Mem0Provider(cfg, new Mem0Client(cfg), LoggerFactory.getLogger("test"));
         assertThat(p.prefetch(1L, "q", "user:42")).isEmpty();
         assertThat(searchCount.get()).isZero();
+        p.close();
+    }
+
+    @Test
+    void syncQueueIsBoundedAndCloseReleasesExecutor() throws Exception {
+        CountDownLatch firstStarted = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        AtomicInteger writes = new AtomicInteger();
+        Mem0Config cfg = new Mem0Config("http://localhost:8080", null,
+                false, true, 3, 3000, 1);
+        Mem0Client blockingClient = new Mem0Client(cfg) {
+            @Override
+            void addMemories(String userId, String agentId, String conversationId,
+                             String userMessage, String assistantReply) {
+                writes.incrementAndGet();
+                firstStarted.countDown();
+                try {
+                    releaseFirst.await(2, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        };
+        Mem0Provider bounded = new Mem0Provider(cfg, blockingClient, LoggerFactory.getLogger("test"));
+        try {
+            bounded.syncTurn(1L, "one", "u", "a", "user:1");
+            assertThat(firstStarted.await(1, TimeUnit.SECONDS)).isTrue();
+            bounded.syncTurn(1L, "two", "u", "a", "user:1");
+            bounded.syncTurn(1L, "three", "u", "a", "user:1");
+
+            assertThat(bounded.queuedSyncCount()).isEqualTo(1);
+            assertThat(bounded.droppedSyncCount()).isEqualTo(1);
+        } finally {
+            releaseFirst.countDown();
+            bounded.close();
+        }
+        assertThat(bounded.isClosed()).isTrue();
     }
 }

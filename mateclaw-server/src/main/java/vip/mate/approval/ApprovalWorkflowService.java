@@ -20,6 +20,7 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import vip.mate.agent.context.ChatOrigin;
 import vip.mate.agent.context.ChatOriginHolder;
+import vip.mate.goal.service.GoalApprovalRunService;
 import vip.mate.approval.event.ApprovalResolutionEvent;
 import vip.mate.approval.event.WorkflowApprovalResolvedEvent;
 import vip.mate.approval.model.ToolApprovalEntity;
@@ -62,6 +63,8 @@ public class ApprovalWorkflowService implements ApplicationRunner {
      *  publish is a no-op. */
     @Autowired(required = false)
     private ApplicationEventPublisher events;
+    @Autowired(required = false)
+    private GoalApprovalRunService goalApprovalRuns;
 
     /**
      * GC scheduler — owns the 5-minute clock for the entire approval state machine
@@ -230,18 +233,17 @@ public class ApprovalWorkflowService implements ApplicationRunner {
                                 String toolName, String toolArguments, String reason,
                                 String toolCallPayload, String siblingToolCalls, String agentId,
                                 GuardEvaluation evaluation) {
+        // Capture the graph-bound origin and selected Goal before creating
+        // the pending row. Its Goal may change while the approval waits, but
+        // the persisted snapshot retains the identity it had at creation.
+        ChatOrigin origin = ChatOriginHolder.get();
+        if (goalApprovalRuns != null) origin = goalApprovalRuns.captureSelectedGoal(origin);
+        String chatOriginJson = serializeChatOrigin(origin);
+
         // 1. 内存层
         String pendingId = approvalService.createPending(
                 conversationId, userId, toolName, toolArguments, reason,
                 toolCallPayload, siblingToolCalls, agentId);
-
-        // RFC-063r §2.12: capture the originating ChatOrigin from the holder.
-        // The holder was set by AgentService.{chat,chatStream,...} for the
-        // duration of the agent invocation that produced this approval — so
-        // it is non-null for IM / web triggered tool calls. Snapshot is
-        // serialized once here and persisted on the DB row so cross-restart
-        // replays keep the channel binding.
-        String chatOriginJson = serializeChatOrigin(ChatOriginHolder.get());
 
         // 2. 增强内存记录
         approvalService.getPending(pendingId).ifPresent(pending -> {
@@ -412,6 +414,24 @@ public class ApprovalWorkflowService implements ApplicationRunner {
                 "consumed", /* removeFromMap */ true);
     }
 
+    /** Claim one exact approval before a team worker executes its guarded tool. */
+    @Transactional
+    public ResolveOutcome claimForReplay(String pendingId, String userId) {
+        return performResolve(pendingId, userId, "APPROVED", MetadataDecision.APPROVED,
+                "approved", /* removeFromMap */ false);
+    }
+
+    /** Consume an approval previously claimed by {@link #claimForReplay}. */
+    @Transactional
+    public ResolveOutcome consumeReplayClaim(String pendingId, String userId) {
+        PendingApproval target = getReplayClaim(pendingId).orElse(null);
+        if (target == null) {
+            return ResolveOutcome.alreadyResolved(pendingId);
+        }
+        return performResolveOnSnapshot(target, userId, "APPROVED", "CONSUMED",
+                MetadataDecision.APPROVED, "consumed", /* removeFromMap */ true);
+    }
+
     /**
      * Consume the earliest already-{@code approved} record for the conversation +
      * tool — used when an out-of-band approval (e.g. /approve text command flow that
@@ -423,7 +443,7 @@ public class ApprovalWorkflowService implements ApplicationRunner {
         if (target == null) {
             return ResolveOutcome.alreadyResolved(null);
         }
-        return performResolveOnSnapshot(target, null, "CONSUMED", MetadataDecision.APPROVED,
+        return performResolveOnSnapshot(target, null, "APPROVED", "CONSUMED", MetadataDecision.APPROVED,
                 "consumed", /* removeFromMap */ true);
     }
 
@@ -447,7 +467,7 @@ public class ApprovalWorkflowService implements ApplicationRunner {
         List<ResolveOutcome> outcomes = new java.util.ArrayList<>(targets.size());
         for (PendingApproval target : targets) {
             try {
-                ResolveOutcome outcome = performResolveOnSnapshot(target, userId, "DENIED",
+                ResolveOutcome outcome = performResolveOnSnapshot(target, userId, "PENDING", "DENIED",
                         MetadataDecision.DENIED, "denied", /* removeFromMap */ true);
                 if (outcome.dbSynced()) outcomes.add(outcome);
             } catch (Exception e) {
@@ -475,7 +495,7 @@ public class ApprovalWorkflowService implements ApplicationRunner {
         if (targets.isEmpty()) return List.of();
         List<ResolveOutcome> outcomes = new java.util.ArrayList<>(targets.size());
         for (PendingApproval target : targets) {
-            ResolveOutcome outcome = performResolveOnSnapshot(target, null, "SUPERSEDED",
+            ResolveOutcome outcome = performResolveOnSnapshot(target, null, "PENDING", "SUPERSEDED",
                     MetadataDecision.DENIED, "superseded", /* removeFromMap */ true);
             if (outcome.dbSynced()) outcomes.add(outcome);
         }
@@ -644,12 +664,13 @@ public class ApprovalWorkflowService implements ApplicationRunner {
                     pendingId, snapshot != null, snapshot != null ? snapshot.getStatus() : "n/a");
             return ResolveOutcome.alreadyResolved(pendingId);
         }
-        return performResolveOnSnapshot(snapshot, userId, dbStatus, metaDecision,
+        return performResolveOnSnapshot(snapshot, userId, "PENDING", dbStatus, metaDecision,
                 snapshotStatus, removeFromMap);
     }
 
     private ResolveOutcome performResolveOnSnapshot(PendingApproval snapshot, String userId,
-                                                    String dbStatus, MetadataDecision metaDecision,
+                                                    String expectedDbStatus, String dbStatus,
+                                                    MetadataDecision metaDecision,
                                                     String snapshotStatus, boolean removeFromMap) {
         // Phase 1 — DB UPDATE (conditional). The eq("PENDING") guard makes the call
         // idempotent: if another path already won, we get rows=0 and bail without
@@ -658,7 +679,7 @@ public class ApprovalWorkflowService implements ApplicationRunner {
         try {
             LambdaUpdateWrapper<ToolApprovalEntity> wrapper = new LambdaUpdateWrapper<ToolApprovalEntity>()
                     .eq(ToolApprovalEntity::getPendingId, snapshot.getPendingId())
-                    .eq(ToolApprovalEntity::getStatus, "PENDING")
+                    .eq(ToolApprovalEntity::getStatus, expectedDbStatus)
                     .set(ToolApprovalEntity::getStatus, dbStatus)
                     .set(ToolApprovalEntity::getResolvedAt, LocalDateTime.now());
             if (userId != null) {
@@ -672,8 +693,8 @@ public class ApprovalWorkflowService implements ApplicationRunner {
             throw e;
         }
         if (rows == 0) {
-            log.info("[ApprovalWorkflow] resolve no-op for {}: DB row not in PENDING (concurrent resolve)",
-                    snapshot.getPendingId());
+            log.info("[ApprovalWorkflow] resolve no-op for {}: DB row not in {} (concurrent resolve)",
+                    snapshot.getPendingId(), expectedDbStatus);
             return ResolveOutcome.alreadyResolved(snapshot.getPendingId());
         }
 
@@ -807,6 +828,44 @@ public class ApprovalWorkflowService implements ApplicationRunner {
      */
     public java.util.Optional<PendingApproval> getPending(String pendingId) {
         return approvalService.getPending(pendingId);
+    }
+
+    /**
+     * Recover an exact APPROVED replay claim from memory or DB. APPROVED claims are
+     * intentionally durable so a worker replay can be finalized after a restart
+     * without reopening the approval to denial.
+     */
+    public java.util.Optional<PendingApproval> getReplayClaim(String pendingId) {
+        PendingApproval inMemory = approvalService.getPending(pendingId)
+                .filter(pending -> "approved".equals(pending.getStatus()))
+                .orElse(null);
+        if (inMemory != null) {
+            return java.util.Optional.of(inMemory);
+        }
+        ToolApprovalEntity entity = approvalMapper.selectOne(
+                new LambdaQueryWrapper<ToolApprovalEntity>()
+                        .eq(ToolApprovalEntity::getPendingId, pendingId)
+                        .eq(ToolApprovalEntity::getStatus, "APPROVED"));
+        if (entity == null) {
+            return java.util.Optional.empty();
+        }
+        Instant createdAt = entity.getCreatedAt() == null
+                ? Instant.now()
+                : entity.getCreatedAt().atZone(ZoneId.systemDefault()).toInstant();
+        PendingApproval snapshot = new PendingApproval(entity.getPendingId(),
+                entity.getConversationId(), entity.getUserId(), entity.getToolName(),
+                entity.getToolArguments(), entity.getSummary(), createdAt, "approved");
+        snapshot.setToolCallPayload(entity.getToolCallPayload());
+        snapshot.setSiblingToolCalls(entity.getSiblingToolCalls());
+        snapshot.setAgentId(entity.getAgentId());
+        snapshot.setChannelType(entity.getChannelType());
+        snapshot.setRequesterName(entity.getRequesterName());
+        snapshot.setReplyTarget(entity.getReplyTarget());
+        snapshot.setFindingsJson(entity.getFindingsJson());
+        snapshot.setMaxSeverity(entity.getMaxSeverity());
+        snapshot.setSummary(entity.getSummary());
+        snapshot.setChatOrigin(entity.getChatOrigin());
+        return java.util.Optional.of(snapshot);
     }
 
     public PendingApproval findPendingByConversation(String conversationId) {

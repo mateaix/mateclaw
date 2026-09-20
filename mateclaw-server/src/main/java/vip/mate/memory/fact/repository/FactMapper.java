@@ -49,4 +49,20 @@ public interface FactMapper extends BaseMapper<FactEntity> {
     void deleteByAgentIdAndSourceRefNotIn(@Param("agentId") Long agentId,
                                           @Param("keepSet") List<String> keepSet,
                                           @Param("now") LocalDateTime now);
+
+    /**
+     * Soft-delete stale projections by their concrete row IDs. Fact source refs
+     * are not unique across personal owners, so owner-safe rebuilds retain IDs.
+     */
+    @Update("""
+        <script>
+        UPDATE mate_fact SET deleted = 1, update_time = #{now}
+        WHERE agent_id = #{agentId} AND deleted = 0
+        AND id NOT IN
+        <foreach item='id' collection='keepIds' open='(' separator=',' close=')'>#{id}</foreach>
+        </script>
+        """)
+    void deleteByAgentIdAndIdNotIn(@Param("agentId") Long agentId,
+                                   @Param("keepIds") List<Long> keepIds,
+                                   @Param("now") LocalDateTime now);
 }

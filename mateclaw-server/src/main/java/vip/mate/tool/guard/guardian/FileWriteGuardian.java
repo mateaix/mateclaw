@@ -23,7 +23,7 @@ import java.util.Set;
 public class FileWriteGuardian implements ToolGuardGuardian {
 
     private static final Set<String> FILE_WRITE_TOOL_NAMES = Set.of(
-            "write_file", "edit_file"
+            "write_file", "append_file", "edit_file"
     );
 
     @Override

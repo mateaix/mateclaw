@@ -40,7 +40,7 @@ public class RetryableMemoryProvider extends MemoryProviderDecorator {
         }
         log.warn("[Retry] prefetch exhausted {} attempts for provider={}: {}",
                 maxAttempts, delegate.id(), lastException != null ? lastException.getMessage() : "");
-        return "";
+        throw new IllegalStateException("Provider prefetch exhausted retries: " + delegate.id(), lastException);
     }
 
     @Override
@@ -66,6 +66,7 @@ public class RetryableMemoryProvider extends MemoryProviderDecorator {
         }
         log.warn("[Retry] syncTurn exhausted {} attempts for provider={}: {}",
                 maxAttempts, delegate.id(), lastException != null ? lastException.getMessage() : "");
+        throw new IllegalStateException("Provider sync exhausted retries: " + delegate.id(), lastException);
     }
 
     private void sleep(int attempt) {
@@ -73,6 +74,7 @@ public class RetryableMemoryProvider extends MemoryProviderDecorator {
             Thread.sleep((long) Math.pow(2, attempt - 1) * 100);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            throw new IllegalStateException("Provider retry interrupted: " + delegate.id(), e);
         }
     }
 }

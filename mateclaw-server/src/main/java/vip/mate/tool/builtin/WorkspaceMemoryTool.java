@@ -115,7 +115,8 @@ public class WorkspaceMemoryTool {
 
         // 追踪主动检索信号（比被动注入更强的"真实需要"指标）
         String content = file.getContent() != null ? file.getContent() : "";
-        memoryRecallTracker.trackActiveRetrieval(parsedAgentId, filename, content);
+        memoryRecallTracker.trackActiveRetrieval(parsedAgentId, filename, content,
+                file.getOwnerKey(), file.getScope());
 
         JSONObject result = new JSONObject();
         result.set("agentId", String.valueOf(agentId));
@@ -282,7 +283,8 @@ public class WorkspaceMemoryTool {
                 // PERSONAL row when present) so PERSONAL hits track correctly.
                 WorkspaceFileEntity file = workspaceFileService.getVisibleFile(parsedAgentId, hit.filename(), ownerKey);
                 if (file != null && file.getContent() != null) {
-                    memoryRecallTracker.trackActiveRetrieval(parsedAgentId, hit.filename(), file.getContent());
+                    memoryRecallTracker.trackActiveRetrieval(parsedAgentId, hit.filename(), file.getContent(),
+                            file.getOwnerKey(), file.getScope());
                 }
             }
         }

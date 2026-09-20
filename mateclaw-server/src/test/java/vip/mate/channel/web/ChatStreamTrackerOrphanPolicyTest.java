@@ -430,9 +430,13 @@ class ChatStreamTrackerOrphanPolicyTest {
         Map<String, ChatStreamTracker.RunState> runs =
                 (Map<String, ChatStreamTracker.RunState>) runsField.get(tracker);
         ChatStreamTracker.RunState state = runs.get(cid);
+        long deadline = System.currentTimeMillis() + 1_000L;
+        while (state.subscribersZeroSince == null && System.currentTimeMillis() < deadline) {
+            Thread.sleep(5L);
+        }
         synchronized (state.lock) {
             assertNotNull(state.subscribersZeroSince,
-                    "removing the final dead subscriber must arm the orphan clock");
+                    "removing the final dead subscriber must arm the orphan clock within the batch window");
             state.subscribersZeroSince = System.currentTimeMillis() - 3_000L;
         }
 

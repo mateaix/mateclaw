@@ -161,6 +161,12 @@ public class SkillFileSyncer {
         return ingested.size();
     }
 
+    /** Materialize only the uploaded row; folder uploads must not re-read the full bundle per file. */
+    public boolean syncFile(SkillEntity skill, SkillFileEntity row) {
+        Path workspace = workspaceManager.resolveConventionPath(skill.getName(), skill.getWorkspaceId());
+        return materializeOne(workspace, row) != MaterializeOutcome.SKIPPED;
+    }
+
     private enum MaterializeOutcome { WROTE, CURRENT, SKIPPED }
 
     private MaterializeOutcome materializeOne(Path workspaceDir, SkillFileEntity row) {
@@ -183,17 +189,21 @@ public class SkillFileSyncer {
         }
 
         try {
-            String content = row.getContent() == null ? "" : row.getContent();
+            // Do not follow links created by a skill script outside its workspace.
+            for (Path part = target; part != null && part.startsWith(workspaceDir); part = part.getParent()) {
+                if (Files.isSymbolicLink(part)) return MaterializeOutcome.SKIPPED;
+            }
+            byte[] content = row.contentBytes();
             if (Files.exists(target)) {
-                String onDisk = Files.readString(target, StandardCharsets.UTF_8);
+                byte[] onDisk = Files.readAllBytes(target);
                 if (SkillFileService.sha256Hex(onDisk).equals(row.getSha256())) {
                     return MaterializeOutcome.CURRENT;
                 }
             }
             Files.createDirectories(target.getParent());
-            Files.writeString(target, content, StandardCharsets.UTF_8);
+            Files.write(target, content);
             return MaterializeOutcome.WROTE;
-        } catch (IOException e) {
+        } catch (IOException | IllegalArgumentException e) {
             log.warn("Failed to materialize skill_file {} → {}: {}", row.getId(), target, e.getMessage());
             return MaterializeOutcome.SKIPPED;
         }

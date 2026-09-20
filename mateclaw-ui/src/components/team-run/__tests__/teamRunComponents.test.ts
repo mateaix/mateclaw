@@ -107,6 +107,28 @@ describe('TeamRunCard', () => {
 })
 
 describe('TeamRunDetail', () => {
+  it('submits a bounded follow-up instruction for the selected worker task', async () => {
+    const feedback: Array<[string, string]> = []
+    const task = {
+      id: '101', teamId: '10', runId: '20', taskNumber: 1, subject: 'Draft report', description: null,
+      status: 'completed', priority: 0, taskType: 'execution', assigneeAgentId: '31', ownerAgentId: null,
+      blockedBy: null, requireApproval: false, progressPercent: 100, progressStep: null,
+      result: 'Draft', reason: null, conversationId: 'worker-1', metadata: null, createTime: null, updateTime: null,
+    }
+    const host = mount(TeamRunDetail, {
+      run: sampleRun({ tasks: [task] }), selectedTaskId: '101', managementActions: true,
+      onFeedbackTask: (taskId: string, message: string) => feedback.push([taskId, message]),
+    })
+    const textarea = host.querySelector<HTMLTextAreaElement>('[data-team-run-worker-feedback]')!
+    textarea.value = '  tighten the conclusion  '
+    textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    host.querySelector<HTMLButtonElement>('[data-team-run-worker-feedback-submit]')!.click()
+    await nextTick()
+
+    expect(feedback).toEqual([['101', 'tighten the conclusion']])
+  })
+
   it('forwards attention recovery actions only in management context', async () => {
     const actions: string[] = []
     const attentionItems = [{ id: 'a', type: 'failed', severity: 'error', priority: 1, taskId: '101', message: 'Failed', createdAt: null }]

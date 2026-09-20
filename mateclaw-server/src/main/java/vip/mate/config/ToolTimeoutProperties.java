@@ -34,6 +34,7 @@ public class ToolTimeoutProperties {
             "web_fetch", "web",
             "url_fetch", "web",
             "write_file", "file",
+            "append_file", "file",
             "edit_file", "file",
             "read_file", "file"
     );

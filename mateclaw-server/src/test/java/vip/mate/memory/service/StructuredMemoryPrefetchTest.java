@@ -58,6 +58,37 @@ class StructuredMemoryPrefetchTest {
     }
 
     @Test
+    @DisplayName("legacy one-shot numeric length constraints are suppressed from always-on memory")
+    void systemPromptBlockSuppressesLegacyLengthConstraint() {
+        StructuredMemoryService svc = newService(null,
+                "## preferred_word_count\n每次回答至少 3000 字。\n> Source: auto-summary | Updated: 2026-08-30\n\n"
+                        + "## preferred_language\n用户偏好使用中文。\n> Source: agent | Updated: 2026-08-30");
+
+        String block = svc.buildMemoryBlock(AGENT_ID);
+
+        assertFalse(block.contains("3000"), "a legacy numeric length constraint must not stay always-on");
+        assertTrue(block.contains("preferred_language"), "unrelated stable legacy preferences remain compatible");
+    }
+
+    @Test
+    @DisplayName("candidate writes persist durability metadata in the canonical section")
+    void candidateWritePersistsDurabilityMetadata() {
+        WorkspaceFileService files = mock(WorkspaceFileService.class);
+        when(files.getFile(eq(AGENT_ID), anyString())).thenReturn(null);
+        StructuredMemoryService svc = new StructuredMemoryService(
+                files, mock(ApplicationEventPublisher.class), new MemoryProperties());
+        StructuredMemoryCandidate candidate = StructuredMemoryCandidate.explicit(
+                "user", "preferred_language", "以后默认使用中文回答");
+
+        svc.remember(AGENT_ID, candidate, "agent", null);
+
+        ArgumentCaptor<String> content = ArgumentCaptor.forClass(String.class);
+        verify(files).saveFile(eq(AGENT_ID), eq("structured/user.md"), content.capture());
+        assertTrue(content.getValue().contains("| Scope: user | Stability: durable"));
+        assertTrue(content.getValue().contains("| Evidence: 1 | Expires: never | Explicit: true"));
+    }
+
+    @Test
     @DisplayName("prefetch surfaces the project codename for a Chinese question about it")
     void prefetchSurfacesCodename() {
         StructuredMemoryService svc = newService(
@@ -200,6 +231,29 @@ class StructuredMemoryPrefetchTest {
                 "both entries should carry the preserved prior date");
         assertFalse(written.contains(LocalDate.now().toString()),
                 "consolidation must not blanket-stamp entries with today's date");
+    }
+
+    @Test
+    @DisplayName("consolidation preserves durability metadata for surviving keys")
+    void replaceTypeEntriesPreservesDurabilityMetadata() {
+        WorkspaceFileService files = mock(WorkspaceFileService.class);
+        when(files.getFile(eq(AGENT_ID), anyString())).thenReturn(null);
+        when(files.getFile(AGENT_ID, "structured/user.md")).thenReturn(fileWith("""
+                ## preferred_language
+                以后默认使用中文回答。
+                > Source: auto-summary | Updated: 2026-09-01 | Scope: user | Stability: durable | Confidence: 0.95 | Evidence: 1 | Expires: never | Explicit: true
+                """));
+        StructuredMemoryService svc = new StructuredMemoryService(
+                files, mock(ApplicationEventPublisher.class), new MemoryProperties());
+
+        LinkedHashMap<String, String> entries = new LinkedHashMap<>();
+        entries.put("preferred_language", "默认使用中文回答。");
+        svc.replaceTypeEntries(AGENT_ID, "user", null, entries, "consolidation");
+
+        ArgumentCaptor<String> content = ArgumentCaptor.forClass(String.class);
+        verify(files).saveFile(eq(AGENT_ID), eq("structured/user.md"), content.capture());
+        assertTrue(content.getValue().contains("| Scope: user | Stability: durable"));
+        assertTrue(content.getValue().contains("| Evidence: 1 | Expires: never | Explicit: true"));
     }
 
     @Test

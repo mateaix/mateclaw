@@ -160,8 +160,14 @@ public final class GraphEventPublisher {
 
     public static GraphEvent toolApprovalRequested(String pendingId, String toolName,
                                                     String arguments, String reason) {
+        return toolApprovalRequested(null, pendingId, toolName, arguments, reason);
+    }
+
+    public static GraphEvent toolApprovalRequested(String toolCallId, String pendingId, String toolName,
+                                                    String arguments, String reason) {
         long ts = System.currentTimeMillis();
         return new GraphEvent(EVENT_TOOL_APPROVAL_REQUESTED, Map.of(
+                "toolCallId", toolCallId != null ? toolCallId : "",
                 "pendingId", pendingId,
                 "toolName", toolName != null ? toolName : "",
                 "arguments", arguments != null ? arguments : "",
@@ -177,8 +183,16 @@ public final class GraphEventPublisher {
                                                     String arguments, String reason,
                                                     String summary, String maxSeverity,
                                                     List<Map<String, Object>> findings) {
+        return toolApprovalRequested(null, pendingId, toolName, arguments, reason, summary, maxSeverity, findings);
+    }
+
+    public static GraphEvent toolApprovalRequested(String toolCallId, String pendingId, String toolName,
+                                                    String arguments, String reason,
+                                                    String summary, String maxSeverity,
+                                                    List<Map<String, Object>> findings) {
         long ts = System.currentTimeMillis();
         java.util.Map<String, Object> data = new java.util.LinkedHashMap<>();
+        data.put("toolCallId", toolCallId != null ? toolCallId : "");
         data.put("pendingId", pendingId);
         data.put("toolName", toolName != null ? toolName : "");
         data.put("arguments", arguments != null ? arguments : "");

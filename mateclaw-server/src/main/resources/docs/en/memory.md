@@ -233,12 +233,12 @@ After a turn completes, the system handles extraction on a background thread. A 
 - Message count meets the minimum (default 4)
 - The last user message is long enough (default at least 10 chars)
 
-All pass — extraction begins.
+An explicit request such as “remember this” bypasses the message-count, message-length, and cooldown gates. A failed or intentionally skipped analysis does not start the cooldown, so a later eligible request can retry immediately.
 
 ### Concurrency control
 
-- **Cooldown** — same agent won't extract twice within 5 minutes (default)
-- **Per-agent lock** — if an extraction is already running for this agent, the new request is skipped
+- **Cooldown** — the same agent/owner bucket won't extract twice within 5 minutes (default)
+- **Per-agent/owner lock** — if extraction is already running for this bucket, the new request is skipped
 
 ### What the LLM actually does
 
@@ -586,7 +586,7 @@ Mem0 integration is an **optional community contribution** — it is NOT part of
 | `syncTurn(agentId, conversationId, userMessage, assistantReply, ownerKey)` | When `syncEnabled=true` and `ownerKey` is non-blank, **asynchronously** pushes this turn's user/assistant messages to `POST {baseUrl}/memories/` under `user_id = ownerKey` — the same identifier recall queries by. Failures are logged only, never block the response |
 | `getToolBeans` | Empty list — v1 exposes no agent-callable tools |
 
-**Fault isolation**: any exception in recall or sync is swallowed and logged by the plugin itself; the platform keeps going with the other providers. Mem0 being down does not affect MateClaw's local memory.
+**Fault isolation**: sync failures are logged inside the plugin. Recall failures propagate to the platform's provider boundary, where they are isolated from other providers and counted by the circuit breaker. Each provider has a deadline, the full recall chain has a total latency budget, and repeatedly failing providers are temporarily skipped. Mem0 being down therefore does not block MateClaw's local memory.
 
 ### Per-owner isolation mapping
 
@@ -616,8 +616,11 @@ Both `prefetch` and `syncTurn` receive `ownerKey` from the platform, so writes a
 | `syncEnabled` | boolean | no | `true` | Whether syncTurn should push each turn to `/memories/` |
 | `maxResults` | integer | no | `5` | Cap on memories returned per recall |
 | `timeoutMs` | integer | no | `3000` | HTTP timeout in milliseconds, shared by recall and sync |
+| `syncQueueCapacity` | integer | no | `256` | Maximum pending asynchronous sync turns; new writes are dropped with a warning when the queue is full |
 
 Config is read once at plugin load — changes require a plugin reload to take effect.
+
+The platform-level recall guards are configured under `mate.memory`: `provider-prefetch-timeout-ms` (default `1500`), `provider-prefetch-total-budget-ms` (default `2500`), `provider-circuit-failure-threshold` (default `3`), and `provider-circuit-cooldown-seconds` (default `30`). Set either timeout/budget to `0` only when an unlimited wait is explicitly desired.
 
 ### Known limitations (v1)
 

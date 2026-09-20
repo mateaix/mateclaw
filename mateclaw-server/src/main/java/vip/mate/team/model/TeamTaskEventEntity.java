@@ -27,6 +27,7 @@ public class TeamTaskEventEntity {
     public static final String DELIVERABLE = "deliverable";
     public static final String COMPLETED = "completed";
     public static final String IN_REVIEW = "in_review";
+    public static final String AWAITING_APPROVAL = "awaiting_approval";
     public static final String FAILED = "failed";
     public static final String CANCELLED = "cancelled";
     public static final String APPROVED = "approved";

@@ -16,6 +16,8 @@ public class CronJobRunEntity {
     /** scheduled / manual */
     private String triggerType;
     private LocalDateTime startedAt;
+    /** Last durable liveness signal while the run is executing. */
+    private LocalDateTime heartbeatAt;
     private LocalDateTime finishedAt;
     private String errorMessage;
     private Integer tokenUsage;

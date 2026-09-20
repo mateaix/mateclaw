@@ -46,20 +46,31 @@ class MemorySummarizationStructuredRoutingTest {
     }
 
     @Test
-    @DisplayName("valid typed entries are routed to structured memory")
+    @DisplayName("only durable typed entries are routed to structured memory")
     void routesValidEntries() throws Exception {
         StructuredMemoryService structured = mock(StructuredMemoryService.class);
         MemorySummarizationService svc = newService(structured);
 
         invokeApply(svc, 1000000001L, "owner-1", """
                 [
-                  {"type": "project", "key": "project_codename", "content": "项目代号：云梯计划"},
-                  {"type": "user", "key": "preferred_output_format", "content": "偏好表格输出"}
+                  {"type":"project","key":"project_codename","content":"项目代号：云梯计划",
+                   "scope":"project","stability":"ongoing","confidence":0.9,"evidence_count":1,
+                   "expires_at":null,"explicitly_persistent":false},
+                  {"type":"user","key":"preferred_output_format","content":"以后默认使用表格输出",
+                   "scope":"user","stability":"durable","confidence":0.95,"evidence_count":1,
+                   "expires_at":null,"explicitly_persistent":true},
+                  {"type":"user","key":"preferred_word_count","content":"本次回答至少 3000 字",
+                   "scope":"turn","stability":"transient","confidence":0.95,"evidence_count":1,
+                   "expires_at":null,"explicitly_persistent":false}
                 ]
                 """);
 
-        verify(structured).remember(1000000001L, "project", "project_codename", "项目代号：云梯计划", "auto-summary", "owner-1");
-        verify(structured).remember(1000000001L, "user", "preferred_output_format", "偏好表格输出", "auto-summary", "owner-1");
+        verify(structured).remember(eq(1000000001L), argThat(candidate ->
+                candidate.type().equals("project") && candidate.key().equals("project_codename")),
+                eq("auto-summary"), eq("owner-1"));
+        verify(structured).remember(eq(1000000001L), argThat(candidate ->
+                candidate.type().equals("user") && candidate.key().equals("preferred_output_format")),
+                eq("auto-summary"), eq("owner-1"));
         verifyNoMoreInteractions(structured);
     }
 
@@ -71,15 +82,16 @@ class MemorySummarizationStructuredRoutingTest {
 
         invokeApply(svc, 1000000001L, "owner-1", """
                 [
-                  {"type": "secret", "key": "k", "content": "bad type"},
-                  {"type": "project", "key": "", "content": "missing key"},
-                  {"type": "project", "key": "ok_key", "content": ""},
-                  {"type": "project", "key": "good", "content": "kept"}
+                  {"type":"secret","key":"k","content":"bad type","scope":"global","stability":"durable","confidence":1,"evidence_count":1,"explicitly_persistent":true},
+                  {"type":"project","key":"","content":"missing key","scope":"project","stability":"ongoing","confidence":1,"evidence_count":1,"explicitly_persistent":false},
+                  {"type":"project","key":"ok_key","content":"","scope":"project","stability":"ongoing","confidence":1,"evidence_count":1,"explicitly_persistent":false},
+                  {"type":"project","key":"good","content":"kept","scope":"project","stability":"ongoing","confidence":0.9,"evidence_count":1,"expires_at":null,"explicitly_persistent":false}
                 ]
                 """);
 
         // Only the last, fully-valid entry is written.
-        verify(structured).remember(1000000001L, "project", "good", "kept", "auto-summary", "owner-1");
+        verify(structured).remember(eq(1000000001L), argThat(candidate -> candidate.key().equals("good")),
+                eq("auto-summary"), eq("owner-1"));
         verifyNoMoreInteractions(structured);
     }
 

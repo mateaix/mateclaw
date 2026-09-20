@@ -3,6 +3,7 @@ import { computed, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { VideoPause } from '@element-plus/icons-vue'
 import type { TeamRun, TeamRunTask } from '@/api'
+import ExecutionEvidenceList from '@/components/execution/ExecutionEvidenceList.vue'
 import TeamRunTaskEvidence from './TeamRunTaskEvidence.vue'
 import TeamRunOutcome from './TeamRunOutcome.vue'
 import TeamRunDeliverables from './TeamRunDeliverables.vue'
@@ -33,17 +34,34 @@ const emit = defineEmits<{
   'view-task': [taskId: string]
   'retry-task': [taskId: string]
   'approve-task': [taskId: string]
+  'approve-tool': [taskId: string]
+  'deny-tool': [taskId: string]
+  'feedback-task': [taskId: string, message: string]
 }>()
 
 const { t } = useI18n()
 const { renderMarkdown } = useMarkdownRenderer()
 const localTaskId = ref<string | null>(props.selectedTaskId)
 const selectedTaskSection = ref<HTMLElement | null>(null)
+const workerFeedback = ref('')
 watch(() => props.selectedTaskId, value => { localTaskId.value = value })
+watch(localTaskId, () => { workerFeedback.value = '' })
 const selectedTask = computed(() => props.run.tasks.find(task => task.id === localTaskId.value) ?? null)
 const terminal = computed(() => ['completed', 'partial', 'failed', 'cancelled'].includes(props.run.status))
 const renderedTaskDescription = computed(() => renderMarkdown(selectedTask.value?.description || ''))
 const renderedTaskResult = computed(() => renderMarkdown(selectedTask.value?.result || ''))
+const canSendFeedback = computed(() => props.managementActions
+  && Boolean(selectedTask.value?.conversationId)
+  && !['pending', 'blocked', 'in_progress', 'awaiting_approval', 'cancelled'].includes(selectedTask.value?.status ?? ''))
+const feedbackPending = computed(() => selectedTask.value
+  ? props.pendingActions.includes(`${selectedTask.value.id}:feedback`)
+  : false)
+
+function submitFeedback() {
+  const message = workerFeedback.value.trim()
+  if (!selectedTask.value || !message || feedbackPending.value) return
+  emit('feedback-task', selectedTask.value.id, message)
+}
 
 function selectTask(task: TeamRunTask) {
   localTaskId.value = task.id
@@ -73,6 +91,8 @@ async function viewAttentionTask(taskId: string) {
       @view-task="viewAttentionTask"
       @retry-task="emit('retry-task', $event)"
       @approve-task="emit('approve-task', $event)"
+      @approve-tool="emit('approve-tool', $event)"
+      @deny-tool="emit('deny-tool', $event)"
     />
     <TeamRunOutcome :run="run" />
     <TeamRunDeliverables :run="run" />
@@ -120,6 +140,26 @@ async function viewAttentionTask(taskId: string) {
           <dd v-else class="run-detail__result">{{ t('teamRuns.noResult') }}</dd>
         </div>
       </dl>
+      <ExecutionEvidenceList v-if="selectedTask.conversationId" :conversation-id="selectedTask.conversationId" :team-task-id="selectedTask.id" />
+      <div v-if="canSendFeedback" class="run-detail__feedback">
+        <label :for="`worker-feedback-${selectedTask.id}`">{{ t('teamRuns.workerFeedback') }}</label>
+        <textarea
+          :id="`worker-feedback-${selectedTask.id}`"
+          v-model="workerFeedback"
+          data-team-run-worker-feedback
+          maxlength="4000"
+          rows="3"
+          :placeholder="t('teamRuns.workerFeedbackPlaceholder')"
+          :disabled="feedbackPending"
+        />
+        <button
+          type="button"
+          data-team-run-worker-feedback-submit
+          :disabled="!workerFeedback.trim() || feedbackPending"
+          :aria-busy="feedbackPending"
+          @click="submitFeedback"
+        >{{ t('teamRuns.sendFeedback') }}</button>
+      </div>
     </section>
 
     <footer v-if="canCancel && !terminal" class="run-detail__actions">
@@ -152,6 +192,11 @@ async function viewAttentionTask(taskId: string) {
 .run-detail__link-button { padding: 0; border: 0; background: transparent; color: #16795a; cursor: pointer; font-size: 12px; }
 .run-detail__link-button:focus-visible, .run-detail__cancel:focus-visible, .run-detail__task-detail:focus-visible { outline: 2px solid #1b8f68; outline-offset: -2px; }
 .run-detail__result { white-space: pre-wrap; }
+.run-detail__feedback { display: grid; gap: 7px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--mc-border-light); }
+.run-detail__feedback label { color: var(--mc-text-secondary); font-size: 12px; font-weight: 600; }
+.run-detail__feedback textarea { box-sizing: border-box; width: 100%; padding: 8px; border: 1px solid var(--mc-border); border-radius: 6px; resize: vertical; color: var(--mc-text-primary); font: inherit; }
+.run-detail__feedback button { justify-self: end; min-height: 30px; padding: 5px 10px; border: 1px solid #16835b; border-radius: 6px; background: transparent; color: #126c4d; cursor: pointer; }
+.run-detail__feedback button:disabled { cursor: wait; opacity: .55; }
 .run-detail__actions { display: flex; justify-content: flex-end; padding: 10px 16px 14px; border-top: 1px solid var(--mc-border-light, #e7ebef); }
 .run-detail__cancel { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 5px 10px; border: 1px solid #e6b7b7; border-radius: 6px; background: transparent; color: #b53535; cursor: pointer; font-size: 12px; letter-spacing: 0; }
 .run-detail__cancel:hover { background: rgba(193, 61, 61, 0.06); }

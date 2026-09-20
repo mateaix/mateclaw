@@ -73,8 +73,10 @@ public class FactMemoryProvider implements MemoryProvider {
     @Override
     public void onMemoryWrite(Long agentId, String target, String action, String content) {
         if (!properties.getFact().isProjectionEnabled()) return;
-        // Incremental rebuild for the changed file
-        projectionBuilder.rebuildOne(agentId, target, content);
+        // The legacy callback does not carry ownerKey/scope. Incrementally
+        // projecting its content would silently widen a PERSONAL row to TEAM,
+        // so re-read canonical rows through the owner-aware full rebuild.
+        projectionBuilder.rebuildAll(agentId);
     }
 
     @Override

@@ -82,6 +82,15 @@ public class GoalController {
         return R.ok(goalService.toResponse(goalService.findActiveByConversation(conversationId)));
     }
 
+    @Operation(summary = "Read this conversation's goal history, including paused and terminal goals")
+    @GetMapping("/by-conversation/{conversationId}/history")
+    public R<List<GoalResponse>> history(@PathVariable String conversationId,
+                                        @RequestParam(required = false) Long beforeId,
+                                        @RequestParam(defaultValue = "20") int limit, Authentication auth) {
+        requireOwner(conversationId, currentUsername(auth));
+        return R.ok(goalService.toResponseList(goalService.listByConversation(conversationId, beforeId, limit)));
+    }
+
     @Operation(summary = "Get goal detail by id")
     @GetMapping("/{id}")
     public R<GoalResponse> get(@PathVariable Long id, Authentication auth) {

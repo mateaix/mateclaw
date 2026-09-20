@@ -97,6 +97,8 @@ export interface UseChatOptions {
    * The caller should perform history reconcile / persistence in this callback.
    */
   onStreamEnd?: (meta: StreamEndMeta) => void
+  /** A legacy queued message was saved as text but needs a fresh request. */
+  onQueuedInputSkipped?: (reason: string) => void
 }
 
 /** Metadata emitted when a stream ends */
@@ -219,7 +221,7 @@ export function buildChatStreamRequestBody(content: string, options: SendMessage
 }
 
 export function useChat(options: UseChatOptions): UseChatReturn {
-  const { baseUrl, token, onStreamEnd } = options
+  const { baseUrl, token, onStreamEnd, onQueuedInputSkipped } = options
   const thinkingLevelRef = options.thinkingLevel
 
   /**
@@ -824,13 +826,18 @@ export function useChat(options: UseChatOptions): UseChatReturn {
       currentAssistantId.value = null
     }
 
-    streamPhase.value = data.status === 'awaiting_approval' ? 'awaiting_approval'
+    streamPhase.value = errorFired ? 'idle'
+      : data.status === 'awaiting_approval' ? 'awaiting_approval'
       : data.status === 'stopped' ? 'stopped' : 'completed'
     if (data.status !== 'awaiting_approval') {
       phaseInfo.value = null
       compactStatus.value = null
       lifecycleStage.value = null
-      expirePendingApprovals(data.status === 'stopped' ? 'stopped' : 'completed')
+      // An error may be followed by a protocol-level done event. Its status
+      // does not resolve an approval or turn the failed request into success.
+      if (!errorFired) {
+        expirePendingApprovals(data.status === 'stopped' ? 'stopped' : 'completed')
+      }
     }
 
     // Safety cleanup for queue state (no-op if queued_input_started already handled it)
@@ -846,13 +853,15 @@ export function useChat(options: UseChatOptions): UseChatReturn {
       : data.status === 'interrupted' ? 'interrupted'
       : data.status === 'awaiting_approval' ? 'awaiting_approval'
       : 'completed'
-    onStreamEnd?.({
-      conversationId: data.conversationId || streamConversationId,
-      reason,
-      assistantMessageId: data.assistantMessageId,
-      persisted: data.persisted,
-      messageCount: data.messageCount,
-    })
+    if (!errorFired) {
+      onStreamEnd?.({
+        conversationId: data.conversationId || streamConversationId,
+        reason,
+        assistantMessageId: data.assistantMessageId,
+        persisted: data.persisted,
+        messageCount: data.messageCount,
+      })
+    }
 
     // Re-attach SSE if any generative task is still in flight, so the eventual
     // async_task_completed event reaches us live (otherwise the user has to
@@ -861,7 +870,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     const reconnectableStatus = !data.status
       || data.status === 'completed'
       || data.status === 'idle'
-    if (reconnectableStatus
+    if (!errorFired && reconnectableStatus
         && !reconnectingForAsyncTasks
         && pendingAsyncTaskIds.size > 0
         && streamConversationId) {
@@ -918,7 +927,8 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     lifecycleStage.value = null
     // Clear queue on error to avoid stale state
     messageQueue.clear()
-    expirePendingApprovals('failed')
+    // The approval may still be pending after a rejected request. The view
+    // reconciles it against the server's pending list in onStreamEnd.
 
     if (errorFired) return
     errorFired = true
@@ -1837,6 +1847,19 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     lifecycleStage.value = { stage: 'connecting', since: Date.now() }
   })
 
+  stream.on('queued_input_skipped', (data) => {
+    if (isStaleEvent(data)) return
+    // The server saved this legacy queued input as user text without running
+    // it. Remove only that queue entry; later queued inputs may still run.
+    const queued = messageQueue.dequeue()
+    const content = data.message || queued?.content || ''
+    if (content) {
+      createUserMessage(content, queued?.contentParts, data.conversationId || streamConversationId)
+    }
+    streamPhase.value = messageQueue.hasQueued.value ? 'queued' : 'idle'
+    onQueuedInputSkipped?.(data.reason || '')
+  })
+
   // ===== Async task completion events (video / image / music generation) =====
   stream.on('async_task_completed', (data) => {
     if (isStaleEvent(data)) return
@@ -2146,6 +2169,36 @@ export function useChat(options: UseChatOptions): UseChatReturn {
   // backend to return a 'done' event. This ensures onStreamEnd fires and message/conversation
   // state is updated correctly.
   // A 3-second fallback timeout guards against 'done' never arriving due to network issues.
+  const finalizeStoppedLocally = (convId: string, assistantId: string | null) => {
+    // A fallback from an older turn must never tear down a newer conversation.
+    if (streamConversationId !== convId && streamConversationId) return
+
+    stream.disconnect()
+
+    if (currentAssistantId.value === assistantId && assistantId) {
+      const stoppedAt = Date.now()
+      currentSegments.value.forEach((segment: MessageSegment) => {
+        if (segment.status === 'running') {
+          segment.status = 'completed'
+          segment.endTimestamp ??= stoppedAt
+        }
+      })
+      setMessageStatus(assistantId, 'stopped')
+      // Persist the frozen segment snapshot before dropping the active id;
+      // otherwise thinking/tool/delegation rows keep animating forever.
+      flushSegmentsToMessage(true)
+      currentAssistantId.value = null
+    }
+
+    streamPhase.value = 'stopped'
+    phaseInfo.value = null
+    compactStatus.value = null
+    lifecycleStage.value = null
+    messageQueue.clear()
+    expirePendingApprovals('stopped')
+    onStreamEnd?.({ conversationId: convId, reason: 'stopped' })
+  }
+
   const stopGeneration = async () => {
     // Freeze identifiers and install the fallback timer before any await, so a concurrent
     // resetForNewConversation cannot clear context out from under us.
@@ -2178,18 +2231,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     stopFallbackTimer = setTimeout(() => {
       stopFallbackTimer = null
       console.warn('[useChat] Stop fallback: done event not received within 3s, force cleanup')
-      // Only disconnect if the stream still belongs to the old conversation — avoids killing a new session's stream
-      if (streamConversationId === convId || !streamConversationId) {
-        stream.disconnect()
-      }
-      if (currentAssistantId.value === assistantId && assistantId) {
-        setMessageStatus(assistantId, 'stopped')
-        currentAssistantId.value = null
-      }
-      onStreamEnd?.({
-        conversationId: convId,
-        reason: 'stopped',
-      })
+      finalizeStoppedLocally(convId, assistantId)
     }, 3000)
 
     // Cancel the fallback timer when the done/error event arrives
@@ -2215,12 +2257,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
           clearTimeout(stopFallbackTimer)
           stopFallbackTimer = setTimeout(() => {
             stopFallbackTimer = null
-            if (streamConversationId === convId || !streamConversationId) stream.disconnect()
-            if (currentAssistantId.value === assistantId && assistantId) {
-              setMessageStatus(assistantId, 'stopped')
-              currentAssistantId.value = null
-            }
-            onStreamEnd?.({ conversationId: convId, reason: 'stopped' })
+            finalizeStoppedLocally(convId, assistantId)
           }, 250)
         }
       })

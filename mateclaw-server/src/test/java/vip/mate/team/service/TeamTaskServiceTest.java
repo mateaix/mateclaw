@@ -390,6 +390,157 @@ class TeamTaskServiceTest {
         verify(projectionScheduler).scheduleTask(5L);
     }
 
+    @Test
+    @DisplayName("tool approval parks an in-progress task without releasing dependents")
+    void toolApprovalParksTask() {
+        TeamTaskEntity running = runTask(5L, TeamTaskStatus.IN_PROGRESS);
+        running.setMetadata("{\"deliverableRequired\":true}");
+        when(taskMapper.selectById(5L)).thenReturn(running);
+        when(taskMapper.update(isNull(), any())).thenReturn(1);
+
+        assertTrue(service.parkForToolApproval(5L, "pending-42", "shell command requires approval"));
+
+        ArgumentCaptor<LambdaUpdateWrapper<TeamTaskEntity>> captor =
+                ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(taskMapper).update(isNull(), captor.capture());
+        var values = captor.getValue().getParamNameValuePairs().values();
+        assertTrue(values.contains("awaiting_approval"));
+        assertTrue(values.stream().anyMatch(value -> String.valueOf(value).contains("pending-42")));
+        assertTrue(values.stream().anyMatch(value -> String.valueOf(value).contains("deliverableRequired")),
+                "parking must merge approval context into existing metadata");
+        verify(taskMapper, never()).selectList(any());
+        verify(projectionScheduler).scheduleTask(5L);
+    }
+
+    @Test
+    @DisplayName("tool approval resume requires the exact pending id and records the replay lease")
+    void toolApprovalResumeUsesExactPendingId() {
+        TeamTaskEntity waiting = runTask(5L, TeamTaskStatus.AWAITING_APPROVAL);
+        waiting.setAssigneeAgentId(MEMBER_ID);
+        waiting.setMetadata("{\"deliverableRequired\":true,\"toolApproval\":{\"pendingId\":\"pending-42\"}}");
+        when(taskMapper.selectById(5L)).thenReturn(waiting);
+        when(taskMapper.update(isNull(), any())).thenReturn(1);
+
+        assertTrue(service.resumeAfterToolApproval(5L, "pending-42"));
+
+        ArgumentCaptor<LambdaUpdateWrapper<TeamTaskEntity>> captor =
+                ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(taskMapper).update(isNull(), captor.capture());
+        var values = captor.getValue().getParamNameValuePairs().values();
+        assertTrue(values.contains(TeamTaskStatus.IN_PROGRESS));
+        assertTrue(values.stream().anyMatch(value -> String.valueOf(value).contains("deliverableRequired")));
+        assertTrue(values.stream().anyMatch(value -> String.valueOf(value).contains("replayInProgress")));
+        verify(projectionScheduler).scheduleTask(5L);
+    }
+
+    @Test
+    @DisplayName("a stale pending id cannot resume a worker task")
+    void staleToolApprovalCannotResumeTask() {
+        TeamTaskEntity waiting = runTask(5L, TeamTaskStatus.AWAITING_APPROVAL);
+        waiting.setMetadata("{\"toolApproval\":{\"pendingId\":\"pending-new\"}}");
+        when(taskMapper.selectById(5L)).thenReturn(waiting);
+
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> service.resumeAfterToolApproval(5L, "pending-old"));
+
+        assertTrue(error.getMessage().contains("no longer current"));
+        verify(taskMapper, never()).update(isNull(), any());
+    }
+
+    @Test
+    @DisplayName("a replay result is staged under the exact approval before it is consumed")
+    void stagesToolReplayResultForCrashSafeFinalization() {
+        TeamTaskEntity running = runTask(5L, TeamTaskStatus.IN_PROGRESS);
+        running.setMetadata("{\"deliverableRequired\":true,"
+                + "\"toolApproval\":{\"pendingId\":\"pending-42\"}}");
+        when(taskMapper.selectById(5L)).thenReturn(running);
+        when(taskMapper.update(isNull(), any())).thenReturn(1);
+
+        assertTrue(service.stageToolReplayResult(5L, "pending-42", "tool completed"));
+
+        ArgumentCaptor<LambdaUpdateWrapper<TeamTaskEntity>> captor =
+                ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(taskMapper).update(isNull(), captor.capture());
+        var values = captor.getValue().getParamNameValuePairs().values();
+        assertTrue(values.contains(TeamTaskStatus.AWAITING_APPROVAL));
+        assertTrue(values.stream().anyMatch(value -> String.valueOf(value).contains("pending-42")));
+        assertTrue(values.stream().anyMatch(value -> String.valueOf(value).contains("tool completed")));
+        assertTrue(values.stream().anyMatch(value -> String.valueOf(value).contains("deliverableRequired")));
+        verify(projectionScheduler).scheduleTask(5L);
+    }
+
+    @Test
+    @DisplayName("a claimed replay can be stopped after failure but not after a result is staged")
+    void abortClaimedReplayHasExplicitGuard() {
+        TeamTaskEntity waiting = runTask(5L, TeamTaskStatus.AWAITING_APPROVAL);
+        waiting.setMetadata("{\"toolApproval\":{\"pendingId\":\"pending-42\"}}");
+        when(taskMapper.selectById(5L)).thenReturn(waiting);
+        when(taskMapper.update(isNull(), any())).thenReturn(1);
+
+        assertTrue(service.abortClaimedToolReplay(5L, "pending-42", "alice"));
+
+        waiting.setMetadata("{\"toolApproval\":{\"pendingId\":\"pending-42\","
+                + "\"replayResult\":\"done\"}}");
+        assertThrows(IllegalStateException.class,
+                () -> service.abortClaimedToolReplay(5L, "pending-42", "alice"));
+    }
+
+    @Test
+    @DisplayName("an expired replay lease becomes uncertain instead of an ordinary retryable stale task")
+    void expiredReplayLeaseRequiresManualResolution() {
+        TeamTaskEntity replay = runTask(5L, TeamTaskStatus.IN_PROGRESS);
+        replay.setMetadata("{\"toolApproval\":{\"pendingId\":\"pending-42\","
+                + "\"replayInProgress\":true}}");
+        when(taskMapper.selectList(any())).thenReturn(List.of(replay));
+        when(taskMapper.update(isNull(), any())).thenReturn(1);
+
+        service.recoverStaleTasks();
+
+        ArgumentCaptor<LambdaUpdateWrapper<TeamTaskEntity>> captor =
+                ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(taskMapper).update(isNull(), captor.capture());
+        var values = captor.getValue().getParamNameValuePairs().values();
+        assertTrue(values.contains(TeamTaskStatus.AWAITING_APPROVAL));
+        assertTrue(values.stream().anyMatch(value -> String.valueOf(value)
+                .contains("replayOutcomeUncertain")));
+        assertFalse(values.contains(TeamTaskStatus.STALE));
+    }
+
+    @Test
+    @DisplayName("a replay exception is immediately parked as outcome-uncertain")
+    void replayExceptionCannotBeAutomaticallyRetried() {
+        TeamTaskEntity replay = runTask(5L, TeamTaskStatus.IN_PROGRESS);
+        replay.setMetadata("{\"toolApproval\":{\"pendingId\":\"pending-42\","
+                + "\"replayInProgress\":true}}");
+        when(taskMapper.selectById(5L)).thenReturn(replay);
+        when(taskMapper.update(isNull(), any())).thenReturn(1);
+
+        assertTrue(service.parkToolReplayUncertain(
+                5L, "pending-42", "provider failed; outcome uncertain"));
+
+        ArgumentCaptor<LambdaUpdateWrapper<TeamTaskEntity>> captor =
+                ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(taskMapper).update(isNull(), captor.capture());
+        var values = captor.getValue().getParamNameValuePairs().values();
+        assertTrue(values.contains(TeamTaskStatus.AWAITING_APPROVAL));
+        assertTrue(values.stream().anyMatch(value -> String.valueOf(value)
+                .contains("replayOutcomeUncertain")));
+    }
+
+    @Test
+    @DisplayName("feedback reopens a settled worker task but not an active or approval-blocked task")
+    void feedbackResumeHasExplicitStateGuard() {
+        TeamTaskEntity completed = runTask(5L, TeamTaskStatus.COMPLETED);
+        completed.setAssigneeAgentId(MEMBER_ID);
+        when(taskMapper.selectById(5L)).thenReturn(completed);
+        when(taskMapper.update(isNull(), any())).thenReturn(1);
+
+        assertTrue(service.resumeForWorkerFeedback(5L));
+
+        completed.setStatus(TeamTaskStatus.AWAITING_APPROVAL);
+        assertThrows(IllegalStateException.class, () -> service.resumeForWorkerFeedback(5L));
+    }
+
     // ==================== blocker comment ====================
 
     @Test

@@ -18,6 +18,7 @@ import org.springframework.stereotype.Component;
 import vip.mate.agent.graph.StateGraphReActAgent;
 import vip.mate.agent.graph.NodeStreamingChatHelper;
 import vip.mate.agent.graph.executor.ToolExecutionExecutor;
+import vip.mate.execution.evidence.service.ExecutionEvidenceRecorder;
 import vip.mate.agent.graph.edge.ObservationDispatcher;
 import vip.mate.agent.graph.edge.ReasoningDispatcher;
 import vip.mate.agent.graph.lifecycle.ReActLifecycleListener;
@@ -102,6 +103,13 @@ public class AgentGraphBuilder {
     @org.springframework.beans.factory.annotation.Value(
             "${mateclaw.skill.disclosure.load-skill-tool.enabled:true}")
     private boolean loadSkillToolEnabled;
+
+    private ExecutionEvidenceRecorder executionEvidenceRecorder;
+
+    @Autowired
+    public void setExecutionEvidenceRecorder(ExecutionEvidenceRecorder recorder) {
+        this.executionEvidenceRecorder = recorder;
+    }
 
     /** Escape hatch: when false, the final answer is sent verbatim without Markdown normalization. */
     @org.springframework.beans.factory.annotation.Value(
@@ -675,6 +683,7 @@ public class AgentGraphBuilder {
             executor.setSkillRuntimeService(skillRuntimeService);
             executor.setUsageRecencyTracker(toolUsageRecencyTracker);
             executor.setProgressContext(progressContext);
+            executor.setExecutionEvidenceRecorder(executionEvidenceRecorder);
             // Optional: route child-agent denied-tool audit events through
             // the audit pipeline. Null when audit is not wired (legacy / test).
             if (auditEventService != null) {
@@ -998,6 +1007,7 @@ public class AgentGraphBuilder {
             executor.setSkillRuntimeService(skillRuntimeService);
             executor.setUsageRecencyTracker(toolUsageRecencyTracker);
             executor.setProgressContext(progressContext);
+            executor.setExecutionEvidenceRecorder(executionEvidenceRecorder);
             // Optional: route child-agent denied-tool audit events through
             // the audit pipeline. Null when audit is not wired (legacy / test).
             if (auditEventService != null) {

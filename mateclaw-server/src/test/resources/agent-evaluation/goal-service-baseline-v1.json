@@ -1,0 +1,178 @@
+{
+  "schemaVersion" : 1,
+  "suiteId" : "goal-service-boundaries-v1",
+  "suiteSha256" : "ca38905298a2b8cf1379b14f04b4a4e52b759504d8aa2314c52e6a37eb3cdaa6",
+  "revisionLabel" : "b166793d1+cycle015-working",
+  "productionClassSha256" : {
+    "vip.mate.goal.service.GoalServiceImpl" : "7151a5e4a8918f16f8e17d9c9fa478086d15b24a1d705cb87811505be40c5387",
+    "vip.mate.goal.model.GoalCriteriaCodec" : "6963dbb3a89736cc0e75ebd40d68d3df7b6537d2e35a946e39f1dad7a9345d7b",
+    "vip.mate.goal.model.GoalEntity" : "0ba945500694f12bce2ac302927e8d468b303a36f96c78be2a07143539a07163",
+    "vip.mate.goal.model.GoalEvaluationResult" : "bc150a255e8503a8760b5ff323562da4c2f93ba11c9ec17df65334a18f725d87"
+  },
+  "databaseProduct" : "H2",
+  "latestMigration" : "193",
+  "mockedBoundaries" : [ "MemoryManager" ],
+  "executionMode" : "offline_h2_goal_service_scenarios",
+  "onlineModelCalls" : 0,
+  "agentTaskSuccessRate" : "not_measured",
+  "onlineCost" : "not_measured",
+  "matchedCases" : 6,
+  "mismatchedCases" : 0,
+  "cases" : [ {
+    "id" : "current-revision-completion",
+    "task" : "current revision completion",
+    "source" : "cycles 004/006/010/013 real service boundaries",
+    "expected" : {
+      "status" : "completed",
+      "score" : 1.0,
+      "criteriaCount" : 1,
+      "passedCount" : 1,
+      "firstCriterionText" : "report",
+      "evaluationRevision" : 1,
+      "recordedEvalCallsUsed" : 1,
+      "completionCode" : 200
+    },
+    "actual" : {
+      "status" : "completed",
+      "score" : 1.0,
+      "criteriaCount" : 1,
+      "passedCount" : 1,
+      "firstCriterionText" : "report",
+      "evaluationRevision" : 1,
+      "recordedEvalCallsUsed" : 1,
+      "completionCode" : 200
+    },
+    "matched" : true,
+    "error" : null
+  }, {
+    "id" : "append-before-verdict",
+    "task" : "append before verdict",
+    "source" : "cycles 004/006/010/013 real service boundaries",
+    "expected" : {
+      "status" : "active",
+      "score" : 0.5,
+      "criteriaCount" : 2,
+      "passedCount" : 1,
+      "firstCriterionText" : "report",
+      "evaluationRevision" : 0,
+      "recordedEvalCallsUsed" : 1,
+      "completionCode" : 409
+    },
+    "actual" : {
+      "status" : "active",
+      "score" : 0.5,
+      "criteriaCount" : 2,
+      "passedCount" : 1,
+      "firstCriterionText" : "report",
+      "evaluationRevision" : 0,
+      "recordedEvalCallsUsed" : 1,
+      "completionCode" : 409
+    },
+    "matched" : true,
+    "error" : null
+  }, {
+    "id" : "pause-before-verdict",
+    "task" : "pause before verdict",
+    "source" : "cycles 004/006/010/013 real service boundaries",
+    "expected" : {
+      "status" : "paused",
+      "score" : 0.0,
+      "criteriaCount" : 1,
+      "passedCount" : 0,
+      "firstCriterionText" : "report",
+      "evaluationRevision" : 0,
+      "recordedEvalCallsUsed" : 2,
+      "completionCode" : 409
+    },
+    "actual" : {
+      "status" : "paused",
+      "score" : 0.0,
+      "criteriaCount" : 1,
+      "passedCount" : 0,
+      "firstCriterionText" : "report",
+      "evaluationRevision" : 0,
+      "recordedEvalCallsUsed" : 2,
+      "completionCode" : 409
+    },
+    "matched" : true,
+    "error" : null
+  }, {
+    "id" : "append-before-bootstrap",
+    "task" : "append before bootstrap",
+    "source" : "cycles 004/006/010/013 real service boundaries",
+    "expected" : {
+      "status" : "active",
+      "score" : 0.0,
+      "criteriaCount" : 1,
+      "passedCount" : 0,
+      "firstCriterionText" : "user appendix",
+      "evaluationRevision" : 0,
+      "recordedEvalCallsUsed" : 1,
+      "completionCode" : 0
+    },
+    "actual" : {
+      "status" : "active",
+      "score" : 0.0,
+      "criteriaCount" : 1,
+      "passedCount" : 0,
+      "firstCriterionText" : "user appendix",
+      "evaluationRevision" : 0,
+      "recordedEvalCallsUsed" : 1,
+      "completionCode" : 0
+    },
+    "matched" : true,
+    "error" : null
+  }, {
+    "id" : "replace-definition",
+    "task" : "replace definition",
+    "source" : "cycles 004/006/010/013 real service boundaries",
+    "expected" : {
+      "status" : "active",
+      "score" : 0.0,
+      "criteriaCount" : 0,
+      "passedCount" : 0,
+      "firstCriterionText" : null,
+      "evaluationRevision" : 1,
+      "recordedEvalCallsUsed" : 2,
+      "completionCode" : 409
+    },
+    "actual" : {
+      "status" : "active",
+      "score" : 0.0,
+      "criteriaCount" : 0,
+      "passedCount" : 0,
+      "firstCriterionText" : null,
+      "evaluationRevision" : 1,
+      "recordedEvalCallsUsed" : 2,
+      "completionCode" : 409
+    },
+    "matched" : true,
+    "error" : null
+  }, {
+    "id" : "aba-definition",
+    "task" : "aba definition",
+    "source" : "cycles 004/006/010/013 real service boundaries",
+    "expected" : {
+      "status" : "active",
+      "score" : 0.0,
+      "criteriaCount" : 0,
+      "passedCount" : 0,
+      "firstCriterionText" : null,
+      "evaluationRevision" : 2,
+      "recordedEvalCallsUsed" : 1,
+      "completionCode" : 0
+    },
+    "actual" : {
+      "status" : "active",
+      "score" : 0.0,
+      "criteriaCount" : 0,
+      "passedCount" : 0,
+      "firstCriterionText" : null,
+      "evaluationRevision" : 2,
+      "recordedEvalCallsUsed" : 1,
+      "completionCode" : 0
+    },
+    "matched" : true,
+    "error" : null
+  } ]
+}

@@ -280,4 +280,19 @@ class GoalFollowupServiceTest {
         assertTrue(prompt.contains("difficulty"));
         assertTrue(prompt.contains("time"));
     }
+    @Test void selectedJsonGoalRequiresCommittedCompletionEvenWithPassingChecklist() {
+        GoalEntity goal = goal(true);
+        goal.setPersistentExecution(true);
+        goal.setJsonAcceptanceRequired(true);
+        goal.setCriteria("[{\"id\":\"C1\",\"text\":\"report\",\"passed\":true,\"evidence\":\"claimed\"}]");
+        var claimed = res(1, GoalEvaluationResult.DECISION_COMPLETED);
+        var decision = svc.decide(goal, claimed, LocalDateTime.now());
+        assertEquals(Action.RETRY, decision.action());
+        assertTrue(decision.prompt().contains("getManagedGoalJsonSlots"));
+        assertTrue(decision.prompt().contains("publishManagedGoalJson"));
+        assertTrue(decision.prompt().contains("checkManagedGoalJson"));
+        goal.setStatus(GoalStatus.COMPLETED);
+        assertEquals(Action.COMPLETE, svc.decide(goal, claimed, LocalDateTime.now()).action());
+    }
+
 }

@@ -11,7 +11,7 @@ import java.util.regex.Pattern;
 /**
  * Filters conversations that should not be promoted into long-term memory.
  */
-final class MemorySummarizationGate {
+public final class MemorySummarizationGate {
 
     private static final Pattern FINISH_REASON = Pattern.compile(
             "\"(?:finishReason|finish_reason)\"\\s*:\\s*\"([^\"]+)\"");
@@ -36,14 +36,14 @@ final class MemorySummarizationGate {
         }
 
         if (isExplicitRememberRequest(latestUser)) {
-            return Decision.analyze();
+            return Decision.analyze(true);
         }
 
         if (looksLikeSourceAnalysis(latestUser)) {
             return Decision.skip("source-analysis conversations are one-off work, not long-term memory");
         }
 
-        return Decision.analyze();
+        return Decision.analyze(false);
     }
 
     private static boolean isNonDurableFinishReason(String finishReason) {
@@ -56,7 +56,7 @@ final class MemorySummarizationGate {
         };
     }
 
-    private static boolean isExplicitRememberRequest(String text) {
+    public static boolean isExplicitRememberRequest(String text) {
         String normalized = normalize(text);
         return normalized.contains("记住") || normalized.contains("remember")
                 || normalized.contains("保存到记忆") || normalized.contains("写入记忆");
@@ -122,13 +122,13 @@ final class MemorySummarizationGate {
         return text == null ? "" : text.toLowerCase(Locale.ROOT);
     }
 
-    record Decision(boolean shouldAnalyze, String reason) {
-        static Decision analyze() {
-            return new Decision(true, "eligible");
+    record Decision(boolean shouldAnalyze, boolean bypassCooldown, String reason) {
+        static Decision analyze(boolean bypassCooldown) {
+            return new Decision(true, bypassCooldown, "eligible");
         }
 
         static Decision skip(String reason) {
-            return new Decision(false, reason);
+            return new Decision(false, false, reason);
         }
     }
 }

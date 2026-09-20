@@ -4,7 +4,11 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.lang.Nullable;
 
+import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -50,7 +54,7 @@ public final class WorkspaceArtifactSurfacer {
         long totalBytes = 0L;
         try (Stream<Path> walk = Files.walk(workingDir, SCAN_DEPTH)) {
             List<Path> candidates = walk
-                    .filter(Files::isRegularFile)
+                    .filter(p -> Files.isRegularFile(p, LinkOption.NOFOLLOW_LINKS))
                     .filter(p -> !isNoise(p))
                     .filter(p -> modifiedSince(p, sinceMillis))
                     .limit(MAX_SCAN_CANDIDATES)
@@ -60,12 +64,18 @@ public final class WorkspaceArtifactSurfacer {
                     break;
                 }
                 try {
-                    long size = Files.size(p);
-                    if (size <= 0 || size > MAX_ARTIFACT_BYTES || totalBytes + size > MAX_TOTAL_ARTIFACT_BYTES) {
+                    BasicFileAttributes attrs = Files.readAttributes(p, BasicFileAttributes.class,
+                            LinkOption.NOFOLLOW_LINKS);
+                    long size = attrs.size();
+                    int budget = (int) Math.min(MAX_ARTIFACT_BYTES, MAX_TOTAL_ARTIFACT_BYTES - totalBytes);
+                    if (!attrs.isRegularFile() || size <= 0 || size > budget) {
                         continue;
                     }
-                    byte[] bytes = Files.readAllBytes(p);
-                    totalBytes += size;
+                    byte[] bytes = readArtifact(p, budget);
+                    if (bytes.length == 0) {
+                        continue;
+                    }
+                    totalBytes += bytes.length;
                     String name = p.getFileName().toString();
                     String id = cache.put(bytes, name, probeMime(p, name), ctx);
                     links.add("[" + name + "](" + cache.downloadUrl(id, ctx) + ")");
@@ -79,9 +89,28 @@ public final class WorkspaceArtifactSurfacer {
         return links;
     }
 
+    /**
+     * Bound the actual read, including files that grow after the size check.
+     * NOFOLLOW_LINKS also rejects a leaf replaced with a symlink after scanning.
+     * This is best-effort collection, not managed-scope acceptance: ancestor
+     * replacement, hard links and concurrent writers still need custody fencing.
+     */
+    static byte[] readArtifact(Path path, int budget) throws IOException {
+        if (budget < 0 || budget > MAX_ARTIFACT_BYTES) {
+            throw new IllegalArgumentException("Invalid artifact read budget");
+        }
+        try (var input = Files.newInputStream(path, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)) {
+            byte[] bytes = input.readNBytes(budget + 1);
+            if (bytes.length > budget) {
+                throw new IOException("Artifact exceeds read budget");
+            }
+            return bytes;
+        }
+    }
+
     private static boolean modifiedSince(Path p, long sinceMillis) {
         try {
-            return Files.getLastModifiedTime(p).toMillis() >= sinceMillis;
+            return Files.getLastModifiedTime(p, LinkOption.NOFOLLOW_LINKS).toMillis() >= sinceMillis;
         } catch (Exception e) {
             return false;
         }

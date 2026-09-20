@@ -134,6 +134,9 @@ public class DelegateAgentTool {
             "addGoalCriterion",
             "completeGoal",
             "getGoalStatus",
+            "getManagedGoalJsonSlots",
+            "publishManagedGoalJson",
+            "checkManagedGoalJson",
             "waitForGoalInput",
             // Employee authoring spawns persistent agents; a delegated child
             // doing so risks recursive team creation and privilege creep, so
@@ -175,6 +178,18 @@ public class DelegateAgentTool {
 
     /** Polling interval inside {@code block=true} wait. */
     private static final long TASK_OUTPUT_POLL_INTERVAL_MS = 500L;
+
+    /** Omitted async delegation timeouts are bounded instead of running forever. */
+    private static final int ASYNC_DELEGATION_DEFAULT_TIMEOUT_S = 3600;
+
+    /** Keep an accidentally huge model-supplied timeout from creating an effectively immortal task. */
+    private static final int ASYNC_DELEGATION_MAX_TIMEOUT_S = 86_400;
+
+    /** Brief grace period for graph/tool cancellation hooks to finish cleanup. */
+    private static final int ASYNC_DELEGATION_CANCEL_GRACE_S = 2;
+
+    @Value("${mateclaw.delegation.async-timeout-seconds:3600}")
+    private int asyncDelegationTimeoutSeconds;
 
     /**
      * Operator-supplied deny-list extension. Configured via
@@ -791,6 +806,8 @@ public class DelegateAgentTool {
             @ToolParam(description = "Task description with complete context information") String task,
             @ToolParam(description = "Optional short label (≤ 32 chars) for human tracking on the UI badge",
                     required = false) String label,
+            @ToolParam(description = "Optional execution budget in seconds. Default 3600, max 86400. Timeout stops the child session and persists a failed task result.",
+                    required = false) Integer timeoutSeconds,
             @Nullable ToolContext ctx) {
 
         if (agentName == null || agentName.isBlank()) {
@@ -798,6 +815,12 @@ public class DelegateAgentTool {
         }
         if (task == null || task.isBlank()) {
             return errorJson("task 不能为空");
+        }
+        int effectiveTimeoutSeconds;
+        try {
+            effectiveTimeoutSeconds = resolveAsyncTimeoutSeconds(timeoutSeconds);
+        } catch (IllegalArgumentException e) {
+            return errorJson(e.getMessage());
         }
         String safeLabel = label == null ? "" :
                 (label.length() > ASYNC_LABEL_MAX_CHARS ? label.substring(0, ASYNC_LABEL_MAX_CHARS) : label);
@@ -856,6 +879,7 @@ public class DelegateAgentTool {
             payload.put("depth", childDepth);
             payload.put("task", truncate(task, ASYNC_TASK_REQUEST_MAX_CHARS));
             payload.put("label", safeLabel);
+            payload.put("timeoutSeconds", effectiveTimeoutSeconds);
             requestJson = objectMapper.writeValueAsString(payload);
         } catch (Exception e) {
             subagentRegistry.unregister(subagentId);
@@ -875,9 +899,10 @@ public class DelegateAgentTool {
                             // Detached async child: its usage belongs to the later
                             // task_output retrieval, not the spawning turn, so do not
                             // roll it into the parent's _usage_final.
-                            ChildResult childResult = runSingleChild(0, target, task,
-                                    parentConversationId, childConversationId, parentOrigin,
-                                    rootConvAsync, subagentId, childDepth, false);
+                            ChildResult childResult = runDetachedChildWithTimeout(
+                                    target, task, parentConversationId, childConversationId,
+                                    parentOrigin, rootConvAsync, subagentId, childDepth,
+                                    effectiveTimeoutSeconds);
                             return childResult.toToolResponse(target.getName());
                         } finally {
                             subagentRegistry.get(subagentId).ifPresent(rec -> {
@@ -917,6 +942,7 @@ public class DelegateAgentTool {
         result.put("child_conversation_id", childConversationId);
         result.put("agent_name", target.getName());
         result.put("status", "running");
+        result.put("timeout_seconds", effectiveTimeoutSeconds);
         result.put("hint", "Call task_output(task_id) in a later turn to retrieve the result.");
         if (!safeLabel.isEmpty()) {
             result.put("label", safeLabel);
@@ -1074,6 +1100,78 @@ public class DelegateAgentTool {
         return Duration.between(entity.getCreateTime(), entity.getUpdateTime()).toMillis();
     }
 
+    int resolveAsyncTimeoutSeconds(Integer requested) {
+        int configuredDefault = asyncDelegationTimeoutSeconds > 0
+                ? asyncDelegationTimeoutSeconds
+                : ASYNC_DELEGATION_DEFAULT_TIMEOUT_S;
+        int resolved = requested != null ? requested : configuredDefault;
+        if (resolved <= 0 || resolved > ASYNC_DELEGATION_MAX_TIMEOUT_S) {
+            throw new IllegalArgumentException("timeoutSeconds must be between 1 and "
+                    + ASYNC_DELEGATION_MAX_TIMEOUT_S);
+        }
+        return resolved;
+    }
+
+    /**
+     * Execute a detached child with a real wall-clock bound. Cancelling only the
+     * {@link CompletableFuture} is insufficient because the graph may already be
+     * blocked in an LLM or tool call; requestStop gives the child runtime a
+     * cooperative stop signal at its next checkpoint as well.
+     */
+    private ChildResult runDetachedChildWithTimeout(
+            AgentEntity target, String task, String parentConversationId,
+            String childConversationId, ChatOrigin parentOrigin,
+            String rootConversationId, String subagentId, int childDepth,
+            int timeoutSeconds) throws Exception {
+        CountDownLatch childFinished = new CountDownLatch(1);
+        Future<ChildResult> future = DELEGATION_EXECUTOR.submit(
+                () -> {
+                    try {
+                        return runSingleChild(0, target, task, parentConversationId,
+                                childConversationId, parentOrigin, rootConversationId,
+                                subagentId, childDepth, false);
+                    } finally {
+                        childFinished.countDown();
+                    }
+                });
+        try {
+            return future.get(timeoutSeconds, TimeUnit.SECONDS);
+        } catch (TimeoutException e) {
+            streamTracker.requestStop(childConversationId);
+            subagentRegistry.get(subagentId).ifPresent(record -> record.status().set("timeout"));
+            future.cancel(true);
+            awaitDetachedChildCleanup(childFinished, childConversationId);
+            log.warn("Async delegation timed out: childConv={}, agent={}, timeout={}s",
+                    childConversationId, target.getName(), timeoutSeconds);
+            throw new TimeoutException("Async delegation timed out after " + timeoutSeconds + " seconds");
+        } catch (InterruptedException e) {
+            streamTracker.requestStop(childConversationId);
+            subagentRegistry.get(subagentId).ifPresent(record -> record.status().set("interrupted"));
+            future.cancel(true);
+            awaitDetachedChildCleanup(childFinished, childConversationId);
+            Thread.currentThread().interrupt();
+            throw e;
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof Exception exception) throw exception;
+            throw new IllegalStateException("Async delegation failed", cause);
+        }
+    }
+
+    private void awaitDetachedChildCleanup(CountDownLatch childFinished, String childConversationId) {
+        boolean interrupted = false;
+        try {
+            if (!childFinished.await(ASYNC_DELEGATION_CANCEL_GRACE_S, TimeUnit.SECONDS)) {
+                log.warn("Async delegation cancellation grace expired: childConv={}, grace={}s",
+                        childConversationId, ASYNC_DELEGATION_CANCEL_GRACE_S);
+            }
+        } catch (InterruptedException e) {
+            interrupted = true;
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
+        }
+    }
+
     // ==================== Child agent execution (shared by single and parallel paths) ====================
 
     /**
@@ -1089,8 +1187,12 @@ public class DelegateAgentTool {
                                         ChatOrigin parentOrigin,
                                         String rootConversationId, String subagentId, int childDepth,
                                         boolean accumulateToParent) {
-        boolean relayChildEvents = parentConversationId != null && streamTracker.isRunning(parentConversationId);
-        if (relayChildEvents) {
+        // Track every child run, including detached work that starts after the
+        // parent stream has already completed. Without its own RunState a later
+        // timeout can interrupt the wrapper Future but requestStop cannot reach
+        // graph checkpoints or registered tool-cancellation hooks.
+        boolean trackChildRun = childConversationId != null && !childConversationId.isBlank();
+        if (trackChildRun) {
             streamTracker.register(childConversationId);
             streamTracker.incrementFlux(childConversationId);
         }
@@ -1128,11 +1230,17 @@ public class DelegateAgentTool {
             return ChildResult.ofSuccess(taskIndex, target.getName(), rawResult, durationMs,
                     MAX_RESULT_LENGTH, chatResult.promptTokens(), chatResult.completionTokens());
         } catch (Exception e) {
+            if (e instanceof InterruptedException || e instanceof CancellationException) {
+                if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+                log.info("Child agent interrupted: taskIndex={}, agent={}, childConv={}",
+                        taskIndex, target.getName(), childConversationId);
+                return ChildResult.ofCancelled(taskIndex, target.getName());
+            }
             log.error("Child agent failed: taskIndex={}, agent={}, error={}",
                     taskIndex, target.getName(), e.getMessage());
             return ChildResult.ofError(taskIndex, target.getName(), e.getMessage());
         } finally {
-            if (relayChildEvents) {
+            if (trackChildRun) {
                 streamTracker.complete(childConversationId);
             }
             DelegationContext.exit();

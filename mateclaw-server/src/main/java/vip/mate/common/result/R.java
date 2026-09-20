@@ -3,6 +3,7 @@ package vip.mate.common.result;
 import lombok.Data;
 
 import java.io.Serializable;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 统一响应结果封装
@@ -24,12 +25,18 @@ public class R<T> implements Serializable {
     private T data;
 
     /** i18n holder — set once at startup by I18nAutoConfig, used by ok()/fail() */
-    private static volatile vip.mate.i18n.I18nService i18n;
+    private static final AtomicReference<vip.mate.i18n.I18nService> I18N = new AtomicReference<>();
 
-    public static void setI18n(vip.mate.i18n.I18nService service) { i18n = service; }
+    public static void setI18n(vip.mate.i18n.I18nService service) { I18N.set(service); }
+
+    /** Clear a closing context's service without clobbering a newer context. */
+    public static void clearI18n(vip.mate.i18n.I18nService service) {
+        I18N.compareAndSet(service, null);
+    }
 
     private static String resolveMsg(ResultCode rc) {
-        return i18n != null ? rc.getMsg(i18n) : rc.getMsg();
+        vip.mate.i18n.I18nService service = I18N.get();
+        return service != null ? rc.getMsg(service) : rc.getMsg();
     }
 
     public static <T> R<T> ok() {

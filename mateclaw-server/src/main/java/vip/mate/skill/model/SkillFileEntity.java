@@ -32,17 +32,30 @@ public class SkillFileEntity {
 
     /**
      * Path relative to the skill workspace root, always starting with
-     * {@code scripts/} or {@code references/}. Forward slashes only.
+     * {@code scripts/}, {@code references/} or {@code templates/}. Forward slashes only.
      */
     private String filePath;
 
-    /** UTF-8 text content. Per-file size bounded by ZipSkillFetcher (1MB). */
+    /** UTF-8 text or base64-encoded attachment bytes, according to contentEncoding. */
     private String content;
 
-    /** Length of {@link #content} in bytes — kept so listings can sort/audit without loading the blob. */
+    /** null on legacy rows means UTF-8. */
+    private String contentEncoding;
+
+    public boolean isBinary() {
+        return "base64".equals(contentEncoding);
+    }
+
+    public byte[] contentBytes() {
+        String value = content == null ? "" : content;
+        return isBinary() ? java.util.Base64.getDecoder().decode(value)
+                : value.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    /** Length of the original file in bytes — kept so listings can sort/audit without loading the blob. */
     private Integer contentSize;
 
-    /** SHA-256 of {@link #content}; used by the syncer to skip no-op writes. */
+    /** SHA-256 of the original bytes; used by the syncer to skip no-op writes. */
     private String sha256;
 
     @TableField(fill = FieldFill.INSERT)

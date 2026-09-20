@@ -1410,6 +1410,17 @@ public class ConversationWindowManager {
             ChatResponse response = chatModel.call(new Prompt(promptMessages, options));
             if (response != null && response.getResult() != null
                     && response.getResult().getOutput() != null) {
+                String finishReason = response.getResult().getMetadata() != null
+                        ? response.getResult().getMetadata().getFinishReason() : null;
+                if ("length".equalsIgnoreCase(finishReason)) {
+                    // A non-empty response can still be structurally incomplete
+                    // when the provider exhausts max tokens. Persisting it would
+                    // poison every later iterative summary.
+                    log.warn("[ConversationWindow] LLM 摘要因 token 上限被截断，丢弃结果, conv={}",
+                            conversationId);
+                    setSummaryCooldown(conversationId);
+                    return null;
+                }
                 String summary = response.getResult().getOutput().getText();
                 if (summary != null && !summary.isBlank()) {
                     // 成功：保存摘要供下次迭代更新，清除冷却

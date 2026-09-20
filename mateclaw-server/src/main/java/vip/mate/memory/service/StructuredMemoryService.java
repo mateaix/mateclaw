@@ -68,6 +68,17 @@ public class StructuredMemoryService {
     private static final Pattern UPDATED_RE = Pattern.compile("Updated:\\s*(\\d{4}-\\d{2}-\\d{2})");
 
     /**
+     * Legacy auto-extracted entries have no durability metadata. Suppress the
+     * narrow high-risk class behind #625: numeric response-length directives.
+     * New explicitly durable preferences carry Stability/Explicit metadata and
+     * are governed by the admission policy instead of this compatibility guard.
+     */
+    private static final Pattern LEGACY_NUMERIC_OUTPUT_CONSTRAINT = Pattern.compile(
+            "(?iu)(?:\\d[\\d,.]*\\s*(?:字|字符|词|words?|characters?|tokens?)"
+                    + "|(?:字数|篇幅|回答长度|response length|word count|token count)"
+                    + ".{0,24}\\d[\\d,.]*)");
+
+    /**
      * Domain aliases bridging natural-language question terms to entry keys/types.
      * Plain substring/shingle overlap misses cross-language matches such as the
      * question term "技术栈" against the key "project_tech_stack", so each alias
@@ -118,6 +129,18 @@ public class StructuredMemoryService {
 
     /** Owner-scoped variant of {@link #remember}. */
     public void remember(Long agentId, String type, String key, String content, String source, String ownerKey) {
+        rememberInternal(agentId, type, key, content, source, ownerKey, "");
+    }
+
+    /** Store an admitted automatic or explicit candidate with durability metadata. */
+    public void remember(Long agentId, StructuredMemoryCandidate candidate, String source, String ownerKey) {
+        Objects.requireNonNull(candidate, "candidate");
+        rememberInternal(agentId, candidate.type(), candidate.key(), candidate.content(), source, ownerKey,
+                candidate.metadataSuffix());
+    }
+
+    private void rememberInternal(Long agentId, String type, String key, String content,
+                                  String source, String ownerKey, String metadataSuffix) {
         validateType(type);
         String filename = toFilename(type);
         String lockKey = agentId + ":" + (ownerKey == null ? "" : ownerKey) + ":" + filename;
@@ -127,7 +150,7 @@ public class StructuredMemoryService {
             String fileContent = readFileSafe(agentId, filename, ownerKey);
 
             String metadata = "> Source: " + (source != null ? source : "agent")
-                    + " | Updated: " + LocalDate.now();
+                    + " | Updated: " + LocalDate.now() + metadataSuffix;
             String newSection = "## " + key + "\n" + content.trim() + "\n" + metadata;
 
             // Check if section already exists → replace
@@ -258,6 +281,7 @@ public class StructuredMemoryService {
             String fileContent = readFileSafe(agentId, toFilename(type), ownerKey);
             if (fileContent.isBlank()) continue;
             for (Map.Entry<String, String> entry : parseSections(fileContent).entrySet()) {
+                if (isLegacyNumericOutputConstraint(entry.getKey(), entry.getValue())) continue;
                 String content = extractContentOnly(entry.getValue());
                 if (content.isBlank()) continue;
                 if (contentCap >= 0 && content.length() > contentCap) {
@@ -276,6 +300,13 @@ public class StructuredMemoryService {
         Set<BlockEntry> kept = selectWithinBudget(all, maxChars, maxPerType);
         int omitted = all.size() - kept.size();
         return renderBlock(all, kept, omitted);
+    }
+
+    private boolean isLegacyNumericOutputConstraint(String key, String body) {
+        if (body.contains("| Stability:") || body.contains("| Explicit:")) {
+            return false;
+        }
+        return LEGACY_NUMERIC_OUTPUT_CONSTRAINT.matcher(key + " " + body).find();
     }
 
     /** A candidate entry for the always-on block, with budget metadata. */
@@ -539,6 +570,7 @@ public class StructuredMemoryService {
         try {
             // Derive prior update dates so consolidation preserves provenance.
             Map<String, String> keyToDate = new HashMap<>();
+            Map<String, String> keyToDurability = new HashMap<>();
             String newestDate = "";
             for (Map.Entry<String, String> s : parseSections(readFileSafe(agentId, filename, ownerKey)).entrySet()) {
                 String d = extractUpdated(s.getValue());
@@ -546,6 +578,8 @@ public class StructuredMemoryService {
                     keyToDate.put(s.getKey(), d);
                     if (d.compareTo(newestDate) > 0) newestDate = d;
                 }
+                String durability = extractDurabilitySuffix(s.getValue());
+                if (!durability.isEmpty()) keyToDurability.put(s.getKey(), durability);
             }
             String fallbackDate = newestDate.isEmpty() ? LocalDate.now().toString() : newestDate;
             String src = source != null ? source : "consolidation";
@@ -561,7 +595,8 @@ public class StructuredMemoryService {
                 if (sb.length() > 0) sb.append("\n\n");
                 sb.append("## ").append(key).append("\n")
                   .append(e.getValue().trim())
-                  .append("\n> Source: ").append(src).append(" | Updated: ").append(date);
+                  .append("\n> Source: ").append(src).append(" | Updated: ").append(date)
+                  .append(keyToDurability.getOrDefault(key, ""));
             }
             saveStructured(agentId, filename, sb.toString(), ownerKey);
             log.info("[StructuredMemory] Replaced {} entries in '{}' for agent={} owner={} (source={})",
@@ -606,6 +641,12 @@ public class StructuredMemoryService {
     private boolean isPersonal(String ownerKey) {
         return ownerKey != null && !ownerKey.isBlank()
                 && !vip.mate.memory.identity.MemoryOwnerResolver.SYSTEM_OWNER.equals(ownerKey);
+    }
+
+    /** Preserve the durability portion of a canonical metadata line. */
+    private String extractDurabilitySuffix(String body) {
+        int marker = body.lastIndexOf("| Scope:");
+        return marker >= 0 ? " " + body.substring(marker).trim() : "";
     }
 
     /**

@@ -49,6 +49,10 @@ Long tasks (multi-step plans, multi-agent collaboration) used to mean scrolling 
 
 The rail **collapses to a badged strip**; below 1280px it degrades to a **floating drawer** so it never squeezes the conversation column. It's pure frontend with zero new endpoints, reusing the existing SSE event stream — so the delegation tree still appears inline in the message too; the rail just lifts the "current / active" overview into a persistent place.
 
+::: tip Observing long tasks
+Run Overview is a live projection of SSE events, not the authoritative async-task store. After a refresh, reconnect, or for a background delegation started earlier, a child may be temporarily absent from the tree; confirm terminal state with `taskOutput(taskId)` from the spawning conversation. Running `progress` may also remain at 0 and jump directly to 100 at termination, so use tool calls, plan checklists, and final artifacts to judge actual completion.
+:::
+
 ---
 
 ## Thinking, tool calls, and what to trust
@@ -112,7 +116,8 @@ Images, audio/video and 3D models always previewed inline — but a Word report 
 - **Click to preview**: pdf / docx / xlsx / html / markdown / txt / code files open in a glass-styled preview layer from the attachment card — uploaded and AI-generated alike.
 - **Pure client-side rendering**: PDF, Word and Excel parse and render in the browser — nothing leaves your machine, no external preview service, the single-JAR and desktop packaging story is unchanged.
 - **Server fallback for the stubborn formats**: pptx and legacy binary Office (doc / xls / ppt) are converted to PDF server-side before preview; if the converter (LibreOffice) isn't present, they degrade gracefully to download — no error, no hang.
-- **Safe HTML preview**: rendered in a sandboxed iframe — interactive pages and charts fully work (scripts run), but the iframe sits in an opaque origin and cannot read the app's login state or local storage.
+- **In-chat HTML preview**: HTML fetched with authorization is rendered in an opaque-origin sandboxed iframe. Scripts are allowed to support interactive pages and charts; app same-origin privileges are not granted. This does not guarantee compatibility with every script, network resource, or browser.
+- **Direct generated-file viewing**: opening an HTML/SVG response from `/api/v1/files/generated/{id}` uses a stricter policy: scripts and forms are blocked, with permitted static styles and media retained. Use the in-chat HTML preview for pages that depend on JavaScript; these two viewing paths have different policies.
 
 ### Primary model can't see images? "Multimodal sidecar" routing
 

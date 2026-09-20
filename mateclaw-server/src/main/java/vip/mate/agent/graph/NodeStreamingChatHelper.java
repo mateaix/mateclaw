@@ -26,6 +26,7 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CountDownLatch;
@@ -554,6 +555,7 @@ public class NodeStreamingChatHelper {
         // ("credit balance is too low") use these phrases in 402-class responses.
         // Chinese provider patterns (Zhipu 1113, DashScope, general) — same hard
         // failure semantics: retrying the same provider won't refill the balance.
+        String lowerMsg = msg.toLowerCase(Locale.ROOT);
         if (msg.contains("402") || msg.contains("insufficient_quota")
                 || msg.contains("credit balance is too low")
                 || msg.contains("billing_error") || msg.contains("billing_hard_limit_reached")
@@ -562,7 +564,13 @@ public class NodeStreamingChatHelper {
                 || msg.contains("余额不足") || msg.contains("请充值")
                 || msg.contains("\"code\":\"1113\"") || msg.contains("\"code\":1113")
                 || msg.contains("AccountBalanceNotEnough")
-                || msg.contains("balance not enough")) {
+                || msg.contains("balance not enough")
+                || lowerMsg.contains("invalidsubscription")
+                || lowerMsg.contains("subscription has expired")
+                || lowerMsg.contains("arrearage")
+                || lowerMsg.contains("account is in good standing")
+                || lowerMsg.contains("insufficient_balance")
+                || lowerMsg.contains("insufficient balance")) {
             return ErrorType.BILLING;
         }
         // RFC-009 P3.2: MODEL_NOT_FOUND — provider rejects the requested model id.
@@ -1169,6 +1177,7 @@ public class NodeStreamingChatHelper {
         List<ToolCallAccumulator> toolCallAccumulators = new ArrayList<>();
         AtomicReference<AssistantMessage> lastAssistantMessage = new AtomicReference<>();
         AtomicReference<Throwable> errorRef = new AtomicReference<>();
+        AtomicReference<String> finishReason = new AtomicReference<>();
         AtomicInteger promptTokens = new AtomicInteger(0);
         AtomicInteger completionTokens = new AtomicInteger(0);
         // Prompt cache / reasoning counters; providers that don't report them stay 0.
@@ -1284,6 +1293,11 @@ public class NodeStreamingChatHelper {
                         return;
                     }
                     var generation = chatResponse.getResult();
+                    if (generation.getMetadata() != null
+                            && generation.getMetadata().getFinishReason() != null
+                            && !generation.getMetadata().getFinishReason().isBlank()) {
+                        finishReason.set(generation.getMetadata().getFinishReason());
+                    }
                     AssistantMessage msg = generation.getOutput();
                     lastAssistantMessage.set(msg);
 
@@ -1572,7 +1586,10 @@ public class NodeStreamingChatHelper {
         // ===== 成功（检查是否因 thinking-only 软上限或内容重复被截断） =====
         boolean truncatedByThinkingCap = thinkingOnlyCapTriggered.get();
         boolean truncatedByContentRepeat = contentRepeatCapTriggered.get();
-        boolean truncated = truncatedByThinkingCap || truncatedByContentRepeat;
+        boolean thinkingTokenLimit = "length".equalsIgnoreCase(finishReason.get())
+                && thinkingAccum.length() > 0 && contentAccum.toString().isBlank()
+                && toolCallAccumulators.isEmpty();
+        boolean truncated = truncatedByThinkingCap || truncatedByContentRepeat || thinkingTokenLimit;
         if (truncatedByThinkingCap) {
             log.warn("[{}] LLM stream disposed: thinking-only soft cap reached for conversation {}",
                     phase, conversationId);
@@ -1601,6 +1618,7 @@ public class NodeStreamingChatHelper {
 
         String truncationReason = truncatedByThinkingCap ? "thinking_only_no_content"
                 : truncatedByContentRepeat ? "content_repetition"
+                : thinkingTokenLimit ? "thinking_token_limit"
                 : null;
         return assembleResult(contentAccum, thinkingAccum, toolCallAccumulators,
                 promptTokens.get(), completionTokens.get(),
@@ -2028,9 +2046,26 @@ public class NodeStreamingChatHelper {
                 || combined.contains("model not found") || combined.contains("not_found_error")) {
             return "Model name not available on this provider — verify the model exists and is supported (Settings → Models)";
         }
+        // Do not mislabel unsupported model parameters as image errors (#640).
+        // Only emit known parameter names and fixed guidance, never raw response
+        // bodies, which may contain credentials or echoed conversation content.
+        String lowerError = combined.toLowerCase(java.util.Locale.ROOT);
+        if (lowerError.contains("unsupported parameter") || lowerError.contains("unsupported_parameter")
+                || lowerError.contains("unsupported value") || lowerError.contains("unsupported_value")) {
+            if (lowerError.contains("max_tokens") && lowerError.contains("max_completion_tokens")) {
+                return "模型不支持 max_tokens，请改用 max_completion_tokens。请更新 MateClaw，并检查模型及提供商生成参数配置。";
+            }
+            for (String parameter : java.util.List.of("max_completion_tokens", "max_tokens", "temperature", "top_p",
+                    "reasoning_effort", "stream_options", "parallel_tool_calls", "tool_choice", "response_format")) {
+                if (lowerError.contains(parameter)) {
+                    return "模型不支持生成参数或参数值：" + parameter + "。请检查模型及提供商生成参数配置。";
+                }
+            }
+            return "模型不支持当前生成参数或参数值，请检查模型及提供商生成参数配置。";
+        }
         // 对 Jackson 反序列化错误，提取关键信息
         if (msg.contains("engine_overloaded")) return "Model service overloaded, please retry later";
-        if (msg.contains("unsupported image format") || msg.contains("unsupported")) return "Unsupported file format (e.g. SVG), use PNG/JPG instead";
+        if (lowerError.contains("unsupported image format")) return "Unsupported file format (e.g. SVG), use PNG/JPG instead";
         if (msg.contains("invalid_request_error") || msg.contains("400 Bad Request")) return "Bad request, please check input";
         if (msg.contains("rate_limit") || msg.contains("429")) return "Rate limit exceeded, please retry later";
         if (msg.contains("timeout") || msg.contains("Timeout")) return "Request timeout, please retry";
@@ -2509,9 +2544,39 @@ public class NodeStreamingChatHelper {
                     acc.id,
                     acc.type != null ? acc.type : "function",
                     acc.name,
-                    sanitizeToolCallArguments(acc.name, acc.arguments.toString())));
+                    toolCallArgumentsForExecution(acc.name, acc.arguments.toString())));
         }
         return result;
+    }
+
+    /**
+     * Finalize a streamed tool call for local execution.
+     *
+     * <p>Blank arguments are a common zero-argument representation and remain
+     * normalized to an empty object. Invalid non-blank JSON, however, must be
+     * preserved until {@code ToolExecutionExecutor} sees it; replacing it with
+     * {@code {}} loses the distinction between a truncated stream and a real
+     * empty call and can execute the wrong operation. The outgoing-history
+     * normalization path still calls {@link #sanitizeToolCallArguments} before
+     * a later provider request.</p>
+     */
+    private static String toolCallArgumentsForExecution(String toolName, String arguments) {
+        if (arguments == null || arguments.isBlank()) {
+            return "{}";
+        }
+        try {
+            TOOL_ARG_JSON_MAPPER.readTree(arguments);
+            return arguments;
+        } catch (Exception e) {
+            log.warn("Tool '{}' arguments are not valid JSON after stream aggregation "
+                            + "(len={}, head={}); preserving the payload for safe executor rejection. "
+                            + "Parse error: {}",
+                    toolName,
+                    arguments.length(),
+                    arguments.substring(0, Math.min(80, arguments.length())),
+                    e.getMessage());
+            return arguments;
+        }
     }
 
     /**

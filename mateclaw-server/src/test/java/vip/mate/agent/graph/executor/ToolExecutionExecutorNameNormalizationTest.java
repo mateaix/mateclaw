@@ -146,6 +146,24 @@ class ToolExecutionExecutorNameNormalizationTest {
     }
 
     @Test
+    @DisplayName("invalid streamed arguments return a stable rejection without executing the tool")
+    void invalidArgumentsRejectedWithoutExecution() {
+        ToolCallback callback = callbackNamed("write_file");
+        ToolExecutionExecutor executor = newExecutor(callback);
+
+        var result = executor.execute(
+                List.of(new AssistantMessage.ToolCall(
+                        "call_invalid", "function", "write_file", "{\"filePath\":\"notes.md\"")),
+                "conv", "agent", false, "user", null);
+
+        assertEquals(1, result.responses().size());
+        assertTrue(result.responses().get(0).responseData().contains("TOOL_ARGUMENTS_INCOMPLETE"));
+        assertTrue(result.responses().get(0).responseData().contains("append_file"));
+        verify(callback, never()).call(anyString(), any());
+        verify(callback, never()).call(anyString());
+    }
+
+    @Test
     @DisplayName("tool_call unwraps and executes the real tool in the same action round")
     void progressiveBridge_executesTargetSameRound() {
         ToolCallback target = callbackNamed("web_search");

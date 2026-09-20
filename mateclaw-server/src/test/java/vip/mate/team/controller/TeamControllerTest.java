@@ -29,6 +29,7 @@ import vip.mate.team.service.TeamManualTaskService;
 import vip.mate.team.service.TeamRunService;
 import vip.mate.team.service.TeamService;
 import vip.mate.team.service.TeamTaskService;
+import vip.mate.team.service.TeamWorkerInterventionService;
 import vip.mate.workspace.core.annotation.RequireWorkspaceRole;
 import vip.mate.workspace.core.service.WorkspaceService;
 
@@ -69,6 +70,7 @@ class TeamControllerTest {
     @Mock private TeamDispatchService dispatchService;
     @Mock private TeamAnnounceService announceService;
     @Mock private TeamEventChannel eventChannel;
+    @Mock private TeamWorkerInterventionService workerInterventionService;
     @Mock private AgentMapper agentMapper;
     @Mock private WorkspaceService workspaceService;
     @Mock private AuthService authService;
@@ -80,7 +82,7 @@ class TeamControllerTest {
     void setUp() {
         manualTaskService = new TeamManualTaskService(runService, taskService, events);
         controller = new TeamController(teamService, taskService, manualTaskService, dispatchService,
-                announceService, eventChannel, agentMapper);
+                announceService, eventChannel, workerInterventionService, agentMapper);
         AgentTeamEntity team = new AgentTeamEntity();
         team.setId(TEAM_ID);
         team.setWorkspaceId(1L);
@@ -110,6 +112,54 @@ class TeamControllerTest {
         run.setWorkspaceId(workspaceId);
         run.setStatus(status);
         return run;
+    }
+
+    @Test
+    void workerApprovalEndpointUsesTaskScopedInterventionService() {
+        TeamTaskEntity waiting = task(TEAM_ID, TeamTaskStatus.AWAITING_APPROVAL);
+        waiting.setRunId(RUN_ID);
+        when(taskService.getTask(TASK_ID)).thenReturn(waiting);
+        when(workerInterventionService.approve(TEAM_ID, TASK_ID, "pending-42", "alice"))
+                .thenReturn(waiting);
+        TeamController.WorkerApprovalRequest request = new TeamController.WorkerApprovalRequest();
+        request.setPendingId("pending-42");
+
+        R<TeamController.TaskVO> response = controller.approveWorkerTool(
+                TEAM_ID, TASK_ID, request, () -> "alice");
+
+        assertEquals(200, response.getCode());
+        verify(workerInterventionService).approve(TEAM_ID, TASK_ID, "pending-42", "alice");
+    }
+
+    @Test
+    void workerFeedbackEndpointRejectsBlankContentBeforeRunningAgent() {
+        when(taskService.getTask(TASK_ID)).thenReturn(task(TEAM_ID, TeamTaskStatus.COMPLETED));
+        TeamController.WorkerFeedbackRequest request = new TeamController.WorkerFeedbackRequest();
+        request.setMessage("   ");
+
+        R<TeamController.TaskVO> response = controller.feedbackWorker(
+                TEAM_ID, TASK_ID, request, () -> "alice");
+
+        assertEquals(400, response.getCode());
+        verify(workerInterventionService, never()).feedback(any(), any(), any(), any());
+    }
+
+    @Test
+    void workerInterventionMapsMissingLinkAndBusyConversationToActionableCodes() {
+        TeamTaskEntity waiting = task(TEAM_ID, TeamTaskStatus.AWAITING_APPROVAL);
+        waiting.setRunId(RUN_ID);
+        when(taskService.getTask(TASK_ID)).thenReturn(waiting);
+        TeamController.WorkerApprovalRequest request = new TeamController.WorkerApprovalRequest();
+        request.setPendingId("pending-42");
+        when(workerInterventionService.approve(TEAM_ID, TASK_ID, "pending-42", "alice"))
+                .thenThrow(new IllegalArgumentException("worker conversation not found for this task"));
+        when(workerInterventionService.deny(TEAM_ID, TASK_ID, "pending-42", "alice"))
+                .thenThrow(new IllegalStateException("worker conversation is already running"));
+
+        assertEquals(404, controller.approveWorkerTool(
+                TEAM_ID, TASK_ID, request, () -> "alice").getCode());
+        assertEquals(409, controller.denyWorkerTool(
+                TEAM_ID, TASK_ID, request, () -> "alice").getCode());
     }
 
     // ==================== team / membership ====================

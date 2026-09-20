@@ -24,6 +24,7 @@ import vip.mate.team.service.TeamEventChannel;
 import vip.mate.team.service.TeamManualTaskService;
 import vip.mate.team.service.TeamService;
 import vip.mate.team.service.TeamTaskService;
+import vip.mate.team.service.TeamWorkerInterventionService;
 import vip.mate.workspace.core.annotation.RequireWorkspaceRole;
 
 import java.security.Principal;
@@ -56,6 +57,7 @@ public class TeamController {
     private final TeamDispatchService dispatchService;
     private final TeamAnnounceService announceService;
     private final TeamEventChannel eventChannel;
+    private final TeamWorkerInterventionService workerInterventionService;
     private final AgentMapper agentMapper;
 
     // ==================== team CRUD ====================
@@ -213,6 +215,60 @@ public class TeamController {
         });
     }
 
+    @Operation(summary = "批准 worker 工具调用并在原会话恢复执行")
+    @PostMapping("/{id}/tasks/{taskId}/worker/approve")
+    @RequireWorkspaceRole("admin")
+    public R<TaskVO> approveWorkerTool(@PathVariable Long id, @PathVariable Long taskId,
+                                       @RequestBody WorkerApprovalRequest req,
+                                       Principal principal) {
+        return workerGuarded(() -> {
+            requireTeam(id);
+            requireTask(id, taskId);
+            if (req == null || req.getPendingId() == null || req.getPendingId().isBlank()) {
+                throw new IllegalArgumentException("pending approval id is required");
+            }
+            TeamTaskEntity task = workerInterventionService.approve(id, taskId,
+                    req.getPendingId().strip(), principalName(principal));
+            return R.ok(toTaskVO(task));
+        });
+    }
+
+    @Operation(summary = "拒绝 worker 工具调用")
+    @PostMapping("/{id}/tasks/{taskId}/worker/deny")
+    @RequireWorkspaceRole("admin")
+    public R<TaskVO> denyWorkerTool(@PathVariable Long id, @PathVariable Long taskId,
+                                    @RequestBody WorkerApprovalRequest req,
+                                    Principal principal) {
+        return workerGuarded(() -> {
+            requireTeam(id);
+            requireTask(id, taskId);
+            if (req == null || req.getPendingId() == null || req.getPendingId().isBlank()) {
+                throw new IllegalArgumentException("pending approval id is required");
+            }
+            TeamTaskEntity task = workerInterventionService.deny(id, taskId,
+                    req.getPendingId().strip(), principalName(principal));
+            return R.ok(toTaskVO(task));
+        });
+    }
+
+    @Operation(summary = "向 worker 原会话发送任务级补充指令")
+    @PostMapping("/{id}/tasks/{taskId}/worker/feedback")
+    @RequireWorkspaceRole("admin")
+    public R<TaskVO> feedbackWorker(@PathVariable Long id, @PathVariable Long taskId,
+                                     @RequestBody WorkerFeedbackRequest req,
+                                     Principal principal) {
+        return workerGuarded(() -> {
+            requireTeam(id);
+            requireTask(id, taskId);
+            if (req == null || req.getMessage() == null || req.getMessage().isBlank()) {
+                throw new IllegalArgumentException("feedback is required");
+            }
+            TeamTaskEntity task = workerInterventionService.feedback(id, taskId,
+                    req.getMessage(), principalName(principal));
+            return R.ok(toTaskVO(task));
+        });
+    }
+
     @Operation(summary = "驳回 in_review 任务")
     @PostMapping("/{id}/tasks/{taskId}/reject")
     @RequireWorkspaceRole("admin")
@@ -310,6 +366,10 @@ public class TeamController {
         eventChannel.publishTaskEvent(taskService.getTask(taskId), event, Map.of());
     }
 
+    private String principalName(Principal principal) {
+        return principal != null && principal.getName() != null ? principal.getName() : "admin";
+    }
+
     @Operation(summary = "添加评论")
     @PostMapping("/{id}/tasks/{taskId}/comments")
     @RequireWorkspaceRole("admin")
@@ -349,6 +409,18 @@ public class TeamController {
             return action.get();
         } catch (IllegalArgumentException | IllegalStateException e) {
             return R.fail(e.getMessage());
+        }
+    }
+
+    /** Intervention endpoints expose recoverable client states instead of generic 500s. */
+    private <T> R<T> workerGuarded(Supplier<R<T>> action) {
+        try {
+            return action.get();
+        } catch (IllegalArgumentException error) {
+            int code = error.getMessage() != null && error.getMessage().contains("not found") ? 404 : 400;
+            return R.fail(code, error.getMessage());
+        } catch (IllegalStateException error) {
+            return R.fail(409, error.getMessage());
         }
     }
 
@@ -494,5 +566,15 @@ public class TeamController {
     @Data
     public static class CommentRequest {
         private String content;
+    }
+
+    @Data
+    public static class WorkerApprovalRequest {
+        private String pendingId;
+    }
+
+    @Data
+    public static class WorkerFeedbackRequest {
+        private String message;
     }
 }

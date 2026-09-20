@@ -481,12 +481,31 @@
                 v-if="canEditFiles && !creatingFile"
                 class="detail-edit-btn detail-edit-primary"
                 @click="startCreateFile"
+                :disabled="uploadingFiles"
               >
                 + {{ t('skills.detail.fileNew') }}
               </button>
             </div>
             <p class="detail-hint">{{ t('skills.detail.filesHint') }}</p>
             <p v-if="isBuiltinDetail" class="detail-hint">{{ t('skills.detail.builtinFilesReadonly') }}</p>
+
+            <fieldset v-if="canEditFiles" class="skill-file-upload" :disabled="uploadingFiles || savingFile || editingFile || creatingFile">
+              <label>{{ t('skills.detail.uploadDestination') }}
+                <select v-model="uploadBucket" :aria-label="t('skills.detail.uploadDestination')">
+                  <option value="references">references/</option>
+                  <option value="templates">templates/</option>
+                  <option value="scripts">scripts/</option>
+                </select>
+              </label>
+              <label>{{ t('skills.detail.uploadFiles') }}
+                <input type="file" multiple :aria-label="t('skills.detail.uploadFiles')" @change="uploadSkillFiles" />
+              </label>
+              <label>{{ t('skills.detail.uploadFolder') }}
+                <input type="file" multiple webkitdirectory :aria-label="t('skills.detail.uploadFolder')" @change="uploadSkillFiles" />
+              </label>
+              <p class="detail-hint">{{ t('skills.detail.uploadHint') }}</p>
+            </fieldset>
+            <p v-if="uploadingFiles" role="status">{{ uploadProgress || t('common.loading') }}</p>
 
             <!-- New-file form -->
             <div v-if="creatingFile" class="skill-file-create">
@@ -536,10 +555,11 @@
                 <h4 class="detail-block-title"><code>{{ activeFile.path }}</code></h4>
                 <div class="edit-actions">
                   <template v-if="!editingFile">
-                    <button v-if="canEditFiles" class="detail-edit-btn detail-edit-primary" @click="startEditFile">
+                    <button class="detail-edit-btn" @click="downloadActiveFile">{{ t('skills.detail.fileDownload') }}</button>
+                    <button v-if="canEditFiles && !activeFile.binary" :disabled="uploadingFiles" class="detail-edit-btn detail-edit-primary" @click="startEditFile">
                       {{ t('skills.detail.fileEdit') }}
                     </button>
-                    <button v-if="canEditFiles" class="detail-edit-btn detail-edit-cancel" @click="removeActiveFile" :disabled="savingFile">
+                    <button v-if="canEditFiles" class="detail-edit-btn detail-edit-cancel" @click="removeActiveFile" :disabled="savingFile || uploadingFiles">
                       {{ t('skills.detail.fileDelete') }}
                     </button>
                   </template>
@@ -554,6 +574,7 @@
                 </div>
               </div>
               <p v-if="fileContentLoading" class="detail-empty">{{ t('common.loading') }}</p>
+              <p v-else-if="activeFile.binary" class="detail-hint">{{ t('skills.detail.binaryFileHint') }}</p>
               <pre v-else-if="!editingFile" class="detail-pre">{{ activeFileContent }}</pre>
               <textarea
                 v-else
@@ -798,6 +819,7 @@
 </template>
 
 <script setup lang="ts">
+import { planSkillFileUploads, type SkillFileBucket } from '@/utils/skillFileUpload'
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { mcToast } from '@/composables/useMcToast'
@@ -911,9 +933,77 @@ const editBodyForm = ref<{ skillContent: string; sourceCode: string }>({
 
 interface SkillBundleFile {
   path: string
+  binary?: boolean
   size?: number
   sha256?: string
   updateTime?: string
+}
+
+const uploadBucket = ref<SkillFileBucket>('references')
+const uploadingFiles = ref(false)
+const uploadProgress = ref('')
+
+async function uploadSkillFiles(event: Event) {
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files ?? [])
+  input.value = ''
+  if (!files.length || !detailSkill.value || uploadingFiles.value) return
+  const skillId = detailSkill.value.id
+  let plans
+  try {
+    plans = planSkillFileUploads(files, uploadBucket.value)
+  } catch (error) {
+    mcToast.error(t(`skills.detail.uploadErrors.${(error as Error).message}`))
+    return
+  }
+  uploadingFiles.value = true
+  let uploaded = 0
+  try {
+    const response: any = await skillApi.listFiles(skillId)
+    const existing = new Set<string>((response?.data ?? []).map((f: SkillBundleFile) => f.path))
+    const conflicts = plans.filter(item => existing.has(item.path))
+    if (conflicts.length && !await mcConfirm({
+      title: t('skills.detail.uploadFiles'),
+      message: t('skills.detail.uploadOverwrite', { paths: conflicts.map(item => item.path).join('、') }),
+      tone: 'danger',
+    })) return
+    for (const item of plans) {
+      uploadProgress.value = `${uploaded + 1}/${plans.length}: ${item.path}`
+      await skillApi.uploadFile(skillId, item.file, item.path, existing.has(item.path))
+      uploaded++
+    }
+    mcToast.success(t('skills.detail.uploadComplete', { count: uploaded }))
+  } catch (error: any) {
+    mcToast.error(t('skills.detail.uploadFailed', { count: uploaded, error: error?.message || String(error) }))
+  } finally {
+    uploadingFiles.value = false
+    uploadProgress.value = ''
+    if (detailSkill.value?.id === skillId) {
+      activeFile.value = null
+      editingFile.value = false
+      await loadDetailFiles()
+    }
+  }
+}
+
+async function downloadActiveFile() {
+  if (!detailSkill.value || !activeFile.value) return
+  const path = activeFile.value.path
+  try {
+    const blob = await skillApi.downloadFile(detailSkill.value.id, path)
+    if (blob.type.includes('application/json')) {
+      const error = JSON.parse(await blob.text())
+      throw new Error(error.msg || t('skills.detail.fileLoadFailed'))
+    }
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = path.split('/').pop() || 'download'
+    link.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  } catch (error: any) {
+    mcToast.error(error?.message || t('skills.detail.fileLoadFailed'))
+  }
 }
 
 const detailFiles = ref<SkillBundleFile[]>([])
@@ -961,6 +1051,7 @@ async function openFile(file: SkillBundleFile) {
   try {
     const res: any = await skillApi.getFileContent(detailSkill.value.id, file.path)
     activeFileContent.value = res?.data?.content ?? ''
+    file.binary = Boolean(res?.data?.binary)
   } catch (e: any) {
     activeFileContent.value = ''
     mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.detail.fileLoadFailed'))
@@ -970,6 +1061,7 @@ async function openFile(file: SkillBundleFile) {
 }
 
 function startEditFile() {
+  if (activeFile.value?.binary) return
   fileEditContent.value = activeFileContent.value
   editingFile.value = true
 }
@@ -2012,6 +2104,11 @@ function getSkillTypeLabel(type: string) {
 </script>
 
 <style scoped>
+.skill-file-upload { display: flex; flex-wrap: wrap; gap: 12px; border: 1px solid var(--mc-border, #ddd); border-radius: 8px; padding: 12px; margin: 12px 0; }
+.skill-file-upload label { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.skill-file-upload input { max-width: 100%; }
+.skill-file-upload p { flex-basis: 100%; margin: 0; }
+
 .skills-page { gap: 18px; }
 .header-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .btn-primary { display: flex; align-items: center; gap: 6px; padding: 10px 16px; background: linear-gradient(135deg, var(--mc-primary), var(--mc-primary-hover)); color: white; border: none; border-radius: 14px; font-size: 14px; font-weight: 600; cursor: pointer; transition: background 0.15s; box-shadow: var(--mc-shadow-soft); }

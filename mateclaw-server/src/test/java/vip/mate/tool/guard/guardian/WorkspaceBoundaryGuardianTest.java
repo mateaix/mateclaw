@@ -48,8 +48,12 @@ class WorkspaceBoundaryGuardianTest {
     }
 
     private ToolInvocationContext write(String path, String basePath) {
+        return fileMutation("write_file", path, basePath);
+    }
+
+    private ToolInvocationContext fileMutation(String toolName, String path, String basePath) {
         String args = "{\"filePath\":\"" + path + "\",\"content\":\"x\"}";
-        return ToolInvocationContext.of("write_file", args, "conv", "agent")
+        return ToolInvocationContext.of(toolName, args, "conv", "agent")
                 .withWorkspaceBasePath(basePath);
     }
 
@@ -154,6 +158,14 @@ class WorkspaceBoundaryGuardianTest {
     @DisplayName("write_file inside the workspace → no finding")
     void writeInside_pass() {
         assertTrue(guardian.evaluate(write(WORKSPACE + "/notes.txt", WORKSPACE)).isEmpty());
+    }
+
+    @Test
+    @DisplayName("append_file uses the same workspace boundary as write_file")
+    void appendFileBoundaryEnforced() {
+        assertBlocked(guardian.evaluate(fileMutation("append_file", "/etc/evil.conf", WORKSPACE)));
+        assertTrue(guardian.evaluate(fileMutation(
+                "append_file", WORKSPACE + "/checkpoints.md", WORKSPACE)).isEmpty());
     }
 
     @Test

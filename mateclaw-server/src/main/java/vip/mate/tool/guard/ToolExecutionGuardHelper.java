@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import vip.mate.agent.GraphEventPublisher;
+import vip.mate.agent.context.ChatOrigin;
+import vip.mate.agent.context.ChatOriginHolder;
 import vip.mate.approval.ApprovalWorkflowService;
 import vip.mate.channel.web.ChatStreamTracker;
 import vip.mate.tool.guard.model.GuardEvaluation;
@@ -42,6 +44,17 @@ public final class ToolExecutionGuardHelper {
             ApprovalWorkflowService approvalService, ChatStreamTracker streamTracker,
             List<GraphEventPublisher.GraphEvent> events,
             List<AssistantMessage.ToolCall> remainingToolCalls) {
+        return handleToolApproval(toolCall, toolName, arguments, evaluation, conversationId, agentId,
+                requesterId, approvalService, streamTracker, events, remainingToolCalls, ChatOriginHolder.get());
+    }
+
+    public static ApprovalRequest handleToolApproval(
+            AssistantMessage.ToolCall toolCall, String toolName, String arguments,
+            GuardEvaluation evaluation, String conversationId, String agentId,
+            String requesterId,
+            ApprovalWorkflowService approvalService, ChatStreamTracker streamTracker,
+            List<GraphEventPublisher.GraphEvent> events,
+            List<AssistantMessage.ToolCall> remainingToolCalls, ChatOrigin origin) {
 
         if (approvalService == null) {
             log.warn("[GuardHelper] ApprovalService not available, falling back to BLOCK for tool={}", toolName);
@@ -58,13 +71,14 @@ public final class ToolExecutionGuardHelper {
         String userId = (requesterId != null && !requesterId.isEmpty()) ? requesterId : "system";
         String reason = evaluation.summary() != null ? evaluation.summary() : "需要用户审批";
         // 使用增强版 createPending，内部自动处理 findings 增强 + DB 持久化
-        String pendingId = approvalService.createPending(
+        String pendingId = withOrigin(origin, () -> approvalService.createPending(
                 conversationId, userId, toolName, arguments, reason,
-                toolCallPayload, siblingPayload, agentId, evaluation);
+                toolCallPayload, siblingPayload, agentId, evaluation));
 
         // SSE 直推审批事件（增强版，包含 findings）
         if (streamTracker != null) {
             Map<String, Object> eventData = new java.util.LinkedHashMap<>();
+            eventData.put("toolCallId", toolCall.id() != null ? toolCall.id() : "");
             eventData.put("pendingId", pendingId);
             eventData.put("toolName", toolName != null ? toolName : "");
             eventData.put("arguments", arguments != null ? GraphEventPublisher.truncateForBroadcast(arguments) : "");
@@ -78,7 +92,7 @@ public final class ToolExecutionGuardHelper {
         }
 
         events.add(GraphEventPublisher.toolApprovalRequested(
-                pendingId, toolName, arguments, reason,
+                toolCall.id(), pendingId, toolName, arguments, reason,
                 evaluation.summary(),
                 evaluation.maxSeverity() != null ? evaluation.maxSeverity().name() : null,
                 evaluation.findingsToMapList()));
@@ -100,6 +114,17 @@ public final class ToolExecutionGuardHelper {
             ApprovalWorkflowService approvalService, ChatStreamTracker streamTracker,
             List<GraphEventPublisher.GraphEvent> events,
             List<AssistantMessage.ToolCall> remainingToolCalls) {
+        return handleToolApprovalLegacy(toolCall, toolName, arguments, guardResult, conversationId, agentId,
+                requesterId, approvalService, streamTracker, events, remainingToolCalls, ChatOriginHolder.get());
+    }
+
+    public static String handleToolApprovalLegacy(
+            AssistantMessage.ToolCall toolCall, String toolName, String arguments,
+            ToolGuardResult guardResult, String conversationId, String agentId,
+            String requesterId,
+            ApprovalWorkflowService approvalService, ChatStreamTracker streamTracker,
+            List<GraphEventPublisher.GraphEvent> events,
+            List<AssistantMessage.ToolCall> remainingToolCalls, ChatOrigin origin) {
 
         if (approvalService == null) {
             log.warn("[GuardHelper] ApprovalService not available, falling back to BLOCK for tool={}", toolName);
@@ -111,12 +136,13 @@ public final class ToolExecutionGuardHelper {
         String siblingPayload = serializeToolCalls(remainingToolCalls);
 
         String userId = (requesterId != null && !requesterId.isEmpty()) ? requesterId : "system";
-        String pendingId = approvalService.createPending(
+        String pendingId = withOrigin(origin, () -> approvalService.createPending(
                 conversationId, userId, toolName, arguments, guardResult.reason(),
-                toolCallPayload, siblingPayload, agentId);
+                toolCallPayload, siblingPayload, agentId));
 
         if (streamTracker != null) {
             streamTracker.broadcastObject(conversationId, "tool_approval_requested", Map.of(
+                    "toolCallId", toolCall.id() != null ? toolCall.id() : "",
                     "pendingId", pendingId,
                     "toolName", toolName != null ? toolName : "",
                     "arguments", arguments != null ? GraphEventPublisher.truncateForBroadcast(arguments) : "",
@@ -125,12 +151,22 @@ public final class ToolExecutionGuardHelper {
             ));
         }
 
-        events.add(GraphEventPublisher.toolApprovalRequested(pendingId, toolName, arguments, guardResult.reason()));
+        events.add(GraphEventPublisher.toolApprovalRequested(toolCall.id(), pendingId, toolName, arguments, guardResult.reason()));
 
         return "[APPROVAL_PENDING] tool=" + toolName + " awaiting user decision";
     }
 
     // ==================== 序列化工具 ====================
+
+    private static <T> T withOrigin(ChatOrigin origin, java.util.function.Supplier<T> action) {
+        ChatOrigin previous = ChatOriginHolder.get();
+        ChatOriginHolder.set(origin != null ? origin : ChatOrigin.EMPTY);
+        try { return action.get(); }
+        finally {
+            if (previous == ChatOrigin.EMPTY) ChatOriginHolder.clear();
+            else ChatOriginHolder.set(previous);
+        }
+    }
 
     public static String serializeToolCall(AssistantMessage.ToolCall toolCall) {
         try {

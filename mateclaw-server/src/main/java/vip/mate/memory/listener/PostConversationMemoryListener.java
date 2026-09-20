@@ -8,6 +8,7 @@ import org.springframework.stereotype.Component;
 import vip.mate.memory.MemoryProperties;
 import vip.mate.memory.event.ConversationCompletedEvent;
 import vip.mate.memory.nudge.MemoryNudgeService;
+import vip.mate.memory.service.MemorySummarizationGate;
 import vip.mate.memory.service.MemorySummarizationService;
 
 /**
@@ -38,13 +39,17 @@ public class PostConversationMemoryListener {
             return;
         }
 
-        // 消息数量不足
-        if (event.messageCount() < properties.getMinMessagesForSummarize()) {
+        // Explicit "remember" requests are durable user intent and must not be
+        // dropped merely because this is the first turn in a conversation.
+        boolean explicitRemember = MemorySummarizationGate.isExplicitRememberRequest(event.userMessage());
+
+        // 消息数量不足（显式记忆请求除外）
+        if (!explicitRemember && event.messageCount() < properties.getMinMessagesForSummarize()) {
             return;
         }
 
-        // 用户消息太短
-        if (event.userMessage() != null
+        // 用户消息太短（显式记忆请求除外）
+        if (!explicitRemember && event.userMessage() != null
                 && event.userMessage().length() < properties.getMinUserMessageLength()) {
             return;
         }

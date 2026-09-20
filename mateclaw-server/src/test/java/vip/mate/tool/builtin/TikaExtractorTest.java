@@ -1,14 +1,19 @@
 package vip.mate.tool.builtin;
 
+import org.apache.tika.parser.AutoDetectParser;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.xml.sax.ContentHandler;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mockConstruction;
 
 /**
  * RFC-051 §5.2: pin TikaExtractor's safety guarantees.
@@ -19,6 +24,42 @@ import static org.junit.jupiter.api.Assertions.*;
  * output cap.
  */
 class TikaExtractorTest {
+
+    @Test
+    void stopsWhenCancellationArrivesAfterInputWasBuffered(@TempDir Path tmp) throws Exception {
+        Path file = tmp.resolve("buffered.txt");
+        Files.writeString(file, "buffered document");
+        try (var ignored = mockConstruction(AutoDetectParser.class, (parser, context) -> {
+            doAnswer(invocation -> {
+                ContentHandler handler = invocation.getArgument(1);
+                handler.startDocument();
+                Thread.currentThread().interrupt();
+                // Office parsers may already have buffered the input. The SAX
+                // callback must still observe cancellation without another read.
+                handler.characters("text".toCharArray(), 0, 4);
+                fail("cancelled parsing must not continue");
+                return null;
+            }).when(parser).parse(any(), any(), any(), any());
+        })) {
+            assertNull(TikaExtractor.extract(file));
+            assertTrue(Thread.currentThread().isInterrupted());
+        } finally {
+            Thread.interrupted();
+        }
+    }
+
+    @Test
+    void interruptedExtractionStopsAndPreservesCancellation(@TempDir Path tmp) throws IOException {
+        Path file = tmp.resolve("cancelled.txt");
+        Files.writeString(file, "Do not parse after cancellation");
+        Thread.currentThread().interrupt();
+        try {
+            assertNull(TikaExtractor.extract(file));
+            assertTrue(Thread.currentThread().isInterrupted());
+        } finally {
+            Thread.interrupted();
+        }
+    }
 
     @Test
     @DisplayName("null path returns null without throwing")

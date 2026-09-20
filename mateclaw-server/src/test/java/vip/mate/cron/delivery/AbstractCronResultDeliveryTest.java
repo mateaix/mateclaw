@@ -1,18 +1,21 @@
 package vip.mate.cron.delivery;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import vip.mate.cron.model.CronJobEntity;
 import vip.mate.dashboard.model.CronJobRunEntity;
 import vip.mate.dashboard.repository.CronJobRunMapper;
 
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
@@ -102,6 +105,75 @@ class AbstractCronResultDeliveryTest {
     }
 
     @Test
+    void claimRun_acceptsOnlyFreshOrLegacyDeliveryState() {
+        when(runMapper.update(any(), any(Wrapper.class))).thenReturn(0);
+
+        AbstractCronResultDelivery strategy = new AbstractCronResultDelivery(runMapper) {
+            @Override public boolean supports(CronJobEntity j) { return true; }
+            @Override protected DeliveryOutcome doDeliver(
+                    CronJobEntity j, AssistantMessage r, CronJobRunEntity ignored) {
+                return DeliveryOutcome.delivered("never");
+            }
+        };
+
+        strategy.deliver(job, new AssistantMessage("hi"), run);
+
+        @SuppressWarnings("rawtypes")
+        ArgumentCaptor<Wrapper> captor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(runMapper).update(isNull(), captor.capture());
+        Wrapper<?> claim = captor.getValue();
+        assertTrue(claim.getSqlSegment().contains("delivery_status IS NULL"));
+        assertTrue(whereValues(claim).contains("NONE"));
+        assertFalse(whereValues(claim).contains("PENDING"),
+                "an already-PENDING delivery must not be claimable again");
+    }
+
+    @Test
+    void deliveredTerminalWrite_requiresPendingFence() {
+        when(runMapper.update(any(), any(Wrapper.class))).thenReturn(1, 1);
+
+        AbstractCronResultDelivery strategy = new AbstractCronResultDelivery(runMapper) {
+            @Override public boolean supports(CronJobEntity j) { return true; }
+            @Override protected DeliveryOutcome doDeliver(
+                    CronJobEntity j, AssistantMessage r, CronJobRunEntity ignored) {
+                return DeliveryOutcome.delivered("user-x");
+            }
+        };
+
+        strategy.deliver(job, new AssistantMessage("hi"), run);
+
+        @SuppressWarnings("rawtypes")
+        ArgumentCaptor<Wrapper> captor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(runMapper, times(2)).update(isNull(), captor.capture());
+        List<Wrapper> writes = captor.getAllValues();
+        assertTrue(whereValues(writes.get(1)).contains("PENDING"),
+                "late success must not overwrite a stale-cleanup terminal state");
+    }
+
+    @Test
+    void failedTerminalWrite_requiresPendingFence() {
+        when(runMapper.update(any(), any(Wrapper.class))).thenReturn(1, 1);
+
+        AbstractCronResultDelivery strategy = new AbstractCronResultDelivery(runMapper) {
+            @Override public boolean supports(CronJobEntity j) { return true; }
+            @Override protected DeliveryOutcome doDeliver(
+                    CronJobEntity j, AssistantMessage r, CronJobRunEntity ignored) {
+                throw new IllegalStateException("delivery failed");
+            }
+        };
+
+        assertThrows(IllegalStateException.class,
+                () -> strategy.deliver(job, new AssistantMessage("hi"), run));
+
+        @SuppressWarnings("rawtypes")
+        ArgumentCaptor<Wrapper> captor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(runMapper, times(2)).update(isNull(), captor.capture());
+        List<Wrapper> writes = captor.getAllValues();
+        assertTrue(whereValues(writes.get(1)).contains("PENDING"),
+                "late failure must not overwrite a stale-cleanup terminal state");
+    }
+
+    @Test
     void deliver_doDeliverThrows_marksNotDeliveredAndRethrows() {
         // Claim returns 1, then markNotDelivered returns 1
         when(runMapper.update(any(), any(Wrapper.class))).thenReturn(1, 1);
@@ -172,5 +244,17 @@ class AbstractCronResultDeliveryTest {
         } finally {
             pool.shutdownNow();
         }
+    }
+
+    private static Set<Object> whereValues(Wrapper<?> rawWrapper) {
+        AbstractWrapper<?, ?, ?> wrapper = (AbstractWrapper<?, ?, ?>) rawWrapper;
+        String where = wrapper.getSqlSegment();
+        Set<Object> values = new HashSet<>();
+        wrapper.getParamNameValuePairs().forEach((key, value) -> {
+            if (where.contains(key)) {
+                values.add(value);
+            }
+        });
+        return values;
     }
 }

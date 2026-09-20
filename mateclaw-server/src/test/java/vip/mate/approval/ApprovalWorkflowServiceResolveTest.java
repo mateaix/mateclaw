@@ -209,6 +209,50 @@ class ApprovalWorkflowServiceResolveTest {
     }
 
     @Test
+    @DisplayName("team replay claims PENDING before execution and consumes exact APPROVED claim")
+    void teamReplayClaimIsDurableAndSingleShot() {
+        PendingApproval pending = seedPending("pid-team", "conv-team", "shell");
+        pending.setToolCallPayload("{\"name\":\"shell\"}");
+        when(approvalMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
+        when(conversationService.markPendingApprovalsResolved(
+                eq("conv-team"), eq(Set.of("pid-team")), eq(MetadataDecision.APPROVED)))
+                .thenReturn(1);
+
+        ResolveOutcome claimed = workflow.claimForReplay("pid-team", "alice");
+        ResolveOutcome consumed = workflow.consumeReplayClaim("pid-team", "alice");
+
+        assertThat(claimed.decision()).isEqualTo("approved");
+        assertThat(pending.getStatus()).isEqualTo("consumed");
+        assertThat(consumed.isConsumed()).isTrue();
+        assertThat(consumed.consumedSnapshot().getToolCallPayload())
+                .isEqualTo("{\"name\":\"shell\"}");
+        assertThat(approvalService.getPending("pid-team")).isEmpty();
+        verify(approvalMapper, times(2)).update(isNull(), any(Wrapper.class));
+    }
+
+    @Test
+    @DisplayName("an APPROVED replay claim is recoverable from DB after restart")
+    void replayClaimRecoversFromDatabase() {
+        ToolApprovalEntity entity = new ToolApprovalEntity();
+        entity.setPendingId("pid-restart");
+        entity.setConversationId("conv-restart");
+        entity.setUserId("alice");
+        entity.setAgentId("201");
+        entity.setToolName("shell");
+        entity.setToolArguments("{}");
+        entity.setToolCallPayload("{\"name\":\"shell\"}");
+        entity.setSummary("approved replay");
+        entity.setStatus("APPROVED");
+        when(approvalMapper.selectOne(any())).thenReturn(entity);
+
+        PendingApproval recovered = workflow.getReplayClaim("pid-restart").orElseThrow();
+
+        assertThat(recovered.getStatus()).isEqualTo("approved");
+        assertThat(recovered.getConversationId()).isEqualTo("conv-restart");
+        assertThat(recovered.getToolCallPayload()).isEqualTo("{\"name\":\"shell\"}");
+    }
+
+    @Test
     @DisplayName("cancelStalePending issues a SUPERSEDED outcome per pending in the conversation")
     void cancelStalePendingMultipleEntries() {
         PendingApproval a = seedPending("pid-stale-A", "conv-stale", "write_file");

@@ -5,6 +5,8 @@ import org.junit.jupiter.api.Test;
 import vip.mate.tool.document.GeneratedFileCache;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertSame;
 
@@ -51,7 +53,10 @@ class GeneratedFileScrubberTest {
         GeneratedFileScrubber.AttachmentHit hit = r.attachments().get(0);
         assertEquals("report.pdf", hit.fileName());
         assertEquals("file", hit.mediaType());
-        assertSame(bytes, hit.bytes());
+        assertArrayEquals(bytes, hit.bytes());
+        assertNotSame(bytes, hit.bytes(), "attachment owns a copy of the registered version");
+        hit.bytes()[0] = 'X';
+        assertArrayEquals(bytes, cache.get(id).orElseThrow().bytes());
     }
 
     @Test

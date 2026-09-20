@@ -1,0 +1,223 @@
+{
+  "schemaVersion" : 1,
+  "suiteId" : "goal-boundaries-v1",
+  "suiteSha256" : "3399b3a40ea1f8ad2ac4307b85f4e045c3dba0b87d7474c9367486b3d6b6f78d",
+  "codeRevision" : "f606668565f5e340f79c3468d29551a5975a9e63",
+  "executionMode" : "offline_synthetic_evaluator_replay",
+  "onlineModelCalls" : 0,
+  "agentTaskSuccessRate" : "not_measured",
+  "onlineCost" : "not_measured",
+  "matchedCases" : 10,
+  "mismatchedCases" : 0,
+  "cases" : [ {
+    "id" : "empty-evidence",
+    "task" : "Deliver a report and verify its contents",
+    "source" : "cycle-001 reproduced failure; GoalCriteriaCodecTest.blankEvidenceCannotPassNewOrPersistedCriteria",
+    "boundary" : "Claimed pass without evidence is rejected",
+    "expected" : {
+      "completed" : false,
+      "score" : 0.0,
+      "decision" : "continue",
+      "remainingIds" : [ "C1", "C2" ],
+      "fixtureCalls" : 1
+    },
+    "actual" : {
+      "completed" : false,
+      "score" : 0.0,
+      "decision" : "continue",
+      "remainingIds" : [ "C1", "C2" ],
+      "fixtureCalls" : 1
+    },
+    "matched" : true,
+    "error" : null
+  }, {
+    "id" : "inherited-empty-pass",
+    "task" : "Finish a report after resuming a persisted checklist",
+    "source" : "cycle-001 persisted blank-evidence boundary",
+    "boundary" : "An omitted historical pass with blank evidence cannot complete",
+    "expected" : {
+      "completed" : false,
+      "score" : 0.0,
+      "decision" : "continue",
+      "remainingIds" : [ "C1" ],
+      "fixtureCalls" : 1
+    },
+    "actual" : {
+      "completed" : false,
+      "score" : 0.0,
+      "decision" : "continue",
+      "remainingIds" : [ "C1" ],
+      "fixtureCalls" : 1
+    },
+    "matched" : true,
+    "error" : null
+  }, {
+    "id" : "cumulative-progress",
+    "task" : "Verify a report created in a previous turn",
+    "source" : "GoalEvaluationServiceTest",
+    "boundary" : "Previously evidenced criterion survives omitted delta",
+    "expected" : {
+      "completed" : true,
+      "score" : 1.0,
+      "decision" : "completed",
+      "remainingIds" : [ ],
+      "fixtureCalls" : 1
+    },
+    "actual" : {
+      "completed" : true,
+      "score" : 1.0,
+      "decision" : "completed",
+      "remainingIds" : [ ],
+      "fixtureCalls" : 1
+    },
+    "matched" : true,
+    "error" : null
+  }, {
+    "id" : "unknown-criterion",
+    "task" : "Create report.md with a fixed checklist",
+    "source" : "GoalCriteriaCodecTest.merge_unknownVerdictId_isIgnored",
+    "boundary" : "A model inventing C99 cannot pass C1",
+    "expected" : {
+      "completed" : false,
+      "score" : 0.0,
+      "decision" : "continue",
+      "remainingIds" : [ "C1" ],
+      "fixtureCalls" : 1
+    },
+    "actual" : {
+      "completed" : false,
+      "score" : 0.0,
+      "decision" : "continue",
+      "remainingIds" : [ "C1" ],
+      "fixtureCalls" : 1
+    },
+    "matched" : true,
+    "error" : null
+  }, {
+    "id" : "contradicted-prior",
+    "task" : "Recheck a previously created report",
+    "source" : "GoalEvaluationServiceTest",
+    "boundary" : "Explicit contradiction revokes the prior pass",
+    "expected" : {
+      "completed" : false,
+      "score" : 0.0,
+      "decision" : "continue",
+      "remainingIds" : [ "C1" ],
+      "fixtureCalls" : 1
+    },
+    "actual" : {
+      "completed" : false,
+      "score" : 0.0,
+      "decision" : "continue",
+      "remainingIds" : [ "C1" ],
+      "fixtureCalls" : 1
+    },
+    "matched" : true,
+    "error" : null
+  }, {
+    "id" : "bootstrap-only",
+    "task" : "Create a report with no checklist yet",
+    "source" : "GoalEvaluationServiceTest",
+    "boundary" : "Bootstrap defines criteria and cannot complete",
+    "expected" : {
+      "completed" : false,
+      "score" : 0.0,
+      "decision" : "continue",
+      "remainingIds" : [ "C1" ],
+      "fixtureCalls" : 1
+    },
+    "actual" : {
+      "completed" : false,
+      "score" : 0.0,
+      "decision" : "continue",
+      "remainingIds" : [ "C1" ],
+      "fixtureCalls" : 1
+    },
+    "matched" : true,
+    "error" : null
+  }, {
+    "id" : "malformed-response",
+    "task" : "Verify the report after evaluator output corruption",
+    "source" : "GoalEvaluationServiceTest",
+    "boundary" : "Malformed model output degrades to fallback",
+    "expected" : {
+      "completed" : false,
+      "score" : 0.0,
+      "decision" : "fallback",
+      "remainingIds" : [ "C1" ],
+      "fixtureCalls" : 1
+    },
+    "actual" : {
+      "completed" : false,
+      "score" : 0.0,
+      "decision" : "fallback",
+      "remainingIds" : [ "C1" ],
+      "fixtureCalls" : 1
+    },
+    "matched" : true,
+    "error" : null
+  }, {
+    "id" : "valid-semantic-pass",
+    "task" : "Create report and verify a supplied excerpt",
+    "source" : "GoalEvaluationServiceTest",
+    "boundary" : "Nonblank semantic evidence retains legacy completion",
+    "expected" : {
+      "completed" : true,
+      "score" : 1.0,
+      "decision" : "completed",
+      "remainingIds" : [ ],
+      "fixtureCalls" : 1
+    },
+    "actual" : {
+      "completed" : true,
+      "score" : 1.0,
+      "decision" : "completed",
+      "remainingIds" : [ ],
+      "fixtureCalls" : 1
+    },
+    "matched" : true,
+    "error" : null
+  }, {
+    "id" : "empty-terminal-answer",
+    "task" : "Continue report task without a final answer",
+    "source" : "GoalEvaluationServiceTest",
+    "boundary" : "No answer means no evaluator fixture call",
+    "expected" : {
+      "completed" : false,
+      "score" : 0.0,
+      "decision" : "fallback",
+      "remainingIds" : [ "C1" ],
+      "fixtureCalls" : 0
+    },
+    "actual" : {
+      "completed" : false,
+      "score" : 0.0,
+      "decision" : "fallback",
+      "remainingIds" : [ "C1" ],
+      "fixtureCalls" : 0
+    },
+    "matched" : true,
+    "error" : null
+  }, {
+    "id" : "forged-text-is-not-strong-acceptance",
+    "task" : "Deliver a file that exists in the workspace",
+    "source" : "RFC-096 text/Observe trust boundary; synthetic limitation probe, not observed model behavior",
+    "boundary" : "Known limitation: fabricated nonblank evidence still passes semantic policy; no file execution is performed",
+    "expected" : {
+      "completed" : true,
+      "score" : 1.0,
+      "decision" : "completed",
+      "remainingIds" : [ ],
+      "fixtureCalls" : 1
+    },
+    "actual" : {
+      "completed" : true,
+      "score" : 1.0,
+      "decision" : "completed",
+      "remainingIds" : [ ],
+      "fixtureCalls" : 1
+    },
+    "matched" : true,
+    "error" : null
+  } ]
+}

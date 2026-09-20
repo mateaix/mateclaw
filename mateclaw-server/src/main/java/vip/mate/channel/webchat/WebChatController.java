@@ -1362,6 +1362,8 @@ public class WebChatController {
                             conversationId, actor, wsId, null).withSender(null, "api", null);
                 }
 
+                replayOrigin = replayOrigin.withApprovalId(snapshot.getPendingId());
+
                 // Neutral replay prompt (aligned with IM + web channels — naming a
                 // tool here can mislead the LLM on fallthrough).
                 String replayPrompt = "继续执行已批准的工具调用。";

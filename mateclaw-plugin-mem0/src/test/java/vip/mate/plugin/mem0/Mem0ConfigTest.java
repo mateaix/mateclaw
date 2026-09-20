@@ -35,4 +35,10 @@ class Mem0ConfigTest {
         Mem0Config c = new Mem0Config("http://localhost:8080", null, true, true, 5, 1000);
         assertThat(c.normalizedBaseUrl()).isEqualTo("http://localhost:8080");
     }
+
+    @Test
+    void legacyConstructorUsesBoundedQueueDefault() {
+        Mem0Config c = new Mem0Config("http://localhost:8080", null, true, true, 5, 1000);
+        assertThat(c.syncQueueCapacity()).isEqualTo(Mem0Config.DEFAULT_SYNC_QUEUE_CAPACITY);
+    }
 }
