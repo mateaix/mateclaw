@@ -103,7 +103,7 @@ class WebChatRegenerateTest {
         waitForEmitterToSettle(emitter);
         // No user message → sendErrorAndComplete fires synchronously; assistant
         // count stays 0.
-        String cid = WebChatController.deriveConversationId(API_KEY, "vEmpty", "s1");
+        String cid = WebChatController.deriveConversationId(CHANNEL_ID, "vEmpty", "s1");
         assertThat(countAssistantMessages(cid)).isZero();
     }
 
@@ -111,7 +111,7 @@ class WebChatRegenerateTest {
     @DisplayName("regenerate deletes the last assistant reply")
     void deletesLastAssistantReply() throws InterruptedException {
         controller.createSession(API_KEY, req("vDel", "s1"));
-        String cid = WebChatController.deriveConversationId(API_KEY, "vDel", "s1");
+        String cid = WebChatController.deriveConversationId(CHANNEL_ID, "vDel", "s1");
         conversationService.saveMessage(cid, "user", "hello");
         conversationService.saveMessage(cid, "assistant", "first reply");
 
@@ -137,7 +137,7 @@ class WebChatRegenerateTest {
         waitForEmitterToSettle(emitter);
         // No way to read the SSE event body from a raw SseEmitter in a unit test;
         // the assertion is implicit — no DB changes happen on the auth-fail path.
-        String cid = WebChatController.deriveConversationId(API_KEY, "vTok", "s1");
+        String cid = WebChatController.deriveConversationId(CHANNEL_ID, "vTok", "s1");
         assertThat(countAssistantMessages(cid)).isZero();
     }
 
@@ -157,7 +157,7 @@ class WebChatRegenerateTest {
     @DisplayName("regenerate uses the last user message as the seed")
     void seedsFromLastUserMessage() throws InterruptedException {
         controller.createSession(API_KEY, req("vSeed", "s1"));
-        String cid = WebChatController.deriveConversationId(API_KEY, "vSeed", "s1");
+        String cid = WebChatController.deriveConversationId(CHANNEL_ID, "vSeed", "s1");
         conversationService.saveMessage(cid, "user", "first question");
         conversationService.saveMessage(cid, "assistant", "first reply");
         conversationService.saveMessage(cid, "user", "second question");
