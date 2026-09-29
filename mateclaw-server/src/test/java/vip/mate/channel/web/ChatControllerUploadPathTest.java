@@ -21,6 +21,27 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ChatControllerUploadPathTest {
 
     @Test
+    void directoryAttachmentWithEmptyStoredNameIsNotAnUpload() throws Exception {
+        ChatController controller = org.mockito.Mockito.mock(ChatController.class,
+                org.mockito.Mockito.CALLS_REAL_METHODS);
+        var resolver = org.mockito.Mockito.mock(
+                vip.mate.workspace.core.service.ChatUploadLocationResolver.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(controller, "uploadLocationResolver", resolver);
+        var part = new vip.mate.workspace.conversation.model.MessageContentPart();
+        part.setType("file");
+        part.setContentType("inode/directory");
+        part.setStoredName("");
+        part.setPath("/workspace/project");
+        var origin = vip.mate.agent.context.ChatOrigin.web("conv", "alice", 7L, null);
+
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(() ->
+                org.springframework.test.util.ReflectionTestUtils.invokeMethod(controller,
+                        "validateUploadedParts", "conv", origin, java.util.List.of(part)));
+        assertThat(part.getPath()).isEqualTo("/workspace/project");
+        org.mockito.Mockito.verifyNoInteractions(resolver);
+    }
+
+    @Test
     @DisplayName("default root: returns chat-uploads/{convId}/{storedName}, not absolute")
     void defaultRootIsRelative() {
         // Mirrors the resolver's default root: absolute + normalized.

@@ -2126,7 +2126,7 @@ public class ChatController {
                                        List<MessageContentPart> parts) {
         if (parts == null) return;
         for (MessageContentPart part : parts) {
-            if (part == null || part.getStoredName() == null) continue;
+            if (part == null || part.getStoredName() == null || part.getStoredName().isBlank()) continue;
             Path file = uploadLocationResolver.resolveExistingFile(origin, part.getStoredName());
             if (file == null) {
                 throw new IllegalArgumentException("聊天附件不存在或不属于当前会话");

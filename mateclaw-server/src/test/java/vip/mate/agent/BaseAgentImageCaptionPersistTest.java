@@ -64,7 +64,7 @@ class BaseAgentImageCaptionPersistTest {
         h.agent.callBuildCurrentTurn(msg, "报错的行号是多少");
 
         ArgumentCaptor<String> question = ArgumentCaptor.forClass(String.class);
-        verify(h.caption).caption(any(), any(), any(), question.capture());
+        verify(h.caption).caption(any(), any(), any(), question.capture(), any());
         assertEquals("报错的行号是多少", question.getValue(),
                 "the user's question (text part) must drive a context-aware caption");
     }
@@ -81,7 +81,7 @@ class BaseAgentImageCaptionPersistTest {
         h.agent.callBuildCurrentTurn(msg, "[图片]");
 
         ArgumentCaptor<String> question = ArgumentCaptor.forClass(String.class);
-        verify(h.caption).caption(any(), any(), any(), question.capture());
+        verify(h.caption).caption(any(), any(), any(), question.capture(), any());
         assertEquals(null, question.getValue(),
                 "no text part → null question → caption falls back to generic description");
     }
@@ -115,7 +115,7 @@ class BaseAgentImageCaptionPersistTest {
                 MultimodalRoutingDecision.sidecar(sidecar,
                         EnumSet.of(ModelCapabilityService.Modality.VISION),
                         EnumSet.of(ModelCapabilityService.Modality.VISION)));
-        when(caption.caption(any(), any(), any(), any()))
+        when(caption.caption(any(), any(), any(), any(), any()))
                 .thenReturn(MediaCaptionService.CaptionResult.success(DESCRIPTION, 12L, false));
 
         TestAgent agent = new TestAgent(conv);
