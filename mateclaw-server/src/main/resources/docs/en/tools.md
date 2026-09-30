@@ -155,6 +155,33 @@ Features:
 - **Security wrapping** — results sanitized before return.
 - **Provider-native + tool search coexistence** — models with their own search (ChatGPT, Gemini) can use that natively while tool search is available as fallback.
 
+#### You.com provider (optional plugin)
+
+::: warning Not in the default stack
+The You.com provider is an **optional community plugin** (`mateclaw-plugin-you-search`) — it is NOT part of a default MateClaw install. It requires a You.com API key. The built-in provider chain (DuckDuckGo / SearXNG / Serper / Tavily) is untouched; the plugin adds a `you` provider that joins the chain once installed and configured.
+:::
+
+[You.com](https://you.com) provides a web search API with `freshness` / `language` / `count` parameters matching the tool's own vocabulary, so the plugin maps them 1:1. Results carry title, URL, snippet, source domain, and page age.
+
+Installation:
+
+1. **Get an API key** at [you.com/platform/api-keys](https://you.com/platform/api-keys).
+2. **Build the plugin JAR**: from the MateClaw repo root, run `mvn -pl mateclaw-plugin-you-search -am package` — the JAR lands at `mateclaw-plugin-you-search/target/mateclaw-plugin-you-search-*.jar`.
+3. **Drop the JAR** into MateClaw's `plugins/` directory.
+4. **Configure**: in the plugin admin UI, set `apiKey` (required) and optionally `country`, `safesearch`, and `timeoutMs`. Restart or reload the plugin.
+
+Configuration:
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `apiKey` | string | yes | — | You.com API key, sent as the `X-API-Key` header |
+| `baseUrl` | string | no | `https://ydc-index.io` | You.com Search API base URL (override for proxies) |
+| `country` | string | no | — | Country code for geographical focus, e.g. `us` / `de` |
+| `safesearch` | string | no | — | Content moderation filter: `strict` / `moderate` / `off` |
+| `timeoutMs` | integer | no | `15000` | HTTP timeout in milliseconds |
+
+Once configured, select `you` under `Settings → System → Search Service` (or leave it on auto-detect — the provider participates in the chain whenever it is available). On any API error the provider throws and the platform falls through to the next provider, so a You.com outage degrades gracefully.
+
 ### ShellExecuteTool
 
 Cross-platform shell execution. Linux/macOS uses `/bin/sh -c`; Windows uses `cmd.exe /D /S /C`. **Every call is gated by Tool Guard.**

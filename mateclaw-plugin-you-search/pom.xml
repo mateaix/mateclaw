@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>vip.mate</groupId>
+        <artifactId>mateclaw</artifactId>
+        <version>${revision}</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>mateclaw-plugin-you-search</artifactId>
+    <packaging>jar</packaging>
+
+    <name>MateClaw You.com Search Provider Plugin</name>
+    <description>
+        Optional community plugin that adds You.com as a web-search provider via the MateClaw
+        Plugin SDK. Implements PluginSearchProvider against the You.com Search API
+        (POST /v1/search with X-API-Key auth). Not in the default stack; users must build
+        the JAR and install it into the plugins/ directory, then configure their You.com
+        API key in the plugin admin UI.
+    </description>
+
+    <dependencies>
+        <!-- MateClaw Plugin API -->
+        <dependency>
+            <groupId>vip.mate</groupId>
+            <artifactId>mateclaw-plugin-api</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Spring AI (provided by the platform) — PluginContext method signatures
+             reference ToolCallback/ChatModel, so it must be resolvable at compile time -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-model</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Jackson (provided by the platform parent classloader) -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- SLF4J (provided by the platform) -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Test only -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- slf4j-simple: gives the plugin a real logger during tests so
+             LoggerFactory.getLogger doesn't fall back to NOP silently -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-simple</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>
