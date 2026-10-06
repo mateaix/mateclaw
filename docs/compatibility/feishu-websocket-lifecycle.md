@@ -10,9 +10,12 @@ business messages. A quiet channel does not imply a broken connection.
 `FeishuWebSocketClient` is a deliberately narrow, version-bound compatibility
 bridge. SDK 2.7.1 has a private constructor and no public resource-disposal or
 transport-status APIs. Its `close()` does not shut down the executor. The bridge
-validates `executor`, `httpClient`, and `conn` field types, configures the dedicated
+validates `executor`, `httpClient`, and `conn` field types. Reads of the non-volatile
+`conn` field acquire the SDK monitor used by `disconnect()`. It configures the dedicated
 HTTP client before use, and releases SDK/HTTP executors and idle connections on
-permanent close. It cancels HTTP calls and interrupts the starter before taking
+permanent close. It cancels the underlying socket after SDK close (which only
+enqueues a graceful close), outside the SDK monitor to allow failure callbacks.
+It cancels HTTP calls and interrupts the starter before taking
 the lifecycle lock, so a pending handshake cannot prevent shutdown. Do not remove
 these contract tests or upgrade the SDK without rechecking its lifecycle.
 

@@ -69,7 +69,10 @@ final class FeishuWebSocketClient implements AutoCloseable {
     }
 
     boolean isConnected() {
-        return ready && !closed.get() && read(CONNECTION, client) != null;
+        // SDK 2.7.1 conn is non-volatile; disconnect() clears it under this monitor.
+        synchronized (client) {
+            return ready && !closed.get() && read(CONNECTION, client) != null;
+        }
     }
 
     @Override
@@ -81,12 +84,23 @@ final class FeishuWebSocketClient implements AutoCloseable {
         Thread thread = starter;
         if (thread != null && thread != Thread.currentThread()) thread.interrupt();
         synchronized (lifecycleLock) {
+            WebSocket connection = null;
             try {
-                client.close();
+                synchronized (client) {
+                    connection = (WebSocket) read(CONNECTION, client);
+                    client.close();
+                }
             } finally {
-                executor.shutdownNow();
-                httpClient.dispatcher().executorService().shutdownNow();
-                httpClient.connectionPool().evictAll();
+                try {
+                    // SDK close() only enqueues a graceful close. Permanent disposal must
+                    // abort the socket even when the peer never completes the handshake.
+                    // Cancel outside the SDK monitor so failure callbacks can acquire it.
+                    if (connection != null) connection.cancel();
+                } finally {
+                    executor.shutdownNow();
+                    httpClient.dispatcher().executorService().shutdownNow();
+                    httpClient.connectionPool().evictAll();
+                }
             }
         }
     }
