@@ -93,6 +93,13 @@ class ModelDiscoveryServiceProbeValidationTest {
         assertNotNull(result.getErrorMessage());
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"NOT_JSON", "{\"error\":\"failed\"}"})
+    void rejectsTrailingContentAfterAValidCompletion(String suffix) {
+        response.set(completion("连接正常", "stop") + suffix);
+        assertFalse(service.testModel("loopback", "probe-model").isSuccess());
+    }
+
     @Test
     void acceptsCompletedTextAndSendsBoundedBudget() {
         response.set(completion("连接正常", "stop"));

@@ -1,6 +1,7 @@
 package vip.mate.llm.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -916,7 +917,9 @@ public class ModelDiscoveryService {
         }
         JsonNode root;
         try {
-            root = objectMapper.readTree(body);
+            root = objectMapper.reader()
+                    .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+                    .readTree(body);
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("模型探针响应不是有效 JSON，未取得完整回复");
         }
