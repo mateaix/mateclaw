@@ -37,7 +37,7 @@ class ModelDiscoveryServiceTestPromptTest {
         assertEquals(chatTemplateKwargs, requestBody.get("chat_template_kwargs"),
                 "the nested map must be forwarded verbatim, not flattened or re-wrapped");
         assertEquals("qwen3-32b", requestBody.get("model"));
-        assertEquals(10, requestBody.get("max_tokens"));
+        assertEquals(512, requestBody.get("max_tokens"));
         assertEquals(0, requestBody.get("temperature"));
     }
 
@@ -53,8 +53,8 @@ class ModelDiscoveryServiceTestPromptTest {
 
         assertEquals(0, requestBody.get("temperature"),
                 "the probe's fixed temperature=0 must win over a reserved generateKwargs key");
-        assertEquals(10, requestBody.get("max_tokens"),
-                "the probe's fixed max_tokens=10 must win over a reserved generateKwargs key");
+        assertEquals(512, requestBody.get("max_tokens"),
+                "the probe's fixed max_tokens=512 must win over a reserved generateKwargs key");
         assertFalse(requestBody.containsKey("maxTokens"),
                 "reserved keys (even in their original casing) must not leak into the body verbatim");
         assertTrue(requestBody.containsKey("chat_template_kwargs"),
@@ -94,7 +94,7 @@ class ModelDiscoveryServiceTestPromptTest {
 
         assertEquals(Set.of("model", "messages", "max_tokens", "temperature"), requestBody.keySet());
         assertEquals("gpt-4-turbo", requestBody.get("model"));
-        assertEquals(10, requestBody.get("max_tokens"));
+        assertEquals(512, requestBody.get("max_tokens"));
         assertEquals(0, requestBody.get("temperature"));
 
         Map<String, Object> requestBodyFromNull = ModelDiscoveryService.buildTestPromptRequestBody("gpt-4-turbo", null);
@@ -108,6 +108,7 @@ class ModelDiscoveryServiceTestPromptTest {
                 "kimi-for-coding", Map.of("temperature", 0.2));
 
         assertEquals(1.0d, requestBody.get("temperature"));
+        assertEquals(4096, requestBody.get("max_tokens"));
     }
     @Test
     @DisplayName("OpenAI reasoning probes use completion-token budgets and omit unsupported sampling parameters (#640)")
@@ -126,7 +127,7 @@ class ModelDiscoveryServiceTestPromptTest {
     @DisplayName("GPT-4o probes retain their supported standard parameters")
     void gpt4oProbeRemainsStandard() {
         Map<String, Object> body = ModelDiscoveryService.buildTestPromptRequestBody("gpt-4o", Map.of());
-        assertEquals(10, body.get("max_tokens"));
+        assertEquals(512, body.get("max_tokens"));
         assertEquals(0, body.get("temperature"));
         assertFalse(body.containsKey("max_completion_tokens"));
     }
