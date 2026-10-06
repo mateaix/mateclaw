@@ -63,7 +63,7 @@ import java.util.concurrent.TimeUnit;
  * - enable_nickname_cache: 是否通过 Contact API 获取用户昵称（默认 true）
  * - media_download_enabled: 是否下载消息中的媒体文件（默认 false）
  * - enable_quoted_context: 是否拉取被引用消息内容注入到 prompt（默认 true）
- * - silent_disconnect_threshold_seconds: WebSocket 静默断连阈值（默认 1800，0 禁用）
+ * - silent_disconnect_threshold_seconds: 已弃用；健康检查使用协议心跳，不依赖消息频率
  * - stale_event_threshold_seconds: 过滤旧事件阈值（默认 30，0 禁用）
  * - card_format: 卡片格式化模式 "auto"（默认）| "always" | "never"
  *               auto: 根据内容自动检测；always: 全部包卡片；never: 全部纯文本（降级/调试用）
@@ -126,22 +126,15 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
     private static final int NICKNAME_CACHE_MAX = 500;
 
     /** WebSocket 客户端（websocket 模式） */
-    private volatile com.lark.oapi.ws.Client wsClient;
+    private volatile FeishuWebSocketClient wsClient;
+    private final Object wsLifecycleLock = new Object();
 
     /** WebSocket 连接线程 */
     private volatile Thread wsThread;
 
-    /** WebSocket 静默断连看门狗：定期检查最近事件时间，超过阈值就强制重连 */
-    private ScheduledFuture<?> silentDisconnectWatchdog;
-
-    /** 是否已收到至少一个事件（用于避免新连接立即触发静默超时） */
-    private volatile boolean hasReceivedFirstEvent = false;
-
-    /** 看门狗检查间隔（秒） */
-    private static final long WATCHDOG_INTERVAL_SECONDS = 60L;
-
-    /** 静默断连默认阈值（秒）：30 分钟无事件就视为可疑 */
-    private static final long DEFAULT_SILENT_THRESHOLD_SECONDS = 1800L;
+    /** Poll transport failure; user-message silence is never a disconnect signal. */
+    private ScheduledFuture<?> transportWatchdog;
+    private static final long WATCHDOG_INTERVAL_SECONDS = 15L;
 
     /** 旧事件过滤默认阈值（秒）：超过 30 秒的事件视为重连后回放 */
     private static final long DEFAULT_STALE_THRESHOLD_SECONDS = 30L;
@@ -382,7 +375,38 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
     // ==================== 生命周期 ====================
 
     @Override
+    public Duration stalenessThreshold() {
+        return Duration.ZERO; // Protocol ping/pong detects dead transports, even on quiet channels.
+    }
+
+    @Override
+    protected void onReconnectSuccess() {
+        synchronized (wsLifecycleLock) {
+            if (!running.get()) return;
+            if (connectsAsynchronously() && (wsClient == null || !wsClient.isConnected())) {
+                throw new IllegalStateException("WebSocket closed before connection became ready");
+            }
+            super.onReconnectSuccess();
+        }
+    }
+
+    @Override
+    protected boolean connectsAsynchronously() {
+        return "websocket".equals(getConfigString("connection_mode", "websocket"));
+    }
+
+    @Override
     protected void doStart() {
+        try {
+            initializeChannel();
+        } catch (RuntimeException e) {
+            doStop();
+            if (reconnectScheduler != null) reconnectScheduler.shutdownNow();
+            throw e;
+        }
+    }
+
+    private void initializeChannel() {
         String appId = getConfigString("app_id");
         String appSecret = getConfigString("app_secret");
 
@@ -439,7 +463,9 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
         // 关闭 WebSocket
         stopWebSocket();
 
+        HttpClient previousHttpClient = this.httpClient;
         this.httpClient = null;
+        if (previousHttpClient != null) previousHttpClient.shutdownNow();
         this.tenantAccessToken = null;
         // Reset bot-open-id state under the same lock getBotOpenId uses, so a
         // dispatch thread mid-fetch sees a consistent (cleared) view rather than
@@ -462,27 +488,11 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
         String appSecret = getConfigString("app_secret");
         String connectionMode = getConfigString("connection_mode", "websocket");
 
-        // 重新建立 HTTP 客户端
-        this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(10))
-                .build();
-
-        try {
-            refreshTenantAccessToken();
-        } catch (Exception e) {
-            log.warn("[feishu] Token refresh during reconnect failed: {}", e.getMessage());
-        }
-
-        // Re-prefetch bot open_id after reconnect: same dispatch-thread latency
-        // concern as doStart, plus picks up a rotated app identity if any.
-        getBotOpenId();
-
+        // Token refresh has its own schedule; a WebSocket reconnect does not rotate HTTP state.
         if ("websocket".equals(connectionMode)) {
             log.info("[feishu] Reconnecting WebSocket...");
             stopWebSocket();
-            // 同步连接：在当前重连线程中直接阻塞调用 start()
-            // 连接成功 start() 会一直阻塞（不会返回到这里）
-            // 连接失败 start() 抛异常，由 AbstractChannelAdapter.scheduleReconnect 捕获并触发 onReconnectFailed
+            // Wait for the handshake; failures propagate to the adapter's single backoff loop.
             startWebSocketSync(appId, appSecret);
         }
 
@@ -494,7 +504,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
     /**
      * 创建 WebSocket 客户端实例（不启动连接）
      */
-    private com.lark.oapi.ws.Client createWsClient(String appId, String appSecret) {
+    FeishuWebSocketClient createWsClient(String appId, String appSecret) {
         EventDispatcher eventDispatcher = EventDispatcher.newBuilder("", "")
                 .onP2MessageReceiveV1(new ImService.P2MessageReceiveV1Handler() {
                     @Override
@@ -588,130 +598,94 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
                 })
                 .build();
 
-        return new com.lark.oapi.ws.Client.Builder(appId, appSecret)
+        return new FeishuWebSocketClient(new com.lark.oapi.ws.Client.Builder(appId, appSecret)
                 .eventHandler(eventDispatcher)
                 .autoReconnect(false)  // 由我们的 ExponentialBackoff 控制重连，不用 SDK 内置重连
                 .domain("lark".equals(getConfigString("domain", "feishu"))
                         ? "https://open.larksuite.com"
                         : "https://open.feishu.cn")
-                .build();
+                .build());
     }
 
-    /**
-     * 启动 WebSocket 长连接（异步，用于 doStart 首次启动）
-     * 在守护线程中运行，避免阻塞主线程。连接失败时触发 onDisconnected → 退避重连
-     */
-    private void startWebSocket(String appId, String appSecret) {
-        wsClient = createWsClient(appId, appSecret);
-
-        wsThread = new Thread(() -> {
-            try {
-                log.info("[feishu] WebSocket connecting (long connection)...");
-                wsClient.start();
-                // start() blocks until disconnect; if it returns normally, it means disconnected
-                if (running.get()) {
-                    onDisconnected("WebSocket connection ended");
+    /** First connection is asynchronous; start() returning means handshake initiated. */
+    void startWebSocket(String appId, String appSecret) {
+        synchronized (wsLifecycleLock) {
+            if (!running.get()) return;
+            FeishuWebSocketClient client = createWsClient(appId, appSecret);
+            wsClient = client;
+            wsThread = new Thread(() -> {
+                try {
+                    client.start();
+                    synchronized (wsLifecycleLock) {
+                        if (running.get() && wsClient == client) onReconnectSuccess();
+                    }
+                } catch (Exception e) {
+                    synchronized (wsLifecycleLock) {
+                        if (running.get() && wsClient == client) {
+                            onDisconnected("WebSocket startup failed: " + e.getClass().getSimpleName());
+                        }
+                    }
                 }
-            } catch (Exception e) {
-                log.error("[feishu] WebSocket error: {}", e.getMessage(), e);
-                if (running.get()) {
-                    onDisconnected("WebSocket error: " + e.getMessage());
-                }
-            }
-        }, "feishu-ws-" + channelEntity.getId());
-        wsThread.setDaemon(true);
-        wsThread.start();
-
-        startSilentDisconnectWatchdog();
-    }
-
-    /**
-     * 启动静默断连看门狗。
-     * <p>
-     * SDK 内部有 ping/pong 心跳，正常情况下连接断开会触发 start() 返回 → onDisconnected。
-     * 但少数场景 TCP 层认为连接还在但事件不再流入（NAT 超时、半开连接、对端 hang 死），
-     * SDK 也察觉不到。看门狗每 60s 检查一次「最近事件时间」，超过阈值就强制重连。
-     * <p>
-     * 静默判定有两个前置条件：
-     * 1. 已经收到过至少一个事件（避免新连接立即触发误报）
-     * 2. silent_disconnect_threshold_seconds &gt; 0（设为 0 可禁用看门狗）
-     * <p>
-     * 默认阈值 30 分钟。安静的渠道（一天没几条消息）建议调大到 1-2 小时；
-     * 高频渠道可以调小到 5-10 分钟以更快发现问题。
-     */
-    private void startSilentDisconnectWatchdog() {
-        long thresholdSec = getConfigLong("silent_disconnect_threshold_seconds",
-                DEFAULT_SILENT_THRESHOLD_SECONDS);
-        if (thresholdSec <= 0) {
-            log.debug("[feishu] Silent disconnect watchdog disabled (threshold=0)");
-            return;
-        }
-        long thresholdMs = thresholdSec * 1000L;
-
-        cancelSilentDisconnectWatchdog();
-        silentDisconnectWatchdog = ensureReconnectScheduler().scheduleAtFixedRate(() -> {
-            if (!running.get() || wsClient == null) return;
-            if (!hasReceivedFirstEvent) return; // 没收到首个事件前不算静默
-
-            long silentMs = System.currentTimeMillis() - lastEventTimeMs.get();
-            if (silentMs > thresholdMs) {
-                log.warn("[feishu] Silent WebSocket detected: no events for {}s (threshold {}s), forcing reconnect",
-                        silentMs / 1000, thresholdSec);
-                onDisconnected("silent disconnect: no events for " + (silentMs / 1000) + "s");
-            }
-        }, WATCHDOG_INTERVAL_SECONDS, WATCHDOG_INTERVAL_SECONDS, TimeUnit.SECONDS);
-        log.info("[feishu] Silent disconnect watchdog started (threshold {}s, check every {}s)",
-                thresholdSec, WATCHDOG_INTERVAL_SECONDS);
-    }
-
-    private void cancelSilentDisconnectWatchdog() {
-        if (silentDisconnectWatchdog != null) {
-            silentDisconnectWatchdog.cancel(false);
-            silentDisconnectWatchdog = null;
+            }, "feishu-ws-" + channelEntity.getId());
+            wsThread.setDaemon(true);
+            wsThread.start();
+            startTransportWatchdog();
         }
     }
 
-    /**
-     * 启动 WebSocket 长连接（同步，用于 doReconnect 重连线程）
-     * 在当前线程中阻塞调用 start()：
-     * - 连接成功后 start() 会一直阻塞（收消息），不会返回
-     * - 连接失败 start() 抛异常，由 scheduleReconnect 的 catch 捕获 → onReconnectFailed → 退避递增
-     */
+    private void startTransportWatchdog() {
+        if (transportWatchdog != null) transportWatchdog.cancel(false);
+        transportWatchdog = ensureReconnectScheduler().scheduleWithFixedDelay(
+                this::checkWebSocketTransport, WATCHDOG_INTERVAL_SECONDS,
+                WATCHDOG_INTERVAL_SECONDS, TimeUnit.SECONDS);
+    }
+
+    void checkWebSocketTransport() {
+        synchronized (wsLifecycleLock) {
+            FeishuWebSocketClient client = wsClient;
+            if (running.get() && client != null
+                    && connectionState.get() == ConnectionState.CONNECTED && !client.isConnected()) {
+                // onDisconnected sets RECONNECTING before another probe can schedule a retry.
+                onDisconnected("WebSocket transport closed");
+            }
+        }
+    }
+
     private void startWebSocketSync(String appId, String appSecret) {
-        wsClient = createWsClient(appId, appSecret);
-        log.info("[feishu] WebSocket connecting (long connection)...");
-        // 看门狗必须在 start() 之前启动，否则 start() 阻塞后这一行永远到不了，
-        // 一旦断连后重连这条路径，watchdog 就再也不会被恢复
-        startSilentDisconnectWatchdog();
-        wsClient.start(); // 阻塞：成功则永驻，失败则抛异常
+        FeishuWebSocketClient client;
+        synchronized (wsLifecycleLock) {
+            if (!running.get()) throw new IllegalStateException("Channel stopped");
+            client = createWsClient(appId, appSecret);
+            wsClient = client;
+        }
+        try {
+            client.start();
+            synchronized (wsLifecycleLock) {
+                if (!running.get() || wsClient != client) throw new IllegalStateException("Channel stopped");
+                startTransportWatchdog();
+            }
+        } catch (Exception e) {
+            client.close();
+            throw new IllegalStateException("WebSocket handshake failed", e);
+        }
     }
 
-    /**
-     * 关闭 WebSocket 连接。
-     * <p>
-     * 必须主动关闭底层 WebSocket 连接并触发 SDK 的内部清理（停止 pingLoop、
-     * 释放 ExecutorService）。仅置空引用会导致旧连接的 pingLoop 和线程池
-     * 持续运行，造成文件描述符和线程泄漏，最终使新连接无法建立。
-     * <p>
-     * SDK 2.7.0 起暴露了 public {@code close()} 入口，内部调用 protected
-     * {@code disconnect()} 完成 {@code conn.close(1000) → executor.shutdown() →
-     * 字段清零} 的全套清理。直接调用即可，无需反射。
-     */
+    /** Permanently release the old SDK pool before a new client can be created. */
     private void stopWebSocket() {
-        cancelSilentDisconnectWatchdog();
-        hasReceivedFirstEvent = false;
-        if (wsThread != null) {
-            wsThread.interrupt();
+        FeishuWebSocketClient previous;
+        Thread thread;
+        synchronized (wsLifecycleLock) {
+            if (transportWatchdog != null) {
+                transportWatchdog.cancel(false);
+                transportWatchdog = null;
+            }
+            previous = wsClient;
+            wsClient = null;
+            thread = wsThread;
             wsThread = null;
         }
-        if (wsClient != null) {
-            try {
-                wsClient.close();
-            } catch (Exception e) {
-                log.warn("[feishu] WebSocket close failed: {}", e.getMessage());
-            }
-        }
-        wsClient = null;
+        if (thread != null) thread.interrupt();
+        if (previous != null) previous.close();
     }
 
     /**
@@ -726,9 +700,8 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
         var message = eventBody.getMessage();
         var sender = eventBody.getSender();
 
-        // 任何事件到达都更新活跃时间戳，看门狗用它判断是否静默断连
+        // Record business activity without using message frequency as transport health.
         touchActivity();
-        hasReceivedFirstEvent = true;
 
         // 旧事件过滤：SDK 在重连后可能回放历史事件，按 message.create_time 过滤
         // 远超 stale 阈值的消息（典型场景：连接断了 5 分钟后恢复，5 分钟前的消息再处理一次没意义）

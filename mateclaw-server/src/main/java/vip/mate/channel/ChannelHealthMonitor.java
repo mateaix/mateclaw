@@ -82,12 +82,12 @@ public class ChannelHealthMonitor {
             Duration staleThreshold;
             try {
                 Duration d = adapter.stalenessThreshold();
-                staleThreshold = (d == null || d.isNegative() || d.isZero()) ? DEFAULT_STALE_THRESHOLD : d;
+                staleThreshold = (d == null || d.isNegative()) ? DEFAULT_STALE_THRESHOLD : d;
             } catch (Exception ex) {
                 staleThreshold = DEFAULT_STALE_THRESHOLD;
             }
             if (reason == null && state == AbstractChannelAdapter.ConnectionState.CONNECTED
-                    && sinceLastEvent > staleThreshold.toMillis()) {
+                    && !staleThreshold.isZero() && sinceLastEvent > staleThreshold.toMillis()) {
                 reason = String.format("stale connection, no events for %ds (threshold=%ds)",
                         sinceLastEvent / 1000, staleThreshold.toSeconds());
             }

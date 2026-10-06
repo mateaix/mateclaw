@@ -159,6 +159,7 @@ public abstract class AbstractChannelAdapter implements ChannelAdapter {
      * 重连成功回调
      */
     protected void onReconnectSuccess() {
+        if (!running.get()) return;
         backoff.reset();
         connectionState.set(ConnectionState.CONNECTED);
         lastEventTimeMs.set(System.currentTimeMillis());
@@ -171,6 +172,7 @@ public abstract class AbstractChannelAdapter implements ChannelAdapter {
      * 重连失败回调
      */
     protected void onReconnectFailed(Exception e) {
+        if (!running.get()) return;
         lastError = e.getMessage();
         log.warn("[{}] Reconnect failed for {}: {} (attempt #{})",
                 getChannelType(), channelEntity.getName(), e.getMessage(), backoff.getAttempts());
@@ -182,11 +184,14 @@ public abstract class AbstractChannelAdapter implements ChannelAdapter {
         if (running.compareAndSet(false, true)) {
             log.info("[{}] Starting channel: {}", getChannelType(), channelEntity.getName());
             try {
+                connectionState.set(ConnectionState.RECONNECTING);
                 doStart();
-                connectionState.set(ConnectionState.CONNECTED);
-                lastEventTimeMs.set(System.currentTimeMillis());
-                lastError = null;
-                backoff.reset();
+                if (!connectsAsynchronously()) {
+                    connectionState.set(ConnectionState.CONNECTED);
+                    lastEventTimeMs.set(System.currentTimeMillis());
+                    lastError = null;
+                    backoff.reset();
+                }
                 log.info("[{}] Channel started successfully: {}", getChannelType(), channelEntity.getName());
             } catch (Exception e) {
                 running.set(false);
@@ -196,6 +201,11 @@ public abstract class AbstractChannelAdapter implements ChannelAdapter {
                 throw new RuntimeException("Channel start failed: " + e.getMessage(), e);
             }
         }
+    }
+
+    /** Async transports report CONNECTED only after their handshake completes. */
+    protected boolean connectsAsynchronously() {
+        return false;
     }
 
     @Override
