@@ -40,8 +40,8 @@ spring:
     # auto-create a non-public schema).
     init-sqls:
       - CREATE SCHEMA IF NOT EXISTS mateclaw
-    # Skip checksum validation so an in-place migration edit doesn't block startup.
-    validate-on-migrate: false
+    # Inherit strict checksum validation from application.yml.
+    # Use explicit, reviewed history repair when recovering an older database.
 
   h2:
     console:

@@ -266,7 +266,7 @@ MateClaw uses **MyBatis Plus** (not JPA) for database access. Conventions:
 - `snake_case` columns, `camelCase` Java fields, auto-mapped
 - Every table has `create_time`, `update_time`, `deleted` (logical delete)
 - **Flyway** manages schema migrations — `db/migration/h2/` and `db/migration/mysql/` hold dialect-specific scripts, auto-selected on startup
-- `FlywayRepairConfig` runs `repair()` before `migrate()` on every boot, self-healing checksum drift and partially-failed migrations
+- `FlywayRepairConfig` runs `migrate()` with validation enabled by default; history repair requires an explicit operator opt-in. See [database recovery](./config#database-schema-init) before enabling it
 - Seed data loaded by `DatabaseBootstrapRunner` from `db/data-*.sql`, idempotent
 
 ### Table groups

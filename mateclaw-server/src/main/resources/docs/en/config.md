@@ -267,7 +267,18 @@ MateClaw uses **Flyway** for schema migrations:
 2. `db/migration/mysql/V*__*.sql` — MySQL-dialect migration scripts
 3. After migrations, seed data is loaded from `db/data-*.sql` — idempotent
 
-Flyway auto-selects the correct dialect path based on the active Spring profile. Every startup runs a `repair` before `migrate`, self-healing checksum drift and partially-failed migrations (especially important for desktop users upgrading offline).
+Flyway selects the migration dialect from the active Spring profile. Startup runs `migrate` with checksum validation enabled by default in all bundled profiles. Applied migration files must not be edited: checksum drift or a failed migration stops startup rather than silently changing the schema history.
+
+**Desktop upgrade compatibility:** an existing desktop database whose applied scripts differ from the new release can now fail to start. A new database and an unchanged migration history need no repair. Keep a backup that can be opened with the previous application version; do not delete the database to clear a validation error.
+
+If validation fails:
+
+1. Stop the application and back up the database. Keep the exact previous and target release artifacts, and inspect the failing migration and schema history.
+2. Compare the old and new SQL with the actual schema/data. Prefer restoring the expected migration file or a maintainer-provided forward migration. `repair` changes migration metadata; it does **not** execute changed DDL, undo partial DDL/data changes, or prove the schema is correct. Resolve any partial migration effects before proceeding.
+3. Only after confirming that history repair is appropriate, set `mateclaw.flyway.auto-repair=true` (environment variable `MATECLAW_FLYWAY_AUTOREPAIR=true`) for one controlled startup. Repair uses the configured migration locations and is followed by normal migration. Keep validation enabled.
+4. Remove the opt-in immediately afterwards, restart normally, and verify validation and application behavior before allowing writes. If recovery fails, restore the backup with its matching application version.
+
+The opt-in defaults to `false`, including Desktop. It is not an unattended upgrade policy. `spring.flyway.validate-on-migrate` remains externally configurable, but setting it to `false` bypasses the validation guard and is not a repair procedure.
 
 ### Table conventions
 

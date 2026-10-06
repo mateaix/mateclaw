@@ -43,8 +43,8 @@ spring:
     # 迁移前确保目标 schema 存在（Kingbase 不会自动创建非 public schema）
     init-sqls:
       - CREATE SCHEMA IF NOT EXISTS mateclaw
-    # 首次迁移或脚本变更后跳过 checksum 校验，避免因脚本转换导致的校验失败卡住
-    validate-on-migrate: false
+    # Inherit strict checksum validation from application.yml.
+    # Use explicit, reviewed history repair when recovering an older database.
 
   h2:
     console:
