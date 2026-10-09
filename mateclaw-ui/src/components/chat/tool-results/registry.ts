@@ -12,6 +12,12 @@ export interface ResolvedToolBlock { title?: string; component?: Component; data
 const registry = new Map<string, Renderer>()
 const record = (value: unknown): value is Record<string, any> => !!value && typeof value === 'object' && !Array.isArray(value)
 
+/** Only explicit UI payloads belong below the assistant answer; ordinary MCP data stays in tool details. */
+export function hasToolResultUi(input: unknown): boolean {
+  const ui = record(input) ? input.mateclawUi : undefined
+  return record(ui) && ui.version === 1 && Array.isArray(ui.blocks) && ui.blocks.length <= 8
+}
+
 /** Registration is limited to trusted application code; payloads only name a renderer. */
 export function registerToolResultRenderer(type: string, renderer: Renderer): void {
   registry.set(type, { ...renderer, component: markRaw(renderer.component) })
@@ -24,7 +30,7 @@ export function resolveToolResult(input: unknown): ResolvedToolBlock[] {
   const fallback = () => [{ fallback: bounded(json) }]
   if (new TextEncoder().encode(JSON.stringify(input)).length > MAX_TOOL_UI_BYTES) return fallback()
   const ui = record(input) ? input.mateclawUi : undefined
-  if (!record(ui) || ui.version !== 1 || !Array.isArray(ui.blocks) || ui.blocks.length > 8) return fallback()
+  if (!hasToolResultUi(input)) return fallback()
   return ui.blocks.map((block: unknown) => {
     if (!record(block)) return { fallback: bounded(JSON.stringify(block, null, 2)) }
     const title = typeof block.title === 'string' ? block.title : undefined

@@ -4,6 +4,7 @@ import { createPinia } from 'pinia'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Message } from '@/types'
 
+vi.mock('/logo/mateclaw_logo_s.png', () => ({ default: '/logo/mateclaw_logo_s.png' }))
 vi.mock('@/composables/useStreamingMarkdown', () => ({
   useStreamingMarkdown: (content: unknown) => ({
     renderedContent: content,
@@ -122,6 +123,42 @@ const answerMessage = (status = 'completed', metadata: unknown = {}) => ({
   id: 'answer', conversationId: 'conv', role: 'assistant', content: 'Sales grew 50%',
   contentParts: [], status, metadata,
 }) as Message
+
+const weatherResult = {
+  success: true,
+  result: { city: '广州', weather: '阵雨', temperature: 28, humidity: 85 },
+  error: null,
+}
+
+it('does not append ordinary MCP JSON when a live turn completes, while retaining tool details', async () => {
+  const result = JSON.stringify(weatherResult)
+  const tool = { ...successfulTool('weather'), toolName: 'get_weather',
+    toolResult: result, structuredContent: weatherResult }
+  const message = reactive(answerMessage('generating', { segments: [tool,
+    { id: 'text', type: 'content', status: 'running', text: '广州有阵雨，28°C。' }],
+  }))
+  const host = mountMessage(message)
+  message.status = 'completed'
+  await nextTick()
+  expect(host.querySelector('.segments-view')?.textContent).toContain('广州有阵雨，28°C。')
+  expect(host.querySelector('.answer-tool-results')).toBeNull()
+  host.querySelector<HTMLElement>('.seg-tool__header')!.click()
+  await nextTick()
+  expect(host.querySelector('.seg-tool pre')?.textContent).toBe(result)
+})
+
+it.each(['segments', 'toolCalls'])('does not append ordinary MCP JSON from saved %s alongside rich output', (source) => {
+  const metadata = source === 'segments'
+    ? { segments: [{ ...successfulTool('weather'), structuredContent: weatherResult }, successfulTool('rich')] }
+    : { toolCalls: [
+      { name: 'get_weather', toolCallId: 'weather', status: 'completed', success: true, structuredContent: weatherResult },
+      { name: 'sales', toolCallId: 'rich', status: 'completed', success: true, structuredContent: richResult },
+    ] }
+  const host = mountMessage(answerMessage('completed', JSON.stringify(metadata)))
+  expect(host.querySelectorAll('.answer-tool-results .tool-result-view')).toHaveLength(1)
+  expect(host.querySelector('.answer-tool-results td')?.textContent).toBe('Quarterly sales')
+  expect(host.querySelector('.answer-tool-results pre')).toBeNull()
+})
 
 it('shows rich results once after the final content when a live turn completes', async () => {
   const message = reactive(answerMessage('generating', { segments: [successfulTool('a'),

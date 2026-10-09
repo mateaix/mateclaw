@@ -603,6 +603,7 @@ import { openFilePreview } from './preview/previewBus'
 import BrowserTimeline from './BrowserTimeline.vue'
 import ToolCallSegment from './ToolCallSegment.vue'
 import ToolResultView from './tool-results/ToolResultView.vue'
+import { hasToolResultUi } from './tool-results/registry'
 import ThinkingSegment from './ThinkingSegment.vue'
 import ContentSegment from './ContentSegment.vue'
 import GoalAvatarRing from '@/components/goal/GoalAvatarRing.vue'
@@ -1224,7 +1225,7 @@ const answerToolResults = computed(() => {
   const seen = new Set<string>()
   return segments.value.filter(seg => {
     if (seg.type !== 'tool_call' || seg.status !== 'completed'
-        || seg.toolSuccess === false || !seg.structuredContent) return false
+        || seg.toolSuccess === false || !hasToolResultUi(seg.structuredContent)) return false
     const key = seg.toolCallId || seg.id
     if (seen.has(key)) return false
     seen.add(key)
