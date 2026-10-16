@@ -102,7 +102,7 @@ public class WebChatController {
      * Server-only secret used to sign per-visitor tokens. Reuses the JWT secret so no extra
      * config/migration is needed; it is never sent to the client (unlike the public channel API key).
      */
-    @Value("${mateclaw.jwt.secret:MateClaw-JWT-Secret-Key-2024-Please-Change-In-Production}")
+    @Value("${mateclaw.jwt.secret}")
     private String visitorTokenSecret;
 
     /**

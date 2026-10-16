@@ -186,7 +186,7 @@ mateclaw:
     # 生产数据库 profile（mysql/kingbase/postgres）默认覆盖为 false。
     expose-ui: ${MATECLAW_OPENAPI_EXPOSE_UI:true}
   jwt:
-    secret: ${JWT_SECRET:MateClaw-JWT-Secret-Key-2024-Please-Change-In-Production}
+    secret: ${JWT_SECRET:}
     expiration: 86400000
   sso:
     # 全局开关（默认关闭，不影响现有部署）

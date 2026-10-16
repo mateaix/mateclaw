@@ -142,6 +142,19 @@ class SsoStateServiceTest {
     }
 
     @Test
+    @DisplayName("issueBindToken rejects a short JWT secret")
+    void issueBindTokenRejectsShortJwtSecret() throws Exception {
+        Field jwtSecret = SsoStateService.class.getDeclaredField("jwtSecret");
+        jwtSecret.setAccessible(true);
+        jwtSecret.set(service, "short-secret");
+        SsoUserInfo info = new SsoUserInfo("ou_123", null, "Test User", null, null, null);
+
+        assertThatThrownBy(() -> service.issueBindToken("feishu", info))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("32 UTF-8 bytes");
+    }
+
+    @Test
     @DisplayName("verifyBindToken succeeds on first consume, inserts jti into sso_state")
     void verifyBindTokenSucceedsOnFirstConsume() {
         SsoUserInfo info = new SsoUserInfo("ou_456", null, "李四", null, null, null);
