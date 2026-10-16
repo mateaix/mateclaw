@@ -80,7 +80,7 @@ mateclaw:
 ```
 
 ::: warning
-**Change the default JWT secret in production.** At least 32 characters. Set via env var (`JWT_SECRET=...`), never commit.
+**`JWT_SECRET` is required at startup in every environment.** Set a unique random value of at least 32 UTF-8 bytes; generate one with `openssl rand -base64 48`. Never commit it. Rotating it invalidates existing tokens.
 :::
 
 ### Error codes
@@ -564,7 +564,7 @@ The browser tool also has a master switch `mateclaw.browser.ssrf-check-enabled` 
 ## Security best practices
 
 1. **Change the default password.** Right now. On every deployment.
-2. **Set a real JWT secret.** At least 32 characters, via environment variable, never committed.
+2. **Set a unique random JWT secret.** At least 32 UTF-8 bytes, generated with `openssl rand -base64 48`; never commit it. Rotating it invalidates existing tokens.
 3. **Least privilege.** Only enable the tools agents actually need.
 4. **Default to `require_approval`.** Flip the Tool Guard default policy, then add `allow` rules for safe cases. Newly added tools default to safe.
 5. **Configure File Guard.** Lock down allowed/denied paths before any agent touches the filesystem in anger.
@@ -582,7 +582,7 @@ application.yml carries **three** security-related blocks — JWT, the filesyste
 ```yaml
 mateclaw:
   jwt:
-    secret: ${JWT_SECRET:your-secret-key-at-least-32-chars}
+    secret: ${JWT_SECRET:}
     expiration: 86400000          # token lifetime (milliseconds)
     renewal-threshold: 7200000    # sliding renewal when remaining lifetime drops below this (ms)
 

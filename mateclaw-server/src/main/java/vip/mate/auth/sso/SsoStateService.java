@@ -12,6 +12,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import vip.mate.auth.service.JwtSecretValidator;
 import vip.mate.auth.sso.model.SsoStateEntity;
 import vip.mate.auth.sso.provider.SsoUserInfo;
 import vip.mate.auth.sso.repository.SsoStateMapper;
@@ -59,7 +60,7 @@ public class SsoStateService {
 
     private final SsoStateMapper stateMapper;
 
-    @Value("${mateclaw.jwt.secret:MateClaw-JWT-Secret-Key-2024-Please-Change-In-Production}")
+    @Value("${mateclaw.jwt.secret}")
     private String jwtSecret;
 
     // ==================== State (OAuth2 CSRF) ====================
@@ -206,13 +207,8 @@ public class SsoStateService {
     // ==================== helpers ====================
 
     private SecretKey getSignKey() {
+        JwtSecretValidator.validate(jwtSecret);
         byte[] keyBytes = jwtSecret.getBytes(StandardCharsets.UTF_8);
-        // HMAC-SHA 需要 >= 256 bit (32 byte); 短 secret 用 0x00 填充到 32 byte (与 AuthService 一致)
-        if (keyBytes.length < 32) {
-            byte[] padded = new byte[32];
-            System.arraycopy(keyBytes, 0, padded, 0, keyBytes.length);
-            keyBytes = padded;
-        }
         return Keys.hmacShaKeyFor(keyBytes);
     }
 

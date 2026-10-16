@@ -31,7 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
         "spring.datasource.url=jdbc:h2:mem:session_search_iso_${random.uuid};MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE;DB_CLOSE_DELAY=-1",
         "spring.ai.dashscope.api-key=test-key",
         "spring.main.web-application-type=none",
-        "mateclaw.jwt.secret=session-search-iso-secret-0123456789"
+        "mateclaw.jwt.secret=session-search-iso-secret-0123456789abcdef"
 })
 class SessionSearchIsolationTest {
 

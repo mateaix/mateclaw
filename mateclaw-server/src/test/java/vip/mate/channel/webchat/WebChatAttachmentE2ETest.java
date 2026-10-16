@@ -66,12 +66,12 @@ import static org.mockito.ArgumentMatchers.isNull;
 @TestPropertySource(properties = {
         "spring.datasource.url=jdbc:h2:mem:webchat_att_e2e_${random.uuid};MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE;DB_CLOSE_DELAY=-1",
         "spring.ai.dashscope.api-key=test-key",
-        "mateclaw.jwt.secret=webchat-it-secret-0123456789",
+        "mateclaw.jwt.secret=webchat-it-secret-0123456789abcdef",
         "mateclaw.feature-flag.refresh-ms=999999"
 })
 class WebChatAttachmentE2ETest {
 
-    private static final String SECRET = "webchat-it-secret-0123456789";
+    private static final String SECRET = "webchat-it-secret-0123456789abcdef";
     private static final String API_KEY = "testkey1atte2e01"; // key8 = "testkey1"
     private static final long CHANNEL_ID = 9_148_101L;
     private static final long AGENT_ID = 9_148_1011L;

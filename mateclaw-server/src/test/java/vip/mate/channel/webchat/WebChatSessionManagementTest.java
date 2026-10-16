@@ -33,11 +33,11 @@ import static org.assertj.core.api.Assertions.assertThat;
         "spring.datasource.url=jdbc:h2:mem:webchat_sess_test_${random.uuid};MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE;DB_CLOSE_DELAY=-1",
         "spring.ai.dashscope.api-key=test-key",
         "spring.main.web-application-type=none",
-        "mateclaw.jwt.secret=webchat-it-secret-0123456789"
+        "mateclaw.jwt.secret=webchat-it-secret-0123456789abcdef"
 })
 class WebChatSessionManagementTest {
 
-    private static final String SECRET = "webchat-it-secret-0123456789";
+    private static final String SECRET = "webchat-it-secret-0123456789abcdef";
     private static final String API_KEY = "testkey1abcdefgh"; // key8 = "testkey1"
     private static final String VISITOR = "visitorAAAA";
     private static final long CHANNEL_ID = 9_147_001L;

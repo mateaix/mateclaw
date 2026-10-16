@@ -175,12 +175,12 @@ mateclaw:
 ```yaml
 mateclaw:
   jwt:
-    secret: ${JWT_SECRET:your-secret-key-at-least-32-characters-long}
+    secret: ${JWT_SECRET:}
     expiration: 86400000
 ```
 
 ::: warning
-生产环境必须改默认 JWT secret。至少 32 字符。用环境变量，**不要 commit**。
+所有环境启动时都必须配置 `JWT_SECRET`。使用唯一的随机值，至少 32 个 UTF-8 字节；可用 `openssl rand -base64 48` 生成。不要 commit。更换密钥会使现有 token 失效。
 :::
 
 ### 技能工作空间
@@ -225,7 +225,7 @@ mate:
 |------|------|------|
 | `SERPER_API_KEY` | — | Google Serper 搜索 key（搜索工具暂未迁到 UI） |
 | `TAVILY_API_KEY` | — | Tavily 搜索 key（同上） |
-| `JWT_SECRET` | — | JWT 签名密钥（生产推荐） |
+| `JWT_SECRET` | 是 | JWT 签名密钥 |
 | `MATECLAW_CORS_ALLOWED_ORIGINS` | — | CORS 白名单（生产推荐） |
 | `DB_PASSWORD` / `DB_ADMIN_PASSWORD` | Docker | PostgreSQL 应用账号 / 引导管理员密码（必须不同） |
 | `DB_USERNAME` / `DB_ADMIN_USERNAME` | — | PostgreSQL 应用账号 / 引导管理员账号 |
@@ -237,14 +237,14 @@ mate:
 **Linux / macOS：**
 
 ```bash
-export JWT_SECRET=your-production-secret-at-least-32-chars
+export JWT_SECRET="$(openssl rand -base64 48)"
 export SERPER_API_KEY=your-serper-key   # 可选
 ```
 
 **Windows（PowerShell）：**
 
 ```powershell
-$env:JWT_SECRET = "your-production-secret-at-least-32-chars"
+$env:JWT_SECRET = openssl rand -base64 48
 ```
 
 **Docker（`.env` 文件）：**
@@ -252,7 +252,8 @@ $env:JWT_SECRET = "your-production-secret-at-least-32-chars"
 ```properties
 DB_PASSWORD=secure-password-here
 DB_ADMIN_PASSWORD=different-secure-password-here
-JWT_SECRET=your-production-secret-at-least-32-chars
+# 生成命令：openssl rand -base64 48
+JWT_SECRET=replace-with-generated-value
 ```
 
 启动后到 `http://localhost:18080`，`admin / admin123` 登录，「设置 → 模型 → 添加供应商」配第一家 LLM。
