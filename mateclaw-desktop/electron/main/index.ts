@@ -20,6 +20,7 @@ import {
   expandPath,
   type LocalToolsConfig,
 } from './localToolsConfig'
+import { getLocalJwtSecret } from './jwtSecret.mjs'
 import { LocalBridge } from './localBridge'
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -227,6 +228,7 @@ async function startJavaBackend(): Promise<void> {
   // Prepare environment variables — inherit current env + override
   const env = {
     ...process.env,
+    JWT_SECRET: getLocalJwtSecret(app.getPath('userData'), process.env.JWT_SECRET),
     // Ensure H2 database is stored in userData
     SPRING_DATASOURCE_URL: `jdbc:h2:file:${join(workingDir, 'data', 'mateclaw')};MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE`,
   }
