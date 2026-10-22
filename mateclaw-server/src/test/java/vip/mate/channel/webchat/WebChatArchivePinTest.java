@@ -75,7 +75,7 @@ class WebChatArchivePinTest {
     @DisplayName("PUT /sessions/pinned flips the column + view reports pinned=1")
     void pinFlipsColumn() {
         controller.createSession(API_KEY, req("vPin", "s1"));
-        String cid = WebChatController.deriveConversationId(API_KEY, "vPin", "s1");
+        String cid = WebChatController.deriveConversationId(CHANNEL_ID, "vPin", "s1");
 
         R<Void> r = controller.pinSession(API_KEY, tokenFor("vPin"), "vPin", "s1",
                 Map.of("pinned", true));
