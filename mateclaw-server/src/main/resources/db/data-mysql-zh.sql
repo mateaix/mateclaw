@@ -6,22 +6,22 @@ VALUES (1, 'admin', '$2a$10$7JB720yubVSZvUI0rEqK/.VqGOZTH.ulu33dHOiBE8ByOhJIrdAu
 ON DUPLICATE KEY UPDATE username=VALUES(username), password=VALUES(password), nickname=VALUES(nickname), role=VALUES(role), enabled=VALUES(enabled), update_time=VALUES(update_time), deleted=VALUES(deleted);
 
 -- 默认数字员工：通用助手（ReAct 模式）
-INSERT INTO mate_agent (id, name, description, agent_type, system_prompt, model_name, max_iterations, enabled, icon, tags, create_time, update_time, deleted)
-VALUES (1000000001, '通用助手', '日常问答、数据分析、工具调用都能搞定的全能助手', 'react',
+INSERT INTO mate_agent (id, workspace_id, name, description, agent_type, system_prompt, model_name, max_iterations, enabled, icon, tags, create_time, update_time, deleted)
+VALUES (1000000001, 0, '通用助手', '日常问答、数据分析、工具调用都能搞定的全能助手', 'react',
         '你是 MateClaw 的通用助手。你可以帮助用户回答问题、分析数据、调用工具完成任务。请用中文回复，保持专业、友好的态度。',
         NULL, 100, TRUE, 'pi:robot-face-happy', 'default,assistant', NOW(), NOW(), 0)
 ON DUPLICATE KEY UPDATE name=VALUES(name), description=VALUES(description), agent_type=VALUES(agent_type), system_prompt=VALUES(system_prompt), model_name=VALUES(model_name), max_iterations=VALUES(max_iterations), enabled=VALUES(enabled), icon=VALUES(icon), tags=VALUES(tags), update_time=VALUES(update_time), deleted=VALUES(deleted);
 
 -- 默认数字员工：任务规划师（Plan-Execute 模式）
-INSERT INTO mate_agent (id, name, description, agent_type, system_prompt, model_name, max_iterations, enabled, icon, tags, create_time, update_time, deleted)
-VALUES (1000000002, '任务规划师', '把复杂目标拆成可执行步骤，逐步推进直到完成', 'plan_execute',
+INSERT INTO mate_agent (id, workspace_id, name, description, agent_type, system_prompt, model_name, max_iterations, enabled, icon, tags, create_time, update_time, deleted)
+VALUES (1000000002, 0, '任务规划师', '把复杂目标拆成可执行步骤，逐步推进直到完成', 'plan_execute',
         '你是一位专业的任务规划师。你擅长将复杂目标分解为可执行的步骤，并逐步完成。请用中文回复。',
         NULL, 100, TRUE, 'pi:clipboard-note', 'planning,task', NOW(), NOW(), 0)
 ON DUPLICATE KEY UPDATE name=VALUES(name), description=VALUES(description), agent_type=VALUES(agent_type), system_prompt=VALUES(system_prompt), model_name=VALUES(model_name), max_iterations=VALUES(max_iterations), enabled=VALUES(enabled), icon=VALUES(icon), tags=VALUES(tags), update_time=VALUES(update_time), deleted=VALUES(deleted);
 
 -- 默认数字员工：推理分析师（显式推理循环 + 工具调用）
-INSERT INTO mate_agent (id, name, description, agent_type, system_prompt, model_name, max_iterations, enabled, icon, tags, create_time, update_time, deleted)
-VALUES (1000000003, '推理分析师', '分步思考、推理过程清晰可见，适合需要"想清楚再回答"的问题', 'react',
+INSERT INTO mate_agent (id, workspace_id, name, description, agent_type, system_prompt, model_name, max_iterations, enabled, icon, tags, create_time, update_time, deleted)
+VALUES (1000000003, 0, '推理分析师', '分步思考、推理过程清晰可见，适合需要"想清楚再回答"的问题', 'react',
         '你是一位推理分析师，善于深度推理。面对问题时，请先分步思考、清晰呈现推理过程，再调用工具或给出答案。请用中文回复，保持专业、友好的态度。',
         NULL, 100, TRUE, 'pi:cpu', 'react,reasoning,tools', NOW(), NOW(), 0)
 ON DUPLICATE KEY UPDATE name=VALUES(name), description=VALUES(description), agent_type=VALUES(agent_type), system_prompt=VALUES(system_prompt), model_name=VALUES(model_name), max_iterations=VALUES(max_iterations), enabled=VALUES(enabled), icon=VALUES(icon), tags=VALUES(tags), update_time=VALUES(update_time), deleted=VALUES(deleted);
@@ -1964,8 +1964,8 @@ ON DUPLICATE KEY UPDATE name=VALUES(name), display_name=VALUES(display_name), de
 INSERT INTO mate_tool (id, name, display_name, description, tool_type, bean_name, icon, enabled, builtin, create_time, update_time, deleted)
 VALUES (1000000631, 'GzhPublishTool', '公众号发布', '将生成的图文发布到微信公众号：action=draft 上传封面并存入草稿箱（推荐）；action=publish 为认证号群发，需显式确认。需在系统设置配置 weixinoa.app_id / weixinoa.app_secret。', 'builtin', 'gzhPublishTool', '📤', TRUE, TRUE, NOW(), NOW(), 0)
 ON DUPLICATE KEY UPDATE name=VALUES(name), display_name=VALUES(display_name), description=VALUES(description), tool_type=VALUES(tool_type), bean_name=VALUES(bean_name), icon=VALUES(icon), enabled=VALUES(enabled), builtin=VALUES(builtin), update_time=VALUES(update_time), deleted=VALUES(deleted);
-INSERT INTO mate_agent (id, name, description, agent_type, system_prompt, model_name, max_iterations, enabled, icon, tags, create_time, update_time, deleted)
-VALUES (1000000640, '内容工作室', '端到端创作公众号与小红书图文：选题搜集、成文、配图、去AI化、排版、入草稿箱发布。', 'react', '你是 MateClaw 的「内容工作室」——专门端到端创作微信公众号（公众号）与小红书图文。
+INSERT INTO mate_agent (id, workspace_id, name, description, agent_type, system_prompt, model_name, max_iterations, enabled, icon, tags, create_time, update_time, deleted)
+VALUES (1000000640, 0, '内容工作室', '端到端创作公众号与小红书图文：选题搜集、成文、配图、去AI化、排版、入草稿箱发布。', 'react', '你是 MateClaw 的「内容工作室」——专门端到端创作微信公众号（公众号）与小红书图文。
 
 工作流（7 段）：
 1）选题——读取 topic_interests 记忆并用 web_search(freshness=week) 找角度。
