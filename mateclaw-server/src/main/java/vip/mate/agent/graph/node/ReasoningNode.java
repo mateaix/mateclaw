@@ -25,7 +25,7 @@ import vip.mate.agent.GraphEventPublisher;
 import vip.mate.llm.chatmodel.ThinkingLevelHolder;
 import vip.mate.agent.graph.NodeStreamingChatHelper;
 import vip.mate.agent.context.ConversationWindowManager;
-import vip.mate.agent.context.LoopBudgetConfig;
+import vip.mate.agent.context.ModelContextAssembler;
 import vip.mate.agent.context.PrefixBudgetPlan;
 import vip.mate.agent.context.LoopMessageBudgeter;
 import vip.mate.agent.context.RuntimeContextInjector;
@@ -88,14 +88,8 @@ public class ReasoningNode implements NodeAction {
      */
     private static final int DEFAULT_MAX_OUTPUT_TOKENS = 16384;
 
-    /**
-     * Stateless singleton used to budget the per-iteration working message
-     * list. Static-final because the budgeter holds no mutable state — the
-     * choice keeps the existing ReasoningNode constructor surface unchanged
-     * (it already carries 13 parameters across 5 overloads) and makes the
-     * dependency obvious to anyone reading the class.
-     */
-    private static final LoopMessageBudgeter LOOP_BUDGETER = new LoopMessageBudgeter();
+    /** Shared stateless context assembly for initial reasoning and recovery calls. */
+    private static final ModelContextAssembler CONTEXT_ASSEMBLER = new ModelContextAssembler();
 
     /**
      * Fallback context window used when no provider-level value is wired in.
@@ -124,17 +118,6 @@ public class ReasoningNode implements NodeAction {
      * long multi-step tasks that surfaces as the agent quitting mid-way.
      */
     private static final int MAX_EMPTY_COMPLETION_RETRIES = 2;
-
-    /**
-     * Number of newest tool-response messages kept verbatim in the model
-     * input; older ones have their bodies collapsed to a one-line "old
-     * output cleared" placeholder while keeping the toolCallId / tool name
-     * so the assistant/tool pairing remains valid. The latest few results
-     * are what the model is reasoning over right now — beyond that, the
-     * content is history and re-call (or read_file on the spill path) is
-     * cheaper than carrying every previous body forward across iterations.
-     */
-    private static final int KEEP_RECENT_TOOL_RESPONSES = 3;
 
     private static final int LONG_FORM_MIN_REQUEST_CHARS = 3_000;
     private static final Pattern ARABIC_CHAR_COUNT_PATTERN = Pattern.compile(
@@ -968,23 +951,8 @@ public class ReasoningNode implements NodeAction {
             nonHistoryPrefix.add(new SystemMessage(executionFacts));
         }
 
-        if (conversationWindowManager != null) {
-            // Age-based compaction first: drop the body of tool responses
-            // older than the K most recent into a one-line placeholder that
-            // keeps the toolCallId / tool name (so the assistant/tool pair
-            // stays valid) and, for spilled bodies, preserves the on-disk
-            // path so read_file can still recover the original. Without
-            // this, even spilled previews (~1-2 KB each) accumulate across
-            // 30+ tool calls and bloat the prompt the model sees every turn.
-            messages = conversationWindowManager.compactAgedToolResponses(
-                    messages, KEEP_RECENT_TOOL_RESPONSES);
-            // Pass conversationId + workspaceBasePath so oversized older
-            // tool results can be spilled to the workspace spill directory
-            // (preserving the full body for read_file recovery) instead of
-            // being rewritten into a lossy single-line summary.
-            messages = conversationWindowManager.pruneOldToolResultsForModelInput(
-                    messages, conversationId, workspaceBasePath);
-        }
+        messages = CONTEXT_ASSEMBLER.prepareHistory(messages, conversationWindowManager,
+                conversationId, workspaceBasePath);
 
         // 请求级思考深度覆盖（ThinkingLevelHolder 由 AgentService 设置）
         String effectiveReasoning = resolveEffectiveReasoningEffort();
@@ -1004,24 +972,13 @@ public class ReasoningNode implements NodeAction {
         ChatOptions options = buildChatOptions(effectiveReasoning, activeCallbacks);
         int outputReserveTokens = outputReserveTokens(options, effectiveMaxOutputTokens());
 
-        // Reserve exactly the prefix and schemas assembled for this call, plus actual output once.
-        int loopReservedPrefixTokens = TokenEstimator.estimateTokens(nonHistoryPrefix)
-                + TokenEstimator.estimateToolsTokens(activeCallbacks) + outputReserveTokens;
-        LoopBudgetConfig loopCfg = LoopBudgetConfig.forContext(loopContextWindowTokens())
-                .withReservedPrefixTokens(loopReservedPrefixTokens);
-        // Leave room for the protected history head and latest user anchor.
-        // Ordinary history is clipped below the default policy floor when
-        // needed. An indivisible latest tool pair is checked before sending.
-        int protectedHistoryTokens = protectedHistoryTokens(messages);
-        int availableHistoryTokens = Math.max(0,
-                loopContextWindowTokens() - loopReservedPrefixTokens - protectedHistoryTokens);
-        loopCfg = loopCfg.withAvailableHistoryTokens(availableHistoryTokens);
-        LoopMessageBudgeter.Result budgeted = LOOP_BUDGETER.budget(messages, loopCfg);
+        var assembledContext = CONTEXT_ASSEMBLER.assemble(nonHistoryPrefix, messages, options,
+                loopContextWindowTokens(), outputReserveTokens);
         // Only log when the budget actually modified the list — a triggered-
         // but-no-op pass is normal (history fits comfortably under the tail
         // budget) and would otherwise spam logs every iteration.
-        if (budgeted.trace().modified()) {
-            LoopMessageBudgeter.BudgetTrace t = budgeted.trace();
+        if (assembledContext.trace().modified()) {
+            LoopMessageBudgeter.BudgetTrace t = assembledContext.trace();
             log.warn("[ReasoningNode] Loop budget trim: {} -> {} msgs (history {} -> {} tokens, "
                     + "prefix~{}), head={}, tail={}, droppedMiddle={}, orphans={}, "
                     + "anchorEnforced={}, anchorStitched={}, targetMaxTripped={}, "
@@ -1032,11 +989,9 @@ public class ReasoningNode implements NodeAction {
                     t.anchorEnforced(), t.anchorStitched(), t.targetMaxTripped(),
                     t.capExceededForPairIntegrity(), t.minTailFloorApplied(), conversationId);
         }
-        messages = budgeted.messages();
-        List<Message> promptMessages = new ArrayList<>(nonHistoryPrefix);
-        promptMessages.addAll(messages);
-
-        Prompt prompt = new Prompt(promptMessages, options);
+        messages = assembledContext.history();
+        List<Message> promptMessages = assembledContext.prompt().getInstructions();
+        Prompt prompt = assembledContext.prompt();
 
         // Prefix accounting: how much of the window the never-trimmed prefix
         // (system prompt + runtime context + wiki + skill catalog + ledger)
@@ -1055,11 +1010,10 @@ public class ReasoningNode implements NodeAction {
         // tool pairs which can exceed a tail allowance. Reject known estimated
         // overflow before the provider or a futile compaction retry. Disabled
         // budgeting retains legacy behavior.
-        boolean mandatoryPrefixOverflow = loopReservedPrefixTokens + protectedHistoryTokens
-                > loopContextWindowTokens();
-        long assembledPromptEstimateTokens = vip.mate.agent.context.PromptBudget.estimateTokens(prompt, null, outputReserveTokens);
+        boolean mandatoryPrefixOverflow = assembledContext.mandatoryOverflow();
+        long assembledPromptEstimateTokens = assembledContext.estimatedTokens();
         boolean promptOverflow = (holdContent || prefixBudgetPlan != null && prefixBudgetPlan.enabled())
-                && assembledPromptEstimateTokens > loopContextWindowTokens();
+                && assembledContext.overflow();
         boolean localPromptRejected = promptOverflow;
 
         // ======= LLM 调用区域 =======
@@ -1174,18 +1128,15 @@ public class ReasoningNode implements NodeAction {
                             NodeStreamingChatHelper.ErrorType.PROMPT_TOO_LONG, false, 0, 0, 0));
                     compactedMessages = null;
                 }
-                if (compactedMessages != null) {
-                    compactedMessages = restoreOriginalAnchor(compactedMessages, latestUser(messages));
-                }
-
-                if (compactedMessages != null && compactedMessages.size() < messages.size()) {
-                    // Reuse the SAME non-history prefix — wiki/runtime context preserved.
-                    List<Message> retryPromptMessages = new ArrayList<>(nonHistoryPrefix);
-                    retryPromptMessages.addAll(compactedMessages);
-                    long retryEstimateTokens = vip.mate.agent.context.PromptBudget.estimateTokens(
-                            new Prompt(retryPromptMessages, options), null, outputReserveTokens);
+                var retryContext = compactedMessages == null ? null : CONTEXT_ASSEMBLER.assembleRetry(
+                        nonHistoryPrefix, compactedMessages, ModelContextAssembler.latestUser(messages), options,
+                        loopContextWindowTokens(), outputReserveTokens);
+                if (retryContext != null && retryContext.reduces(assembledContext)) {
+                    compactedMessages = retryContext.history();
+                    List<Message> retryPromptMessages = retryContext.prompt().getInstructions();
+                    long retryEstimateTokens = retryContext.estimatedTokens();
                     if ((holdContent || prefixBudgetPlan != null && prefixBudgetPlan.enabled())
-                            && retryEstimateTokens > loopContextWindowTokens()) {
+                            && retryContext.overflow()) {
                         localPromptRejected = true;
                         String retryOverflowMessage = "压缩重试 Prompt 估算 " + retryEstimateTokens
                                 + " tokens 仍超过上下文窗口 " + loopContextWindowTokens()
@@ -1195,7 +1146,7 @@ public class ReasoningNode implements NodeAction {
                                 0, 0, false, retryOverflowMessage,
                                 NodeStreamingChatHelper.ErrorType.PROMPT_TOO_LONG, false, 0, 0, 0));
                     } else {
-                        Prompt retryPrompt = new Prompt(retryPromptMessages, options);
+                        Prompt retryPrompt = retryContext.prompt();
                         log.info("[ReasoningNode] Retrying with compacted messages: {} -> {} messages",
                                 messages.size(), compactedMessages.size());
                         nextLlmCallCount++;
@@ -1213,7 +1164,7 @@ public class ReasoningNode implements NodeAction {
                         promptMessages = retryPromptMessages;
                     }
                 } else {
-                    log.warn("[ReasoningNode] Compaction did not reduce messages, cannot retry");
+                    log.warn("[ReasoningNode] Compaction did not reduce estimated request tokens, cannot retry");
                 }
             }
 
@@ -1258,19 +1209,13 @@ public class ReasoningNode implements NodeAction {
                 // objective which would replace the protected original anchor.
                 List<Message> nudgePrefix = new ArrayList<>(nonHistoryPrefix);
                 nudgePrefix.add(new SystemMessage(nudge));
-                int nudgeReserved = TokenEstimator.estimateTokens(nudgePrefix)
-                        + toolSchemaEstimateTokens + outputReserveTokens;
-                LoopBudgetConfig nudgeConfig = LoopBudgetConfig.forContext(loopContextWindowTokens())
-                        .withReservedPrefixTokens(nudgeReserved)
-                        .withAvailableHistoryTokens(Math.max(0, loopContextWindowTokens()
-                                - nudgeReserved - protectedHistoryTokens(messages)));
-                List<Message> nudgeHistory = LOOP_BUDGETER.budget(messages, nudgeConfig).messages();
-                List<Message> nudgedMessages = new ArrayList<>(nudgePrefix);
-                nudgedMessages.addAll(nudgeHistory);
-                long nudgeEstimate = vip.mate.agent.context.PromptBudget.estimateTokens(
-                        new Prompt(nudgedMessages, options), null, outputReserveTokens);
+                var nudgeContext = CONTEXT_ASSEMBLER.assemble(nudgePrefix, messages, options,
+                        loopContextWindowTokens(), outputReserveTokens);
+                List<Message> nudgeHistory = nudgeContext.history();
+                List<Message> nudgedMessages = nudgeContext.prompt().getInstructions();
+                long nudgeEstimate = nudgeContext.estimatedTokens();
                 if ((holdContent || prefixBudgetPlan != null && prefixBudgetPlan.enabled())
-                        && nudgeEstimate > loopContextWindowTokens()) {
+                        && nudgeContext.overflow()) {
                     localPromptRejected = true;
                     result = mergeCandidateUsage(result, new NodeStreamingChatHelper.StreamResult(null, null, null, List.of(), false,
                             0, 0, false, "空回复重试 Prompt 估算 " + nudgeEstimate
@@ -1278,7 +1223,7 @@ public class ReasoningNode implements NodeAction {
                             NodeStreamingChatHelper.ErrorType.PROMPT_TOO_LONG, false, 0, 0, 0));
                     break;
                 }
-                Prompt nudgePrompt = new Prompt(nudgedMessages, options);
+                Prompt nudgePrompt = nudgeContext.prompt();
                 nextLlmCallCount++;
                 result = mergeCandidateUsage(result, callCandidate(holdContent, nudgePrompt, conversationId, "reasoning_empty_retry"));
                 messages = nudgeHistory;
@@ -1783,31 +1728,6 @@ public class ReasoningNode implements NodeAction {
 
     private static long remainingLlmCalls(int maxIterations, long usedCalls) {
         return maxIterations <= 0 ? Long.MAX_VALUE : Math.max(0, (long)maxIterations * 5L - usedCalls);
-    }
-
-    private static UserMessage latestUser(List<Message> messages) {
-        for (int i=messages.size()-1;i>=0;i--) if (messages.get(i) instanceof UserMessage user) return user;
-        return null;
-    }
-
-    private static int protectedHistoryTokens(List<Message> messages) {
-        int tokens=0;
-        for (Message message:messages) {
-            if (!(message instanceof SystemMessage)) break;
-            tokens += TokenEstimator.estimateTokens(message);
-        }
-        return tokens + TokenEstimator.estimateTokens(latestUser(messages));
-    }
-
-    private static List<Message> restoreOriginalAnchor(List<Message> compacted, UserMessage original) {
-        if (original == null || compacted.stream().anyMatch(message -> message instanceof UserMessage
-                && message.getText().equals(original.getText()))) return compacted;
-        List<Message> restored = new ArrayList<>(compacted);
-        int insertion=0;
-        for (int i=0;i<restored.size();i++) if (restored.get(i) instanceof UserMessage) insertion=i+1;
-        while (insertion<restored.size() && restored.get(insertion) instanceof SystemMessage) insertion++;
-        restored.add(insertion,original);
-        return restored;
     }
 
     private static Map<String,Object> retryBudgetStop(RunState state, int calls,

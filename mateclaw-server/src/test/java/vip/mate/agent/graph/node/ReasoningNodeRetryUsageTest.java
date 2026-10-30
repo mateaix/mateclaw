@@ -78,6 +78,20 @@ class ReasoningNodeRetryUsageTest {
                 response("","",NodeStreamingChatHelper.ErrorType.NONE,2),answer(4));
         var output=node(window).apply(state());usage(output,15,11);assertEquals("normal",output.get(FINISH_REASON));
     }
+    @Test void sameCountCompactionRetriesWhenTokenEstimateDrops() throws Exception {
+        var window = window();
+        when(window.compactForRetry(anyList(), any(), anyString(), any())).thenAnswer(call -> {
+            List<Message> history = call.getArgument(0);
+            return history.stream().map(message -> message instanceof AssistantMessage
+                    ? (Message) new AssistantMessage("compact") : message).toList();
+        });
+        when(helper.streamCallBufferedContent(any(), any(), anyString(), anyString())).thenReturn(
+                response(null, "", NodeStreamingChatHelper.ErrorType.PROMPT_TOO_LONG, 1), answer(2));
+        var output = node(window).apply(state());
+        usage(output, 11, 10);
+        assertEquals("normal", output.get(FINISH_REASON));
+        verify(helper).streamCallBufferedContent(any(), any(), anyString(), eq("reasoning_compact_retry"));
+    }
     @Test void cancellationAfterMultipleReturnedCandidatesRetainsTheirUsage() throws Exception {
         when(helper.streamCallBufferedContent(any(),any(),anyString(),anyString())).thenReturn(
                 response("","",NodeStreamingChatHelper.ErrorType.NONE,1),
