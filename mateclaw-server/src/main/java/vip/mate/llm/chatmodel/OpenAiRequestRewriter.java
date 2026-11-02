@@ -71,6 +71,23 @@ final class OpenAiRequestRewriter {
             ArrayNode tools = request.path("tools").isArray() ? (ArrayNode) request.get("tools") : request.putArray("tools");
             tools.addObject().put("type", "builtin_function").putObject("function").put("name", "$web_search");
         }
+        // fix：https://github.com/mateaix/mateclaw/issues/640
+        // OpenAI/Azure reject tool_choice and parallel_tool_calls on a request that
+        // carries no tools (400 "'tool_choice' is only allowed when 'tools' are
+        // specified"). Lenient gateways silently ignore the orphan fields, which is
+        // why this only surfaced on Azure. TaskFinalizationCoordinator builds
+        // finalization/summary options with cleared tool callbacks AND
+        // toolChoice("none") — that belt-and-braces only makes sense while tools
+        // actually reach the wire, so keep it when they do and drop the orphan
+        // fields when they don't. An empty tools array is itself spec-invalid
+        // ("minimum length 1"); drop it too.
+        JsonNode toolsNode = request.path("tools");
+        boolean hasTools = toolsNode.isArray() && !toolsNode.isEmpty();
+        if (toolsNode.isArray() && toolsNode.isEmpty()) request.remove("tools");
+        if (!hasTools) {
+            request.remove("tool_choice");
+            request.remove("parallel_tool_calls");
+        }
         return request;
     }
 }

@@ -59,8 +59,23 @@ final class OpenAiCompatibleHttpInterceptor implements Interceptor {
                 rewritten.path("messages").size(),
                 rewritten.path("tools").size(),
                 rewritten.path("stream").asBoolean());
-        HttpUrl.Builder url = HttpUrl.get(endpoint).newBuilder();
-        if (original.url().encodedQuery() != null) url.encodedQuery(original.url().encodedQuery());
+        // fix：https://github.com/mateaix/mateclaw/issues/640
+        // The endpoint (provider baseUrl + completions path) is the authoritative URL.
+        // Carry over SDK-attached query params selectively: openai-java classifies
+        // *.openai.azure.com hosts whose baseUrl does not end in /openai/v1 as
+        // AZURE_LEGACY and appends a default `api-version` query — which the unified
+        // /openai/v1 surface rejects with 400 "API version not supported". Keep
+        // `api-version` only when the endpoint itself is a legacy deployments URL,
+        // where Azure requires it.
+        HttpUrl parsedEndpoint = HttpUrl.get(endpoint);
+        boolean legacyDeploymentsEndpoint = parsedEndpoint.encodedPath().contains("/deployments/");
+        HttpUrl.Builder url = parsedEndpoint.newBuilder();
+        for (String name : original.url().queryParameterNames()) {
+            if ("api-version".equalsIgnoreCase(name) && !legacyDeploymentsEndpoint) continue;
+            for (String value : original.url().queryParameterValues(name)) {
+                url.addQueryParameter(name, value);
+            }
+        }
         Request.Builder updated =
                 original.newBuilder()
                         .url(url.build())
