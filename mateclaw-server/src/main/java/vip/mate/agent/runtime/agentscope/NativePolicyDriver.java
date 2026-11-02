@@ -12,9 +12,6 @@ import io.agentscope.core.agent.Agent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.event.RequestStopEvent;
-import io.agentscope.core.hook.Hook;
-import io.agentscope.core.hook.HookEvent;
-import io.agentscope.core.hook.PostReasoningEvent;
 import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.message.GenerateReason;
 import io.agentscope.core.message.Msg;
@@ -22,7 +19,7 @@ import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.core.middleware.AgentInput;
 import io.agentscope.core.middleware.MiddlewareBase;
-import io.agentscope.core.middleware.ModelCallInput;
+import io.agentscope.core.middleware.ReasoningInput;
 import io.agentscope.core.model.ChatResponse;
 import io.agentscope.core.model.GenerateOptions;
 import io.agentscope.core.model.Model;
@@ -186,7 +183,6 @@ public final class NativePolicyDriver implements AgentRuntime {
                                     .name("native-policy-driver")
                                     .model(session.model())
                                     .toolkit(toolkit)
-                                    .hook(session)
                                     .middleware(toolkit.boundaryMiddleware())
                                     .middleware(session.middleware())
                                     .maxIters(hardRoundCeiling + 1)
@@ -208,7 +204,7 @@ public final class NativePolicyDriver implements AgentRuntime {
                 });
     }
 
-    private final class Session implements Hook {
+    private final class Session {
         private final RunState state;
         private final Sinks.Many<RunStep> steps = Sinks.many().unicast().onBackpressureBuffer();
         private final AtomicBoolean cancelled = new AtomicBoolean();
@@ -288,18 +284,10 @@ public final class NativePolicyDriver implements AgentRuntime {
                     return Mono.fromCallable(
                                     () -> {
                                         ensureRunning();
-                                        if (terminal || rounds >= hardRoundCeiling)
-                                            throw new IllegalStateException(
-                                                    "Unexpected SDK model call beyond application"
-                                                            + " boundary");
-                                        rounds++;
-                                        state.applyPatch(Map.of(TOOL_CALLS, List.of()));
-                                        node(REASONING_NODE, policies.reasoning());
-                                        reasoningRoute = edge(policies.afterReasoning());
                                         List<ContentBlock> blocks = new ArrayList<>();
                                         scratchArguments.clear();
                                         for (AssistantMessage.ToolCall call :
-                                                ACTION_NODE.equals(reasoningRoute)
+                                                !terminal && ACTION_NODE.equals(reasoningRoute)
                                                         ? calls()
                                                         : List.<AssistantMessage.ToolCall>of()) {
                                             if (call.id() == null
@@ -352,8 +340,8 @@ public final class NativePolicyDriver implements AgentRuntime {
                                                             .reduce((first, last) -> last)
                                                             .map(AssistantMessage::getText)
                                                             .orElse("");
-                                            // SDK drops fully empty responses before its
-                                            // post-reasoning routing hook.
+                                            // Keep a visible SDK scratch response even when
+                                            // the application policy produced no visible text.
                                             // This marker exists only in discarded SDK scratch
                                             // history, never application history.
                                             blocks.add(
@@ -367,7 +355,9 @@ public final class NativePolicyDriver implements AgentRuntime {
                                         return ChatResponse.builder()
                                                 .content(blocks)
                                                 .finishReason(
-                                                        calls().isEmpty() ? "stop" : "tool_calls")
+                                                        terminal || calls().isEmpty()
+                                                                ? "stop"
+                                                                : "tool_calls")
                                                 .build();
                                     })
                             .subscribeOn(Schedulers.boundedElastic())
@@ -480,52 +470,51 @@ public final class NativePolicyDriver implements AgentRuntime {
             return false;
         }
 
-        @Override
-        public <T extends HookEvent> Mono<T> onEvent(T event) {
-            if (!(event instanceof PostReasoningEvent post)) return Mono.just(event);
-            return Mono.fromCallable(
-                            () -> {
-                                ensureRunning();
-                                String route =
-                                        Objects.requireNonNull(
-                                                reasoningRoute,
-                                                "Reasoning route must be captured once");
-                                if (ACTION_NODE.equals(route)) {
-                                    if (calls().isEmpty())
-                                        throw new IllegalStateException(
-                                                "Action route requires real tool calls");
-                                    return event;
-                                }
-                                switch (route) {
-                                    case REASONING_NODE -> {
-                                        if (rounds >= hardRoundCeiling) {
-                                            ceiling();
-                                            post.stopAgent();
-                                        } else post.gotoReasoning();
-                                    }
-                                    case SUMMARIZING_NODE -> {
-                                        node(SUMMARIZING_NODE, policies.summarizing());
-                                        if (rounds >= hardRoundCeiling) {
-                                            ceiling();
-                                            post.stopAgent();
-                                        } else post.gotoReasoning();
-                                    }
-                                    case LIMIT_EXCEEDED_NODE -> {
-                                        node(LIMIT_EXCEEDED_NODE, policies.limitExceeded());
-                                        if (finish(true)) post.gotoReasoning();
-                                        else post.stopAgent();
-                                    }
-                                    case FINAL_ANSWER_NODE -> {
-                                        if (finish(true)) post.gotoReasoning();
-                                        else post.stopAgent();
-                                    }
-                                    default ->
-                                            throw new IllegalArgumentException(
-                                                    "Unsupported reasoning route: " + route);
-                                }
-                                return event;
-                            })
-                    .subscribeOn(Schedulers.boundedElastic());
+        /**
+         * Prepare one application policy round before entering the SDK reasoning core. Middleware
+         * repeats policy-only routes without fabricating tool calls. Actual tool batches still return
+         * to the SDK's native reasoning/acting iteration.
+         */
+        private boolean prepareReasoning() throws Exception {
+            ensureRunning();
+            if (terminal) return false;
+            if (rounds >= hardRoundCeiling) {
+                ceiling();
+                return false;
+            }
+            rounds++;
+            state.applyPatch(Map.of(TOOL_CALLS, List.of()));
+            node(REASONING_NODE, policies.reasoning());
+            reasoningRoute =
+                    Objects.requireNonNull(
+                            edge(policies.afterReasoning()),
+                            "Reasoning route must be captured once");
+            switch (reasoningRoute) {
+                case ACTION_NODE -> {
+                    if (calls().isEmpty())
+                        throw new IllegalStateException("Action route requires real tool calls");
+                    return false;
+                }
+                case REASONING_NODE -> {
+                    if (rounds >= hardRoundCeiling) ceiling();
+                    return !terminal;
+                }
+                case SUMMARIZING_NODE -> {
+                    node(SUMMARIZING_NODE, policies.summarizing());
+                    if (rounds >= hardRoundCeiling) ceiling();
+                    return !terminal;
+                }
+                case LIMIT_EXCEEDED_NODE -> {
+                    node(LIMIT_EXCEEDED_NODE, policies.limitExceeded());
+                    return finish(true);
+                }
+                case FINAL_ANSWER_NODE -> {
+                    return finish(true);
+                }
+                default ->
+                        throw new IllegalArgumentException(
+                                "Unsupported reasoning route: " + reasoningRoute);
+            }
         }
 
         private MiddlewareBase middleware() {
@@ -540,17 +529,25 @@ public final class NativePolicyDriver implements AgentRuntime {
                 }
 
                 @Override
-                public Flux<AgentEvent> onModelCall(
+                public Flux<AgentEvent> onReasoning(
                         Agent agent,
                         RuntimeContext context,
-                        ModelCallInput input,
-                        Function<ModelCallInput, Flux<AgentEvent>> next) {
-                    if (terminal || rounds >= hardRoundCeiling)
-                        return Flux.just(
-                                new RequestStopEvent(
-                                        "application_terminal",
-                                        GenerateReason.MIDDLEWARE_STOP_REQUESTED));
-                    return next.apply(input);
+                        ReasoningInput input,
+                        Function<ReasoningInput, Flux<AgentEvent>> next) {
+                    return Mono.fromCallable(Session.this::prepareReasoning)
+                            .subscribeOn(Schedulers.boundedElastic())
+                            .repeat(() -> !terminal && !ACTION_NODE.equals(reasoningRoute))
+                            .thenMany(Flux.defer(() -> next.apply(input)))
+                            .concatWith(
+                                    Flux.defer(
+                                            () ->
+                                                    terminal
+                                                            ? Flux.just(
+                                                                    new RequestStopEvent(
+                                                                            "application_terminal",
+                                                                            GenerateReason
+                                                                                    .MIDDLEWARE_STOP_REQUESTED))
+                                                            : Flux.empty()));
                 }
             };
         }

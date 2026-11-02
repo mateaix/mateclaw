@@ -37,6 +37,22 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 class NativePolicyDriverTest {
+    @Test
+    void nativeRuntimeDoesNotLinkToForRemovalHookApi() throws Exception {
+        var types = new java.util.ArrayDeque<Class<?>>();
+        types.add(NativePolicyDriver.class);
+        while (!types.isEmpty()) {
+            Class<?> type = types.removeFirst();
+            types.addAll(List.of(type.getDeclaredClasses()));
+            try (var bytes = type.getResourceAsStream("/" + type.getName().replace('.', '/') + ".class")) {
+                assertNotNull(bytes);
+                String constants = new String(bytes.readAllBytes(), java.nio.charset.StandardCharsets.ISO_8859_1);
+                assertFalse(constants.contains("io/agentscope/core/hook/"),
+                        type.getName() + " must use supported middleware rather than for-removal hooks");
+            }
+        }
+    }
+
     private static final List<ToolSchema> SCHEMAS =
             List.of(
                     ToolSchema.builder()
