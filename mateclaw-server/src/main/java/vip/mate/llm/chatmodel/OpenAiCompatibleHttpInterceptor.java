@@ -59,19 +59,23 @@ final class OpenAiCompatibleHttpInterceptor implements Interceptor {
                 rewritten.path("messages").size(),
                 rewritten.path("tools").size(),
                 rewritten.path("stream").asBoolean());
-        // fix：https://github.com/mateaix/mateclaw/issues/640
-        // The endpoint (provider baseUrl + completions path) is the authoritative URL.
-        // Carry over SDK-attached query params selectively: openai-java classifies
-        // *.openai.azure.com hosts whose baseUrl does not end in /openai/v1 as
-        // AZURE_LEGACY and appends a default `api-version` query — which the unified
-        // /openai/v1 surface rejects with 400 "API version not supported". Keep
-        // `api-version` only when the endpoint itself is a legacy deployments URL,
-        // where Azure requires it.
+        // Only Azure's unified v1 surface rejects the legacy SDK api-version.
+        // Keep explicit endpoint query values authoritative and avoid duplicating
+        // parameters already present there when copying SDK query parameters.
         HttpUrl parsedEndpoint = HttpUrl.get(endpoint);
-        boolean legacyDeploymentsEndpoint = parsedEndpoint.encodedPath().contains("/deployments/");
+        String host = parsedEndpoint.host();
+        boolean azureUnifiedEndpoint =
+                (host.endsWith(".openai.azure.com") || host.endsWith(".cognitiveservices.azure.com"))
+                        && parsedEndpoint.encodedPath().startsWith("/openai/v1/");
         HttpUrl.Builder url = parsedEndpoint.newBuilder();
+        if (azureUnifiedEndpoint) {
+            for (String name : parsedEndpoint.queryParameterNames()) {
+                if ("api-version".equalsIgnoreCase(name)) url.removeAllQueryParameters(name);
+            }
+        }
         for (String name : original.url().queryParameterNames()) {
-            if ("api-version".equalsIgnoreCase(name) && !legacyDeploymentsEndpoint) continue;
+            if (azureUnifiedEndpoint && "api-version".equalsIgnoreCase(name)) continue;
+            if (parsedEndpoint.queryParameterNames().contains(name)) continue;
             for (String value : original.url().queryParameterValues(name)) {
                 url.addQueryParameter(name, value);
             }
