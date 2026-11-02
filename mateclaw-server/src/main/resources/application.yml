@@ -404,6 +404,9 @@ mateclaw:
         enabled: true
         failure-threshold: 3
         cooldown-ms: 300000
+        # Shared by agent conversations and fallback models of the same provider.
+        max-concurrent-requests: ${MATECLAW_LLM_MAX_CONCURRENT_REQUESTS:1}
+        admission-timeout-ms: ${MATECLAW_LLM_ADMISSION_TIMEOUT_MS:120000}
   # Multi-agent delegation (DelegateAgentTool).
   delegation:
     # Wall-clock budget for one delegateParallel batch (shared across all

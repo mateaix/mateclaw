@@ -29,6 +29,17 @@ public class ProviderHealthProperties {
     /** Cooldown window in milliseconds. */
     private long cooldownMs = 300_000L;
 
+    /** Shared per-provider limit for agent LLM streams, including fallbacks. */
+    private int maxConcurrentRequests = 1;
+
+    /** Maximum admission wait; queued callers remain cancellable. */
+    private long admissionTimeoutMs = 120_000L;
+
+    public int getMaxConcurrentRequests() { return maxConcurrentRequests; }
+    public void setMaxConcurrentRequests(int value) { maxConcurrentRequests = Math.max(1, value); }
+    public long getAdmissionTimeoutMs() { return admissionTimeoutMs; }
+    public void setAdmissionTimeoutMs(long value) { admissionTimeoutMs = Math.max(1, value); }
+
     /**
      * TTL after which a provider HARD-removed for BILLING is lazily readmitted
      * to the available pool. Users top up balances and aggregator quotas

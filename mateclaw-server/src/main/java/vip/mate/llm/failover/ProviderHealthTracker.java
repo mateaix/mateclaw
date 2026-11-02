@@ -39,6 +39,39 @@ public class ProviderHealthTracker {
     private final ProviderHealthProperties props;
     private final ConcurrentHashMap<String, AtomicLong> consecutiveFailures = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Long> cooldownUntilMs = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, java.util.concurrent.Semaphore> requestSlots = new ConcurrentHashMap<>();
+
+    /** Acquire across helper instances; hold until the entire stream terminates, not just headers. */
+    public RequestPermit acquireRequest(String providerId, java.util.function.BooleanSupplier cancelled)
+            throws InterruptedException {
+        if (providerId == null || providerId.isBlank()) return new RequestPermit(null);
+        var slots = requestSlots.computeIfAbsent(providerId,
+                ignored -> new java.util.concurrent.Semaphore(props.getMaxConcurrentRequests(), true));
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(props.getAdmissionTimeoutMs());
+        while (true) {
+            if (cancelled.getAsBoolean()) throw new java.util.concurrent.CancellationException("Queued LLM call cancelled");
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0) return null;
+            if (slots.tryAcquire(Math.min(remaining, java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(100)),
+                    java.util.concurrent.TimeUnit.NANOSECONDS)) {
+                var permit = new RequestPermit(slots);
+                if (cancelled.getAsBoolean()) {
+                    permit.close();
+                    throw new java.util.concurrent.CancellationException("Queued LLM call cancelled");
+                }
+                return permit;
+            }
+        }
+    }
+
+    public static final class RequestPermit implements AutoCloseable {
+        private final java.util.concurrent.Semaphore slots;
+        private final java.util.concurrent.atomic.AtomicBoolean closed = new java.util.concurrent.atomic.AtomicBoolean();
+        private RequestPermit(java.util.concurrent.Semaphore slots) { this.slots = slots; }
+        @Override public void close() {
+            if (slots != null && closed.compareAndSet(false, true)) slots.release();
+        }
+    }
 
     public ProviderHealthTracker(ProviderHealthProperties props) {
         this.props = props;
