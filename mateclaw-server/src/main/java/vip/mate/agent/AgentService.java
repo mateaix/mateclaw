@@ -146,6 +146,11 @@ public class AgentService {
 
     public AgentEntity createAgent(AgentEntity agent) {
         agent.setEnabled(true);
+        // Match the runtime fallback before insert; older schemas default to 10.
+        // Explicit budgets (including 0 for no soft cap) remain user-controlled.
+        if (agent.getMaxIterations() == null) {
+            agent.setMaxIterations(100);
+        }
         if (agent.getAgentType() == null) {
             agent.setAgentType("react");
         }

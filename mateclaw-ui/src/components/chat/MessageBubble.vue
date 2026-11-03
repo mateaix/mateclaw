@@ -263,6 +263,16 @@
           </div>
         </div>
 
+        <!-- Use the persisted finish reason so a model's wrap-up cannot hide
+             an iteration-cap exit. Hide intermediate caps during goal continuation. -->
+        <div v-if="isIterationLimitReached" class="incomplete-card iteration-limit-card" role="status">
+          <div class="incomplete-card__header">
+            <el-icon class="incomplete-card__icon"><WarningFilled /></el-icon>
+            <span class="incomplete-card__title">{{ $t('chat.iterationLimitTitle') }}</span>
+          </div>
+          <p class="incomplete-card__description">{{ $t('chat.iterationLimitDescription') }}</p>
+        </div>
+
         <!--
           EVIDENCE_INSUFFICIENT banner (info color, not warning). Run completed
           fully — the answer text is preserved above; the model just cited
@@ -1362,6 +1372,11 @@ const isIncomplete = computed<boolean>(() => {
   if (props.message.role !== 'assistant') return false
   return parsedMetadata.value?.finishReason === 'incomplete'
 })
+
+const isIterationLimitReached = computed<boolean>(() =>
+  props.message.role === 'assistant' && !isGenerating.value
+  && parsedMetadata.value?.finishReason === 'max_iterations_reached'
+)
 
 /**
  * True when the graph completed normally but {@code SourceEvidenceLedger}

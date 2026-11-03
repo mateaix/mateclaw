@@ -702,6 +702,8 @@ export default {
     incompleteTitle: 'Answer is incomplete',
     incompleteDescription: 'This answer did not finish. Check the message for the reason: repeated output, a reasoning safety limit, or an exhausted output token budget. Regenerate, adjust thinking and output budgets, or split the task to continue.',
     incompleteRetry: 'Regenerate',
+    iterationLimitTitle: 'Task is incomplete: iteration limit reached',
+    iterationLimitDescription: 'This run reached its iteration limit. Results so far are preserved. Increase “Max Iterations” in the agent settings, or split the task and send a follow-up to continue.',
     // EVIDENCE_INSUFFICIENT info card (finishReason=evidence_insufficient)
     evidenceTitle: 'Run completed — some source references could not be verified',
     evidenceDescription: 'The full answer is preserved above. The classes/files listed in the trailing "[evidence insufficient] …" line were not actually opened during this run; the model may have inferred them from naming. Ask a follow-up to have each one read before relying on those references.',

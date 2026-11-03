@@ -702,6 +702,8 @@ export default {
     incompleteTitle: '回答尚未完成',
     incompleteDescription: '本次回答未完成，具体原因请查看消息内容：可能是重复输出触发保护、思考达到安全上限，或模型耗尽输出 token 预算。可重新生成、调整思考和输出预算，或拆分任务后继续。',
     incompleteRetry: '重新生成',
+    iterationLimitTitle: '任务尚未完成：已达迭代上限',
+    iterationLimitDescription: '本次运行已达到最大迭代次数，已保留当前结果。可在 Agent 设置中调高「最大迭代次数」，或拆分任务后发送消息继续。',
     // EVIDENCE_INSUFFICIENT 提示卡（finishReason=evidence_insufficient）
     evidenceTitle: '任务已完成，但部分源码引用未被验证',
     evidenceDescription: '回答全文已保留并展示。底部「[证据不足] …」列出的类/文件并未在本次工具结果里被实际读取，模型可能基于命名推断。如需确认这些引用，请追问让模型逐一读取后再下结论。',

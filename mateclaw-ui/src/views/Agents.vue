@@ -1008,7 +1008,7 @@ const defaultForm = (): Partial<Agent> & { name: string; defaultThinkingLevel: s
   runtimeConfig: null,
   systemPrompt: '',
   modelName: '', // RFC-03 G1 — empty means "use global default"
-  maxIterations: 10,
+  maxIterations: 100,
   // Empty so SkillIcon's fallback (🤖) shows instead of pinning a literal
   // emoji into form.icon — otherwise the picker thinks the user picked
   // the robot emoji explicitly and reopens on the Emoji tab.
