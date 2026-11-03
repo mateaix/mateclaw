@@ -1002,7 +1002,7 @@ public class NodeStreamingChatHelper {
             }
             failoverCount++;
             llmCallCount++;
-            StreamResult fallbackResult = doStreamCall(fallback, prompt, conversationId,
+            StreamResult fallbackResult = doStreamCall(fallback, promptForFallback(prompt, fallback), conversationId,
                     phase + "_fallback_" + (i + 1), publicationMode, 0, false,
                     new AtomicReference<>(), new AtomicReference<>(0L), entry.providerId());
             if (fallbackResult == null || !fallbackResult.stopped()) throwIfCancelled(conversationId);
@@ -1027,6 +1027,14 @@ public class NodeStreamingChatHelper {
                     phase, ErrorType.PROVIDER_BUSY, publicationMode);
         return lastResult != null ? lastResult
                 : buildErrorResult("当前没有可用模型，请检查供应商状态或稍后重试", conversationId, phase, publicationMode);
+    }
+
+    /** Rebase only model identity; preserve per-call budgets, tool restrictions and other controls. */
+    private static Prompt promptForFallback(Prompt prompt, ChatModel fallback) {
+        if (prompt.getOptions() == null) return prompt;
+        var defaults = ChatModelDefaults.optionsFor(fallback);
+        String model = defaults == null ? null : defaults.getModel();
+        return new Prompt(prompt.getInstructions(), prompt.getOptions().mutate().model(model).build());
     }
 
     /** D-6: log a structured performance summary for the LLM call phase. */
@@ -1111,7 +1119,7 @@ public class NodeStreamingChatHelper {
                 return buildErrorResultWithType("供应商冷却中，请稍后重试", conversationId,
                         phase, ErrorType.PROVIDER_BUSY, publicationMode);
             StreamResult result = doStreamCallInner(chatModel, outbound, conversationId, phase,
-                    publicationMode, attempt, primaryCall, retryTypeRef, retryHintRef);
+                    publicationMode, attempt, primaryCall, retryTypeRef, retryHintRef, providerId);
             // Publish completion state BEFORE releasing capacity. Otherwise a queued
             // request can slip between permit release and a newly established cooldown.
             if (result != null) {
@@ -1164,7 +1172,7 @@ public class NodeStreamingChatHelper {
                                             String conversationId, String phase,
                                             PublicationMode publicationMode, int attempt, boolean primaryCall,
                                             AtomicReference<ErrorType> retryTypeRef,
-                                            AtomicReference<Long> retryHintRef) {
+                                            AtomicReference<Long> retryHintRef, String providerId) {
         boolean broadcast = publicationMode != PublicationMode.SILENT;
         throwIfCancelled(conversationId);
         if (attempt > 0) {
@@ -1281,9 +1289,9 @@ public class NodeStreamingChatHelper {
                     "timestamp", System.currentTimeMillis()
             ));
             String modelId = identifyModel(chatModel);
-            String providerId = primaryProviderId != null ? primaryProviderId : "";
+            String actualProviderId = providerId != null ? providerId : "";
             streamTracker.broadcastObject(conversationId, "llm_request_sent", Map.of(
-                    "provider", providerId,
+                    "provider", actualProviderId,
                     "model", modelId != null ? modelId : "",
                     "phase", phase != null ? phase : "",
                     "timestamp", System.currentTimeMillis()

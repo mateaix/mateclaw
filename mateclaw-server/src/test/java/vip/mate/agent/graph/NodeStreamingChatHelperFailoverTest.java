@@ -34,6 +34,31 @@ import static org.mockito.Mockito.*;
  * MODEL_NOT_FOUND already behave.</p>
  */
 class NodeStreamingChatHelperFailoverTest {
+    @Test
+    void fallbackUsesOwnModelAndProviderWithoutChangingRequestControls() throws Exception {
+        var primary = errorModel(new RuntimeException("401 Unauthorized"));
+        var fallback = successModel("fallback ok");
+        when(fallback.getOptions()).thenReturn(org.springframework.ai.chat.prompt.ChatOptions.builder()
+                .model("backup-model").build());
+        var options = org.springframework.ai.openai.OpenAiChatOptions.builder()
+                .model("primary-only-model").maxTokens(256).toolChoice("none").build();
+        var helper = helper(primary, List.of(new FallbackEntry("backup-provider", fallback)), "primary-provider");
+        assertEquals("fallback ok", helper.streamCall(primary, new Prompt("hi", options),
+                "different-models", "reasoning").text());
+        var sent = org.mockito.ArgumentCaptor.forClass(Prompt.class);
+        verify(fallback).stream(sent.capture());
+        assertEquals("backup-model", sent.getValue().getOptions().getModel());
+        assertEquals(256, sent.getValue().getOptions().getMaxTokens());
+        assertEquals("none", ((org.springframework.ai.openai.OpenAiChatOptions)
+                sent.getValue().getOptions()).getToolChoice());
+        assertEquals("primary-only-model", options.getModel(), "Original prompt must remain unchanged");
+        var events = org.mockito.ArgumentCaptor.forClass(Object.class);
+        verify(streamTracker, atLeastOnce()).broadcastObject(eq("different-models"),
+                eq("llm_request_sent"), events.capture());
+        var json = new com.fasterxml.jackson.databind.ObjectMapper();
+        assertEquals("backup-provider", json.valueToTree(events.getAllValues().getLast()).path("provider").asText());
+    }
+
 
     private ChatStreamTracker streamTracker;
     private ProviderHealthTracker healthTracker;
