@@ -93,12 +93,8 @@ public class StepExecutionNode implements NodeAction {
     }
 
     /**
-     * Per-step tool-call ceiling, aligned with {@code BaseAgent.MAX_ITERATIONS_HARD_CEILING}.
-     * Matching the agent-level cap means this constant is never the bottleneck —
-     * the agent's own {@code max_iterations} (DB column) will fire first if a
-     * task is genuinely runaway, and a well-budgeted multi-tool step (e.g.
-     * web_search + browser_navigate + browser_read*N + file_write) is no longer
-     * cut short by an arbitrary 5-call ceiling.
+     * Finite model/tool-round ceiling for each plan step. This is independent
+     * of the ReAct agent's max_iterations; one round can execute several tools.
      */
     private static final int MAX_TOOL_CALLS_PER_STEP = 100;
 
@@ -379,19 +375,20 @@ public class StepExecutionNode implements NodeAction {
             // tool-call ceiling, or returned an empty answer. Re-plan the
             // remaining work around it instead of advancing dependent steps with
             // junk. Shares PLAN_REPLAN_COUNT with the exception path; once the
-            // budget is spent we fall through to the legacy "complete with a
-            // failure note" path below so the plan still terminates.
+            // budget is spent the step must fail closed; dependent steps cannot
+            // consume an unfinished step as if it were a successful result.
             boolean noUsableResult = progressTracker.isStuck()
                     || finalResult == null || finalResult.isBlank();
             int noProgressReplanCount = accessor.replanCount();
+            String noResultReason = progressTracker.isStuck()
+                    ? "本步骤陷入停滞（" + progressTracker.haltReason() + "），未取得有效结果"
+                    : wallClockExceeded
+                        ? "本步骤超过最大耗时限制，未取得有效结果"
+                        : finalResult == null
+                            ? "本步骤达到工具执行轮次上限（" + MAX_TOOL_CALLS_PER_STEP + "轮），未取得有效结果"
+                            : "本步骤未产出有效结果";
             if (noUsableResult && noProgressReplanCount < MAX_REPLANS_PER_RUN) {
-                String reason = progressTracker.isStuck()
-                        ? "本步骤陷入停滞（" + progressTracker.haltReason() + "），未取得有效结果"
-                        : wallClockExceeded
-                            ? "本步骤超过最大耗时限制，未取得有效结果"
-                            : finalResult == null
-                                ? "本步骤超过最大工具调用次数，未取得有效结果"
-                                : "本步骤未产出有效结果";
+                String reason = noResultReason;
                 planningService.updateSubPlanFailure(planId, stepIndex, reason);
                 planningService.markPlanFailed(planId, "步骤" + (stepIndex + 1) + "：" + reason);
                 events.add(GraphEventPublisher.stepCompleted(stepIndex, reason));
@@ -425,14 +422,24 @@ public class StepExecutionNode implements NodeAction {
                         .build();
             }
 
-            if (finalResult == null) {
-                if (wallClockExceeded) {
-                    finalResult = "步骤执行超过最大耗时限制（"
-                            + (stepWallClockTimeoutMs / 1000) + "秒），已中止本步骤";
-                } else {
-                    finalResult = "步骤执行超过最大工具调用次数限制（" + MAX_TOOL_CALLS_PER_STEP + "次）";
-                    log.warn("[StepExecution] Step {} exceeded max tool call limit", stepIndex);
+            if (noUsableResult) {
+                String diagnosis = "任务尚未完成：" + noResultReason + "；重规划次数已耗尽。";
+                planningService.updateSubPlanFailure(planId, stepIndex, diagnosis);
+                planningService.markPlanFailed(planId, diagnosis);
+                events.add(GraphEventPublisher.stepCompleted(stepIndex, diagnosis));
+                events.add(GraphEventPublisher.finishReason("incomplete"));
+                if (iterationEventsOn) {
+                    events.add(GraphEventPublisher.iterationEnd(stepIndex, "parent", null, diagnosis.length(), 0));
                 }
+                return PlanStateAccessor.output()
+                        .put(PRE_APPROVED_TOOL_CALL, preApprovedConsumed ? "" : state.value(PRE_APPROVED_TOOL_CALL, ""))
+                        .currentStepResult(diagnosis).finalSummary(diagnosis)
+                        .put(MateClawStateKeys.FINISH_REASON, "incomplete")
+                        .currentPhase("plan_aborted").contentStreamed(false)
+                        .loadedSkills(Set.copyOf(loadedSkills))
+                        .addStepUsage(state, stepPromptTokens, stepCompletionTokens,
+                                stepCacheReadTokens, stepCacheWriteTokens, stepReasoningTokens)
+                        .events(events).build();
             }
 
         } catch (Exception e) {

@@ -1081,7 +1081,10 @@ public class ToolExecutionExecutor {
                     // 按工具名查找配置的超时时间
                     PreparedToolCall matchedPc = batch.stream()
                             .filter(p -> p.resultIndex == entry.getKey()).findFirst().orElse(null);
-                    long timeoutMs = getToolTimeoutMs(matchedPc != null ? matchedPc.toolCall.name() : null);
+                    // Match invokeObserved's deadline: provider aliases must not
+                    // fall back to 300s while the canonical callback has an override.
+                    long timeoutMs = getToolTimeoutMs(matchedPc != null
+                            ? matchedPc.callback.getToolDefinition().name() : null);
                     ToolResponseMessage.ToolResponse response = entry.getValue().get(timeoutMs, TimeUnit.MILLISECONDS);
                     allResponses.set(entry.getKey(), response);
                 } catch (CancellationException e) {

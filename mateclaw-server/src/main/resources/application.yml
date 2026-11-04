@@ -466,6 +466,13 @@ mate:
     tool:
       timeout:
         default-timeout-seconds: 300
+        # Per-tool overrides use registered names, e.g. sendToSubagent, not
+        # model-emitted aliases such as send_to_subagent. For long child follow-ups:
+        # per-tool:
+        #   sendToSubagent: 900
+        # Plan steps retain a separate 600s wall-clock budget.
+        # delegateParallel also has mateclaw.delegation.parallel-timeout-seconds;
+        # its outer tool timeout must allow enough time for that batch to finish.
         per-category:
           shell: 120
           web: 30
