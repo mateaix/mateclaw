@@ -11,6 +11,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ReasoningNodePromptLanguageTest {
 
     @Test
+    void languagePreferenceDoesNotUnconditionallyBanEnglishThinking() {
+        String prompt = ReasoningNode.buildGroundedSystemPrompt("Answer in English", false);
+        assertTrue(prompt.contains("明确指定"));
+        assertTrue(prompt.contains("当前"));
+        assertFalse(prompt.contains("不要用英文书写可见思考或推理过程"));
+    }
+
+    @Test
     @DisplayName("runtime prompt constrains visible thinking to the user's language")
     void groundedPromptIncludesVisibleThinkingLanguageRule() {
         String prompt = ReasoningNode.buildGroundedSystemPrompt("基础提示", false);

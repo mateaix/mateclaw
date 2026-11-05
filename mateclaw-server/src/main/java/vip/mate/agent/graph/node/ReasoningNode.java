@@ -411,12 +411,6 @@ public class ReasoningNode implements NodeAction {
             + "- 最终回答中引用的状态数值与查询时间必须来自本轮工具返回，时间基准以运行时上下文注入的当前时间为准。\n"
             + "- 注意：\"历史里查过\"不等于\"本轮已查\"。宣称已重新查询但未在本轮实际发出对应 tool_call，视为违规。\n";
 
-    private static final String LANGUAGE_CONSISTENCY_GUARD = "\n\n"
-            + "## 语言一致性（强制）\n\n"
-            + "- 用户使用中文时,所有可见思考、过程说明、最终答复都必须使用简体中文。\n"
-            + "- 不要用英文书写可见思考或推理过程;代码、工具名、参数名、API 字段和专有名词可以保留原文。\n"
-            + "- 如果工具结果或历史内容是英文,你可以阅读它,但面向用户展示的解释和推理必须翻译/转述为用户语言。\n";
-
     private static final String GROUNDED_CONTRACT = "\n\n"
             + "## 回答来源约束（强制规则）\n\n"
             + "**核心原则**：你的回答必须完全基于工具返回的信息（证据），不得使用内部知识编造内容。\n\n"
@@ -431,7 +425,8 @@ public class ReasoningNode implements NodeAction {
             + "**违规后果**：未按规则引用来源或使用未验证的信息将导致回答被拒绝。\n";
 
     static String buildGroundedSystemPrompt(String basePrompt, boolean groundingEnforced) {
-        String prompt = basePrompt + TOOL_USE_ENFORCEMENT + STALE_CONTEXT_GUARD + LANGUAGE_CONSISTENCY_GUARD;
+        String prompt = basePrompt + TOOL_USE_ENFORCEMENT + STALE_CONTEXT_GUARD
+                + vip.mate.agent.prompt.ResponseLanguageGuidance.PROMPT;
         return groundingEnforced ? prompt + GROUNDED_CONTRACT : prompt;
     }
 

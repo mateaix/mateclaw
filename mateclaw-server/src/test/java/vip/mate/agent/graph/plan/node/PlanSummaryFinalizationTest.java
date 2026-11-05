@@ -92,6 +92,8 @@ class PlanSummaryFinalizationTest {
   when(helper.streamCallBufferedContent(any(),any(),any(),anyString())).thenAnswer(call->{
     String prompt=((org.springframework.ai.chat.prompt.Prompt)call.getArgument(1)).getContents();
     assertTrue(prompt.contains("Respond in French and retain exact table format"));
+    assertTrue(prompt.contains("语言一致性"));
+    assertTrue(prompt.contains("明确指定"));
     return new NodeStreamingChatHelper.StreamResult("","",null,List.of(),false,10,5,false,"413",NodeStreamingChatHelper.ErrorType.PAYLOAD_TOO_LARGE);
   });
   var state=new RunState(Map.of(PlanStateKeys.PLAN_ID,42L,PlanStateKeys.GOAL,"all stages",

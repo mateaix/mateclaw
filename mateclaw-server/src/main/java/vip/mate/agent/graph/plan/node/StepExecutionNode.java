@@ -912,7 +912,7 @@ public class StepExecutionNode implements NodeAction {
                 7. 如果前一步已经有结果，默认信任，不要重复验证，除非当前步骤必须依赖再次确认。
                 8. 每一步最多做一个必要的检查和一个必要的执行，不要无意义循环。
                 """;
-        messages.add(new SystemMessage(enhancedSystemPrompt));
+        messages.add(new SystemMessage(enhancedSystemPrompt + vip.mate.agent.prompt.ResponseLanguageGuidance.PROMPT));
         // Runtime skill catalog (rendered here instead of baked into the system
         // prompt), ranked with skills already loaded during this graph run.
         if (skillCatalogRenderer != null) {

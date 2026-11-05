@@ -49,6 +49,9 @@ class StepExecutionSkillCatalogTest {
 
         assertEquals(Set.of("docx"), seenLoaded.get());
         assertTrue(messages.stream().anyMatch(m -> m.getText().contains("## Skills")));
+        assertTrue(messages.getFirst().getText().contains("语言一致性"));
+        assertTrue(messages.getFirst().getText().contains("可见思考"));
+        assertTrue(messages.getFirst().getText().contains("明确指定"));
     }
 
     private static PlanStateAccessor accessor(Set<String> loadedSkills) {

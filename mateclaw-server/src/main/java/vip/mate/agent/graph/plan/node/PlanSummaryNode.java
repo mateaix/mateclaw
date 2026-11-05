@@ -102,6 +102,7 @@ public class PlanSummaryNode implements NodeAction {
                             + "若执行结果中包含交付物下载链接，请在回答中原样列出这些链接。"
                             + "若某些步骤未完成，如实说明未完成的部分及原因。"
                             + "计划步骤完成不等于持久目标通过验收；只有目标工具返回或 getGoalStatus 确认的状态才可宣称。"
+                            + vip.mate.agent.prompt.ResponseLanguageGuidance.PROMPT
                             + vip.mate.goal.service.GoalLifecycleHints.current(goalService, conversationId)
                             + "\n" + executionFacts),
                     new UserMessage(userContent.toString())
@@ -185,6 +186,7 @@ public class PlanSummaryNode implements NodeAction {
                 List<org.springframework.ai.chat.messages.Message> messages=List.of(
                     new SystemMessage("Summarize the completed plan using canonical execution facts. Do not invent recovery or numeric results. "
                         +"State unfinished portions honestly. Preserve deliverable links. Never restart the completed plan.\n"
+                        +vip.mate.agent.prompt.ResponseLanguageGuidance.PROMPT
                         +vip.mate.goal.service.GoalLifecycleHints.current(goalService,accessor.conversationId())
                         +vip.mate.agent.graph.guard.TaskFinalizationCoordinator.groundedFacts(facts.text())),
                     new UserMessage(content));
