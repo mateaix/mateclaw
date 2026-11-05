@@ -9,17 +9,17 @@ DSH is an employee runtime. MateClaw launches the official `dsh --profile sdk` p
 
 ## Requirements and installation
 
-The managed installer requires **Node.js 22**, npm, and registry access. It supports macOS arm64 and Linux x64 candidates. Actual package installation and Java adapter/model checks have passed on macOS arm64 with Node 22.20.0 and npm 11.6.2. Linux x64 remains pending actual verification; Windows/WSL has not been verified.
+The managed installer requires npm and registry access. **0.2.2-rc.1 requires Node.js 24.9+ (24.x)**; retained older releases accept Node.js 22.x or 24.x. It supports macOS arm64 and Linux x64 candidates. Actual package installation and Java adapter/model checks have passed on macOS arm64 with Node 22.20.0 and npm 11.6.2. Linux x64 remains pending actual verification; Windows/WSL has not been verified.
 
-Use the DSH management console to install the pinned **`0.2.0-rc.1`** target. The reviewed alternative is **`0.1.7-rc.2`**. Installation uses checked-in dependency locks and `npm ci` in a separate candidate directory; it does not resolve a moving `latest` tag or modify global npm packages. Both are prereleases.
+Use the DSH management console to install the pinned **`0.2.0-rc.1`** target. The reviewed alternative is **`0.1.7-rc.2`**. Installation uses checked-in dependency locks and `npm ci` in a separate candidate directory; it does not resolve a moving `latest` tag or modify global npm packages. All catalog entries are prereleases.
 
 Run **Verify**, **Test connection**, and **Test task**. These mean different things: configuration checks, an SDK `initialize` handshake, and a real model task requiring the answer `OK`. A successful handshake alone does not establish model access. The wire server version `0.0.1` is not the npm package version; managed provenance records the pinned package separately. An external executable remains unverified unless independently checked.
 
-The Docker runtime image pins Node.js 22 and includes bubblewrap for Linux sandbox execution. Rebuild or pull the updated image before installing managed DSH packages; updating the application JAR alone does not update container dependencies. Host installations must supply their own runtime dependencies.
+The Docker runtime image pins Node.js 24.22.2 and includes bubblewrap for Linux sandbox execution. Rebuild or pull the updated image before installing managed DSH packages; updating the application JAR alone does not update container dependencies. Host installations must supply their own runtime dependencies.
 
 ## SDK configuration
 
-Use an absolute executable path to `node_modules/.bin/dsh`, profile `sdk`, an existing working directory, and a dedicated home root. Optional patch paths are an ordered JSON array of absolute files. MateClaw assigns a separate `DSH_HOME` for each workspace/employee pair and launches arguments directly, without a shell.
+Use the managed executable returned by installation (`bin/dsh` for 0.2.2-rc.1), or an independently verified absolute SDK executable path, profile `sdk`, an existing working directory, and a dedicated home root. Optional patch paths are an ordered JSON array of absolute files. MateClaw assigns a separate `DSH_HOME` for each workspace/employee pair and launches arguments directly, without a shell.
 
 | Managed key | Purpose |
 | --- | --- |
@@ -64,6 +64,16 @@ The admin API is under `/api/v1/admin/dsh`: `GET /status`, `POST /verify`, `/tes
 
 A backend restart alone is not orphan-process cleanup. Do not delete a stale lease merely to bypass the error.
 
+## 0.2.2-rc.1 candidate (2026-11-05)
+
+The catalog includes exact `0.2.2-rc.1`, alongside all retained older releases. The default remains `0.2.0-rc.1`; adding this candidate does not activate it. Start the backend with Node24 first on its PATH before installing the new candidate. The old releases remain installable on Node22 or Node24 and their generations remain available for rollback.
+
+The managed `bin/dsh` launcher supplies a reviewed patch before administrator patches. It explicitly restores `fs-observation-policy` and sets the selected model's context/output metadata from MateClaw. The native SDK file tools retain read-before-write and stale-file checks; Bash remains subject to its own sandbox, not these file-tool observation checks. Explicit administrator patches can override these defaults. Use the returned launcher path to keep these settings; invoking `node_modules/.bin/dsh` directly bypasses them. Docker images apply the same patch. External installations must configure equivalent policies themselves.
+
+Final answer text is delivered after the correlated `turn/end`, before waiting for idle and SDK shutdown, without appending it again after an EOF. This is settled-message delivery, not token streaming: this SDK emits no live text-delta notification. Tool receipts preserve success/error codes and distinguish PTC `ABORTED` from ordinary failures. Committed usage includes separate cache read/write counters. Host question and approval bridging remain unavailable; no new SDK capabilities are advertised.
+
+Each turn still creates a fresh process/session. Upstream prefix-cache improvements do not prove cross-turn cache savings for this adapter; explicit context capacity prevents silently inheriting a larger upstream default. See the repository record `docs/verification/dsh-022-2026-11-05.md` for exact evidence and remaining platform gates.
+
 ## 0.2.1-rc.2 evolutionary candidate (2026-10-20)
 
 The catalog now offers exact `0.2.1-rc.2` as an opt-in candidate alongside retained `0.2.0-rc.1` and `0.1.7-rc.2`. The default install target stays `0.2.0-rc.1`; adding the candidate does not change the active generation. All three versions are prereleases. The management page reads the server catalog and retains an installed catalog version rather than silently selecting a newer release.
@@ -90,18 +100,18 @@ Build a dedicated image from the bundled trusted lock (from the repository root)
 
 ```bash
 docker build -f mateclaw-server/src/main/resources/dsh/container/Dockerfile \
-  --build-arg DSH_VERSION=0.2.1-rc.2 \
-  --build-arg DSH_LOCK_SHA256=4c17ebb6b36dfdebe24100490a375bb93e72fc7450595751c8737b357ce8987d \
-  -t mateclaw-dsh-local:0.2.1-rc.2 mateclaw-server/src/main/resources/dsh
-docker image inspect --format '{{.Id}}' mateclaw-dsh-local:0.2.1-rc.2
+  --build-arg DSH_VERSION=0.2.2-rc.1 \
+  --build-arg DSH_LOCK_SHA256=ee63227735abbbbceb9c2f5442bdbdc286b8fdd9d82b15396f3e6f749ffbffe5 \
+  -t mateclaw-dsh-local:0.2.2-rc.1 mateclaw-server/src/main/resources/dsh
+docker image inspect --format '{{.Id}}' mateclaw-dsh-local:0.2.2-rc.1
 ```
 
-The Dockerfile pins Node 22.20.0 by digest. Review the base, lock, native platform packages and resulting image before use. Configure the returned full `sha256:…` **image ID**, not a tag, then restart the backend:
+The Dockerfile pins Node 24.22.2 by digest. Review the base, lock, native platform packages and resulting image before use. Configure the returned full `sha256:…` **image ID**, not a tag, then restart the backend:
 
 ```bash
 export MATECLAW_DSH_CONTAINMENT_MODE=docker
 export MATECLAW_DSH_DOCKER_EXECUTABLE=docker
-export MATECLAW_DSH_DOCKER_IMAGES_JSON='{"0.2.1-rc.2":"sha256:<64 hexadecimal characters from image inspect>"}'
+export MATECLAW_DSH_DOCKER_IMAGES_JSON='{"0.2.2-rc.1":"sha256:<64 hexadecimal characters from image inspect>"}'
 ```
 
 Provide a separate reviewed image for each SDK catalog version that must run, including candidate checks and rollback. The selected host managed executable identifies the trusted SDK version; the container runs its own matching SDK. Image version/lock labels must match. Runtime never pulls an image or upgrades the active generation. `/status` exposes the configured containment mode; it is not a compatibility certificate.

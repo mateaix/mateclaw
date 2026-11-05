@@ -146,6 +146,22 @@ class DshRuntimeServiceTest {
         assertEquals("answer", event.text());
     }
 
+    @Test void ptcCallerCancellationIsDistinctFromToolFailure() throws Exception {
+        var json = new ObjectMapper();
+        for (String code : List.of("ABORTED", "CODE_RUN_FAILED")) {
+            RuntimeEvent event = service().mapEvent("root", 1, json.readTree("""
+                    {"type":"tool/result","data":{"message":{"toolCallId":"c1","isError":true,"content":[]},
+                    "error":{"name":"ToolError","code":"%s","reason":"private runtime detail"}}}
+                    """.formatted(code)));
+            assertEquals(code.equals("ABORTED"), event.data().get("cancelled"));
+            assertEquals(code, event.data().get("errorCode"));
+            assertEquals(true, event.data().get("isError"));
+            assertEquals(false, event.data().get("success"));
+            assertEquals("c1", event.data().get("callId"));
+            assertFalse(event.data().toString().contains("private runtime detail"));
+        }
+    }
+
     @Test
     void incompleteTurnIsFailure() throws Exception {
         RuntimeEvent event = service().mapEvent("root", 1, new ObjectMapper().readTree("""

@@ -58,7 +58,7 @@ public class DshProcessSupervisor {
             mount(args,Path.of(launch.command().get(i+1)),true);
         }
         sdkEnvironment.put("HOME",launch.home().toString());
-        for(String key:List.of("DEEPSEEK_API_KEY","DEEPSEEK_BASE_URL","DSH_HOME","DSH_AGENTS_HOME","DSH_CWD")) {
+        for(String key:List.of("DEEPSEEK_API_KEY","DEEPSEEK_BASE_URL","DSH_HOME","DSH_AGENTS_HOME","DSH_CWD","MATECLAW_DSH_MODEL","MATECLAW_DSH_CONTEXT_WINDOW","MATECLAW_DSH_MAX_TOKENS")) {
             if(sdkEnvironment.containsKey(key)){args.add("--env");args.add(key);}
         }
         args.add("--env");args.add("HOME="+launch.home());
@@ -109,11 +109,12 @@ public class DshProcessSupervisor {
     private String managedVersion(String executable) throws Exception {
         Path path=Path.of(executable).toRealPath().getParent();
         for(int i=0;i<4 && path!=null;i++,path=path.getParent()) {
-            Path file=path.resolve("package.json");
-            if(!Files.isRegularFile(file))continue;
-            var value=mapper.readTree(file.toFile());
-            if("@deepseek-ai/dsh".equals(value.path("name").asText())) {
-                String version=value.path("version").asText();DshPinnedInstaller.release(version);return version;
+            for (Path file : List.of(path.resolve("package.json"), path.resolve("node_modules/@deepseek-ai/dsh/package.json"))) {
+                if(!Files.isRegularFile(file))continue;
+                var value=mapper.readTree(file.toFile());
+                if("@deepseek-ai/dsh".equals(value.path("name").asText())) {
+                    String version=value.path("version").asText();DshPinnedInstaller.release(version);return version;
+                }
             }
         }
         throw new IOException("DSH_DOCKER_MANAGED_SDK_REQUIRED");
@@ -142,7 +143,7 @@ public class DshProcessSupervisor {
             String value=System.getenv(key);if(value!=null)b.environment().put(key,value);
         }
         // Only selected SDK variables are given to docker create, never in argv.
-        for(String key:List.of("DEEPSEEK_API_KEY","DEEPSEEK_BASE_URL","DSH_HOME","DSH_AGENTS_HOME","DSH_CWD"))if(extra.containsKey(key))b.environment().put(key,extra.get(key));
+        for(String key:List.of("DEEPSEEK_API_KEY","DEEPSEEK_BASE_URL","DSH_HOME","DSH_AGENTS_HOME","DSH_CWD","MATECLAW_DSH_MODEL","MATECLAW_DSH_CONTEXT_WINDOW","MATECLAW_DSH_MAX_TOKENS"))if(extra.containsKey(key))b.environment().put(key,extra.get(key));
         // HOME is required by Docker for its config as well as by the container. Use an explicit
         // container HOME value, avoiding changing the client's config lookup.
         return b;

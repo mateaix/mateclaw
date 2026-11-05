@@ -9,13 +9,13 @@ DSH 是数字员工运行时。MateClaw 启动官方 `dsh --profile sdk` 进程�
 
 ## 环境与安装
 
-受管理安装要求 **Node.js 22**、npm 和 npm 仓库网络访问。安装器接受 macOS arm64 与 Linux x64 候选环境。实际 npm 安装、Java 适配器握手和真实模型任务已在 macOS arm64、Node 22.20.0、npm 11.6.2 上通过；Linux x64 仍待实机验证，Windows/WSL 未验证。
+受管理安装要求 npm 和 npm 仓库网络访问。**0.2.2-rc.1 要求 Node.js 24.9+（24.x）**；保留的旧版本接受 Node.js 22.x 或 24.x。安装器接受 macOS arm64 与 Linux x64 候选环境。实际 npm 安装、Java 适配器握手和真实模型任务已在 macOS arm64、Node 22.20.0、npm 11.6.2 上通过；Linux x64 仍待实机验证，Windows/WSL 未验证。
 
 在 DSH 管理控制台安装固定目标 **`0.2.0-rc.1`**，另一个受审查版本为 **`0.1.7-rc.2`**。两者均为预发布版本。安装使用仓库内依赖锁文件，在独立候选目录运行 `npm ci`，不会追踪移动的 `latest` 标签，也不会修改全局 npm 包。
 
 依次运行 **校验**、**测试连接**、**测试任务**：分别检查配置、执行 SDK `initialize` 握手、调用真实模型并要求精确回答 `OK`。握手成功不等于模型可用。协议中的服务版本 `0.0.1` 不是 npm 包版本；受管理安装单独记录固定包的来源。外部可执行文件需要另行验证版本。
 
-Docker 运行镜像锁定 Node.js 22，并包含 Linux 沙箱执行所需的 bubblewrap。安装受管理 DSH 包之前请重建或拉取更新镜像；仅替换应用 JAR 不会更新容器依赖。宿主机安装需自行准备运行时依赖。
+Docker 运行镜像锁定 Node.js 24.22.2，并包含 Linux 沙箱执行所需的 bubblewrap。安装受管理 DSH 包之前请重建或拉取更新镜像；仅替换应用 JAR 不会更新容器依赖。宿主机安装需自行准备运行时依赖。
 
 ## SDK 配置
 
@@ -64,6 +64,16 @@ DSH 使用 profile 管理的工具，不接入 MateClaw 宿主审批；启用成
 
 仅重启后端不能完成孤儿进程清理。不要为绕过错误直接删除租约。
 
+## 0.2.2-rc.1 候选（2026-11-05）
+
+目录新增精确的 `0.2.2-rc.1`，保留全部已审查旧版本。默认仍为 `0.2.0-rc.1`，新增候选不自动激活。安装前确保后端进程 PATH 优先使用 Node24。旧版本仍可在 Node22 / Node24 下安装，旧 generation 保留用于回滚。
+
+受管理安装返回 `bin/dsh` 启动器，在管理员 patch 之前加载内置 patch，显式恢复 `fs-observation-policy`，并使用 MateClaw 的模型上下文与输出容量。原生 SDK 文件工具保留先读后写和外部修改检查；Bash 使用自己的沙箱，不受文件工具观察策略覆盖。管理员显式 patch 仍可覆盖这些默认值。直接调用 `node_modules/.bin/dsh` 会跳过这些设置，应使用安装返回的启动器路径；Docker 镜像使用相同 patch。外部安装需自行配置等效策略。
+
+最终回答在关联的 `turn/end` 后发送，不再等待 idle 和 SDK 退出，之后发生 EOF 也不会重复追加。SDK 未提供实时文本增量通知，因此这属于结算消息提前交付，不是逐 token 流式输出。工具回执保留成功状态与错误码，区分 PTC 的 `ABORTED` 与普通失败；结算用量独立提供缓存读写计数。宿主问答、审批桥接仍未开放，不声明新增 SDK capabilities。
+
+每轮仍创建独立进程与会话，不能据上游前缀缓存优化声称跨轮节省；显式上下文容量避免静默继承较大的新版默认值。精确验证范围见仓库 `docs/verification/dsh-022-2026-11-05.md`。
+
 ## 0.2.1-rc.2 演进候选（2026-10-20）
 
 版本目录新增精确的 `0.2.1-rc.2` 可选候选，保留 `0.2.0-rc.1` 和 `0.1.7-rc.2`。默认安装目标仍为 `0.2.0-rc.1`，增加候选不会切换当前 active generation。三个版本均为预发布。管理页从服务端读取版本目录，保留已安装且仍在目录内的选择，不自动选中新版本。
@@ -90,18 +100,18 @@ macOS arm64 / Node 22.20.0 / npm 11.6.2 上的候选检查覆盖干净 `npm ci`�
 
 ```bash
 docker build -f mateclaw-server/src/main/resources/dsh/container/Dockerfile \
-  --build-arg DSH_VERSION=0.2.1-rc.2 \
-  --build-arg DSH_LOCK_SHA256=4c17ebb6b36dfdebe24100490a375bb93e72fc7450595751c8737b357ce8987d \
-  -t mateclaw-dsh-local:0.2.1-rc.2 mateclaw-server/src/main/resources/dsh
-docker image inspect --format '{{.Id}}' mateclaw-dsh-local:0.2.1-rc.2
+  --build-arg DSH_VERSION=0.2.2-rc.1 \
+  --build-arg DSH_LOCK_SHA256=ee63227735abbbbceb9c2f5442bdbdc286b8fdd9d82b15396f3e6f749ffbffe5 \
+  -t mateclaw-dsh-local:0.2.2-rc.1 mateclaw-server/src/main/resources/dsh
+docker image inspect --format '{{.Id}}' mateclaw-dsh-local:0.2.2-rc.1
 ```
 
-Dockerfile 通过摘要固定 Node 22.20.0。先审查基础镜像、锁文件、平台原生依赖及构建产物，再配置返回的完整 `sha256:…` **镜像 ID**，不能填写可变标签。重启后端使配置生效：
+Dockerfile 通过摘要固定 Node 24.22.2。先审查基础镜像、锁文件、平台原生依赖及构建产物，再配置返回的完整 `sha256:…` **镜像 ID**，不能填写可变标签。重启后端使配置生效：
 
 ```bash
 export MATECLAW_DSH_CONTAINMENT_MODE=docker
 export MATECLAW_DSH_DOCKER_EXECUTABLE=docker
-export MATECLAW_DSH_DOCKER_IMAGES_JSON='{"0.2.1-rc.2":"sha256:<image inspect 返回的 64 位十六进制值>"}'
+export MATECLAW_DSH_DOCKER_IMAGES_JSON='{"0.2.2-rc.1":"sha256:<image inspect 返回的 64 位十六进制值>"}'
 ```
 
 每个需要运行的 SDK 目录版本都要提供独立审查过的镜像，包括候选检查与回滚版本。宿主机托管可执行文件用于识别可信 SDK 版本，容器运行对应镜像中的 SDK，版本及锁摘要标签必须匹配。运行时不会拉取镜像或切换活动代际。`/status` 展示配置的监督模式，不代表兼容性认证。

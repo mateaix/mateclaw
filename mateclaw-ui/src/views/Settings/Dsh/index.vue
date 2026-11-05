@@ -47,7 +47,7 @@
           <button v-if="status.enabled" class="btn-danger" :disabled="busy || upgrading" @click="disable">停用</button>
           <button v-else class="btn-primary" :disabled="busy || !canEnable" @click="enable">启用 DSH</button>
         </div>
-        <p class="muted-note">自动安装候选支持 Linux x64 / macOS arm64，要求 Node.js 22 和 npm。自定义地址必须支持 Messages API；官方根地址会转换为 /anthropic。真实模型测试和升级验证会调用已配置的模型。</p>
+        <p class="muted-note">自动安装候选支持 Linux x64 / macOS arm64，旧版本支持 Node.js 22 / 24；0.2.2-rc.1 要求 Node.js 24.9+（24.x）和 npm。自定义地址必须支持 Messages API；官方根地址会转换为 /anthropic。真实模型测试和升级验证会调用已配置的模型。</p>
         <div v-if="operation.id" class="muted-note" role="status">
           <strong>{{ operation.state }}</strong> · {{ operation.message }}
           <p v-if="operation.homesChecked">已检查 {{ operation.homesChecked }} 个数据目录 · SDK {{ operation.handshakeStatus }} · 模型 {{ operation.taskStatus }}</p>

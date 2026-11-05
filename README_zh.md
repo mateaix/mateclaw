@@ -103,7 +103,7 @@ MateClaw 的 **LLM Wiki** 把它消化成结构化页面，页面之间自己长
 你雇佣员工，不是开聊天框。每位有**角色**、**目标**、**背景故事**、运行时、像素艺术头像与专属配色——6 个内置模板（通用助手 · 产品助理 · 研究分析师 · 客服助理 · 数据分析师 · 代码审查员）开箱可用。即使更换执行引擎，员工身份和治理边界仍保持不变。
 
 ### Agent Runtime：Native 或 DSH（2.2.0+）
-`AgentRuntimeProvider` contract 将员工与执行引擎分离。**Native Runtime** 在 MateClaw 内运行 ReAct、Plan-and-Execute、Persistent Goal 与 Team Run；**DSH Runtime** 启动官方 `dsh --profile sdk` CLI，统一映射思考、文本、工具、用量、完成与取消事件。受管理安装要求 Node.js 22，使用受审查 npm 锁文件固定 `0.2.0-rc.1`（另选 `0.1.7-rc.2`）。新增可选 `0.2.1-rc.2` 候选，macOS arm64 安装、握手和短模型/工具任务已验证，默认选择保持不变。升级复制 home、检查候选并切换保留的代次；回滚恢复旧 home/配置，不合并升级后的新会话。实际包及真实模型适配器检查已在 macOS arm64 通过；Linux x64 和持久化 V3→V4 历史迁移仍待验证。[配置 DeepSeek Harness →](https://claw.mate.vip/docs/zh/deepseek-harness)
+`AgentRuntimeProvider` contract 将员工与执行引擎分离。**Native Runtime** 在 MateClaw 内运行 ReAct、Plan-and-Execute、Persistent Goal 与 Team Run；**DSH Runtime** 启动官方 `dsh --profile sdk` CLI，统一映射思考、文本、工具、用量、完成与取消事件。受管理安装支持 Node.js 22/24；新增可选 `0.2.2-rc.1` 要求 Node.js 24.9+（24.x），恢复文件观察保护并绑定模型容量。使用受审查 npm 锁文件固定 `0.2.0-rc.1`（另选 `0.1.7-rc.2`）。新增可选 `0.2.1-rc.2` 候选，macOS arm64 安装、握手和短模型/工具任务已验证，默认选择保持不变。升级复制 home、检查候选并切换保留的代次；回滚恢复旧 home/配置，不合并升级后的新会话。实际包及真实模型适配器检查已在 macOS arm64 通过；Linux x64 和持久化 V3→V4 历史迁移仍待验证。[配置 DeepSeek Harness →](https://claw.mate.vip/docs/zh/deepseek-harness)
 
 ### 持久长任务：检查点、重启、继续（2.2.0+）
 Persistent Goal 把需要数小时的工作拆成有界、可恢复的执行段。数据库会保存目标清单、continuation 状态、attempt、冷却、lease，以及员工忙碌期间已经接收的用户输入。单后端实例重启后，supervisor 会先核对被中断的 attempt，读取持久检查点和已有产物，再调度下一段安全工作，不要求用户重新描述任务。

@@ -7,6 +7,8 @@ import static org.junit.jupiter.api.Assertions.*;
 class DshPinnedInstallerTest {
     @Test
     void catalogRequiresExactKnownVersionAndCorrectHostPlatform() {
+        assertEquals("0.2.2-rc.1", DshPinnedInstaller.release("0.2.2-rc.1").version());
+        assertEquals("0.2.0-rc.1", DshPinnedInstaller.catalog().getFirst().version());
         assertEquals("0.2.0-rc.1", DshPinnedInstaller.release("0.2.0-rc.1").version());
         assertTrue(DshPinnedInstaller.catalog().stream().anyMatch(release -> release.version().equals("0.2.1-rc.2")));
         assertEquals("sha512-tvY+yhfKRifthbqPe/OK0AYxM5ZkvqfYq/jMYgJcEUxiRRL1Vwra3Ti5TB6AXgSWQdiPHYh/Vp6SJa9yHwMNuw==",
@@ -27,6 +29,12 @@ class DshPinnedInstallerTest {
                 var packages = mapper.readTree(input).path("packages");
                 assertEquals(release.integrity(), packages.path("node_modules/@deepseek-ai/dsh").path("integrity").asText());
                 assertTrue(packages.size() > 100);
+                var scripts = DshPinnedInstaller.installScripts(packages);
+                assertFalse(scripts.isEmpty());
+                for (String name : scripts.keySet()) {
+                    assertTrue(packages.path("node_modules/" + name).path("hasInstallScript").asBoolean(), name);
+                    assertTrue(scripts.get(name));
+                }
                 var entries = packages.fields();
                 while (entries.hasNext()) {
                     var entry = entries.next();
@@ -38,4 +46,32 @@ class DshPinnedInstallerTest {
         }
     }
 
+    @Test void nodeRequirementsAreReleaseSpecificAndRejectUnreviewedMajors() {
+        for (String version : java.util.List.of("0.2.0-rc.1", "0.2.1-rc.2", "0.1.7-rc.2")) {
+            assertDoesNotThrow(() -> DshPinnedInstaller.requireNodeVersion(version, "v22.20.0"));
+            assertDoesNotThrow(() -> DshPinnedInstaller.requireNodeVersion(version, "v24.22.2"));
+        }
+        assertDoesNotThrow(() -> DshPinnedInstaller.requireNodeVersion("0.2.2-rc.1", "v24.9.0"));
+        assertDoesNotThrow(() -> DshPinnedInstaller.requireNodeVersion("0.2.2-rc.1", "v24.22.2"));
+        for (String node : java.util.List.of("v22.20.0", "v24.8.9", "v25.8.1", "v26.0.0", "v24.9.0-pre", "garbage")) {
+            assertThrows(IllegalStateException.class, () -> DshPinnedInstaller.requireNodeVersion("0.2.2-rc.1", node), node);
+        }
+    }
+
+    @Test void managedLauncherRestoresObservationPolicyAndPreservesArgumentBoundaries(@org.junit.jupiter.api.io.TempDir java.nio.file.Path temp) throws Exception {
+        var prefix = java.nio.file.Files.createDirectories(temp.resolve("prefix with spaces"));
+        var upstream = prefix.resolve("node_modules/.bin/dsh");
+        java.nio.file.Files.createDirectories(upstream.getParent());
+        java.nio.file.Files.writeString(upstream, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n");
+        assertTrue(upstream.toFile().setExecutable(true));
+        var executable = DshPinnedInstaller.managedExecutable(prefix, "0.2.2-rc.1");
+        var process = new ProcessBuilder(executable.toString(), "--profile", "sdk", "--patch", "admin patch.yml").start();
+        var lines = new String(process.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).lines().toList();
+        assertEquals(0, process.waitFor());
+        assertEquals(java.util.List.of("--patch", prefix.resolve("mateclaw-sdk.patch.yml").toString(), "--profile", "sdk", "--patch", "admin patch.yml"), lines);
+        var patch = java.nio.file.Files.readString(prefix.resolve("mateclaw-sdk.patch.yml"));
+        assertTrue(patch.contains("id: fs-observation-policy\n  disabled: false"));
+        assertTrue(patch.contains("MATECLAW_DSH_CONTEXT_WINDOW"));
+        assertEquals(upstream, DshPinnedInstaller.managedExecutable(prefix, "0.2.1-rc.2"));
+    }
 }

@@ -41,7 +41,7 @@ class DshDockerRuntimeAcceptanceTest {
         when(config.resolve()).thenReturn(new DshRuntimeConfiguration(exe,"",temp.toString(),url,"deepseek-v4-flash",key,"sdk",List.of(),temp.resolve("homes").toString()));
         var models=mock(ModelConfigService.class);var model=new ModelConfigEntity();model.setModelName("deepseek-v4-flash");model.setMaxTokens(4096);model.setMaxInputTokens(128000);when(models.resolveModel(any())).thenReturn(model);
         service=new DshRuntimeService(json,models,mock(ModelProviderService.class),config,new ConversationWindowProperties());
-        service.setProcessSupervisor(new DshProcessSupervisor("docker","docker",json.writeValueAsString(Map.of("0.2.1-rc.2",image)),json));
+        service.setProcessSupervisor(new DshProcessSupervisor("docker","docker",json.writeValueAsString(Map.of(System.getenv().getOrDefault("MATECLAW_DSH_ACCEPTANCE_VERSION","0.2.1-rc.2"),image)),json));
         session=new RuntimeSession("docker-test","docker-test-"+UUID.randomUUID(),771L,772L,"deepseek-v4-flash",temp,Map.of());
 
     }

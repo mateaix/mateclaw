@@ -67,9 +67,9 @@ COPY --from=frontend-builder /static mateclaw-server/src/main/resources/static
 
 RUN mvn -pl mateclaw-server -am package -Dmaven.test.skip=true -q ${MAVEN_FLAGS}
 
-# Node/npm for the managed dsh installer. Keep the runtime on Node 22 even
+# Node/npm for the managed dsh installer. Pin the reviewed Node 24 runtime even
 # when Playwright changes its bundled Node major. Bookworm glibc runs on Noble.
-FROM node:22-bookworm-slim AS dsh-node
+FROM node@sha256:c86ecead9e55a5210ac1727de38a4ca840bf03dcaf34dc9749addbf383b1920c AS dsh-node
 
 # Stage 3 — Runtime
 #
@@ -89,7 +89,7 @@ COPY --from=dsh-node /usr/local/bin/node /usr/local/bin/node
 COPY --from=dsh-node /usr/local/lib/node_modules/ /usr/local/lib/node_modules/
 RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -sf ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
-    && node -e 'if (process.versions.node.split(".")[0] !== "22") throw Error("dsh requires Node 22")' \
+    && node -e 'if (process.versions.node.split(".")[0] !== "24") throw Error("dsh requires Node 24.9+")' \
     && npm --version
 
 # JDK 21 is NOT part of the base image (it ships Node for the JS driver).

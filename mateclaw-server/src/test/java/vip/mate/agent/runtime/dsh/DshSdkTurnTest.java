@@ -42,9 +42,11 @@ class DshSdkTurnTest {
         turn.accept(frame("""
 {"method":"session.event","params":{"sessionId":"root","event":{"seq":1,"type":"agent/inbox/spliced","data":{"inserted":[{"id":"m1"}]}}}}"""));
         var answer = frame("""
-{"method":"session.event","params":{"sessionId":"root","event":{"seq":2,"type":"assistant/message","data":{"message":{"content":[{"type":"text","text":"answer"}]},"usage":{"inputTokens":3,"outputTokens":4}}}}}""");
+{"method":"session.event","params":{"sessionId":"root","event":{"seq":2,"type":"assistant/message","data":{"message":{"content":[{"type":"text","text":"answer"}]},"usage":{"inputTokens":3,"outputTokens":4,"cacheReadTokens":5,"cacheWriteTokens":7}}}}}""");
         turn.accept(answer); turn.accept(answer);
-        assertEquals(3, turn.inputTokens());
+        assertEquals(15, turn.inputTokens());
+        assertEquals(5, turn.cacheReadTokens());
+        assertEquals(7, turn.cacheWriteTokens());
         assertEquals(4, turn.outputTokens());
         assertEquals("answer", turn.answer());
     }
