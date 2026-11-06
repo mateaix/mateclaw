@@ -28,7 +28,8 @@ import java.util.regex.Pattern;
  * <p>Convention: each ATX H1 ({@code # Sheet Name}) starts a new sheet. The
  * pipe-style table that follows becomes the sheet body. The first table row
  * is treated as the header (bold, light-grey fill, frozen). Numeric-looking
- * cells are stored as numbers; everything else is stored as a string.
+ * cells are stored as numbers — except when doing so would change the text the
+ * user sees; see {@link #isStorableNumber(String)}.
  *
  * <p>Markdown without an explicit {@code # heading} produces a single sheet
  * named {@code Sheet1}. Markdown without any {@code | table |} rows produces
@@ -47,6 +48,13 @@ public class MarkdownXlsxRenderer {
 
     /** Cells that look like numbers (optional sign, digits, optional decimal). */
     private static final Pattern NUMERIC = Pattern.compile("^-?\\d+(\\.\\d+)?$");
+
+    /**
+     * Excel stores numbers as IEEE-754 doubles, which keep at most 15
+     * significant decimal digits. Past that the workbook shows a different
+     * value than the report asked for.
+     */
+    private static final int MAX_EXACT_INTEGER_DIGITS = 15;
 
     public byte[] render(String markdown) throws IOException {
         if (markdown == null) markdown = "";
@@ -135,6 +143,31 @@ public class MarkdownXlsxRenderer {
         return cells;
     }
 
+    /**
+     * Whether the cell text can be written as an Excel number without changing
+     * what the reader sees.
+     *
+     * <p>Excel numbers cannot hold a leading zero ({@code 007} comes back as
+     * {@code 7}) and are IEEE-754 doubles, so an integer wider than 15 digits
+     * loses its tail (a 19-digit order number is displayed as
+     * {@code 1.23457E+20}). Both shapes are identifiers in practice: part
+     * numbers, batch codes, order numbers, phone numbers. So they stay text.
+     * Decimal numbers and integers that fit are still stored as numbers, which
+     * keeps them summable and sortable.
+     */
+    static boolean isStorableNumber(String value) {
+        if (value == null || !NUMERIC.matcher(value).matches()) {
+            return false;
+        }
+        String digits = value.startsWith("-") ? value.substring(1) : value;
+        int dot = digits.indexOf('.');
+        String integerPart = dot < 0 ? digits : digits.substring(0, dot);
+        if (integerPart.length() > 1 && integerPart.charAt(0) == '0') {
+            return false;
+        }
+        return integerPart.length() <= MAX_EXACT_INTEGER_DIGITS;
+    }
+
     private void writeSheetBody(Sheet sheet, List<List<String>> rows, CellStyle headerStyle) {
         if (rows.isEmpty()) return;
 
@@ -145,7 +178,7 @@ public class MarkdownXlsxRenderer {
             for (int c = 0; c < rowData.size(); c++) {
                 Cell cell = row.createCell(c);
                 String value = rowData.get(c);
-                if (NUMERIC.matcher(value).matches()) {
+                if (isStorableNumber(value)) {
                     cell.setCellValue(Double.parseDouble(value));
                 } else {
                     cell.setCellValue(value);
