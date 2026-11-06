@@ -65,6 +65,31 @@ class MarkdownXlsxRendererTest {
         assertEquals(expected, rendered.getNumericCellValue());
     }
 
+    /**
+     * GFM lets a cell hold a literal pipe by escaping it ({@code a \| b}).
+     * Splitting on every {@code |} broke that: the cell became two, the rest of
+     * the row slid one column right (so the data sat under the wrong header)
+     * and the leftover backslash was written into the sheet.
+     */
+    @Test
+    void escapedPipeStaysInsideOneCell() throws Exception {
+        String markdown = "# Sheet\n| command | note |\n| --- | --- |\n| a \\| b | x |\n";
+        byte[] bytes = new MarkdownXlsxRenderer().render(markdown);
+        try (XSSFWorkbook wb = new XSSFWorkbook(new ByteArrayInputStream(bytes))) {
+            Sheet sheet = wb.getSheetAt(0);
+            var row = sheet.getRow(1);
+            assertEquals(2, (int) row.getLastCellNum(), "the escaped pipe must not open a third column");
+            assertEquals("a | b", row.getCell(0).getStringCellValue());
+            assertEquals("x", row.getCell(1).getStringCellValue(), "the cell after it must not shift right");
+        }
+    }
+
+    /** Only {@code \|} is an escape; other backslashes are ordinary text. */
+    @Test
+    void backslashThatDoesNotEscapeAPipeSurvives() throws Exception {
+        assertEquals("C:\\temp\\", firstColumnCell("C:\\temp\\").getStringCellValue());
+    }
+
     /** A one-column table is still a table; its separator row is metadata, not data. */
     @Test
     void singleColumnTableHasNoSeparatorRow() throws Exception {

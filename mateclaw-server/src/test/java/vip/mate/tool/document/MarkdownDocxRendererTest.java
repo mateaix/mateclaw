@@ -110,6 +110,26 @@ class MarkdownDocxRendererTest {
     }
 
     @Test
+    @DisplayName("An escaped pipe stays inside one table cell")
+    void escapedPipeStaysInsideOneCell() throws Exception {
+        String md = """
+                | command | note |
+                | --- | --- |
+                | a \\| b | x |
+                """;
+
+        byte[] bytes = renderer.render(md, "A4");
+        try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(bytes))) {
+            XWPFTable table = doc.getTables().get(0);
+            assertEquals(2, table.getRow(0).getTableCells().size(),
+                    "the escaped pipe must not widen the table");
+            assertEquals("a | b", table.getRow(1).getCell(0).getText().trim());
+            assertEquals("x", table.getRow(1).getCell(1).getText().trim(),
+                    "the cell after it must not shift right");
+        }
+    }
+
+    @Test
     @DisplayName("LETTER page size sets the right page width")
     void letterPageSizeSetsWidth() throws Exception {
         byte[] bytes = renderer.render("# Hello", "LETTER");

@@ -140,14 +140,50 @@ public class MarkdownXlsxRenderer {
         return sheets;
     }
 
+    /**
+     * Split a pipe-table row into cells, honouring GFM's pipe escape.
+     *
+     * <p>A pipe that belongs to a cell is written {@code \|} — it is content,
+     * not a column boundary, so a row like {@code | a \| b | x |} has two
+     * cells. Splitting on every pipe produced three: the backslash stayed in
+     * the text and everything after it moved one column to the right, which in
+     * the sheet means the values sat under the wrong header without any error.
+     */
     private List<String> splitTableRow(String line) {
-        String trimmed = line.strip();
-        if (trimmed.startsWith("|")) trimmed = trimmed.substring(1);
-        if (trimmed.endsWith("|")) trimmed = trimmed.substring(0, trimmed.length() - 1);
-        String[] parts = trimmed.split("\\|", -1);
-        List<String> cells = new ArrayList<>(parts.length);
-        for (String p : parts) cells.add(p.strip());
+        List<String> cells = new ArrayList<>();
+        StringBuilder cell = new StringBuilder();
+
+        int end = line.length();
+        while (end > 0 && Character.isWhitespace(line.charAt(end - 1))) end--;
+        // The trailing boundary pipe is not part of the last cell, but an
+        // escaped one (…\|) is content.
+        if (end > 0 && line.charAt(end - 1) == '|' && !isEscaped(line, end - 1)) end--;
+
+        int start = 0;
+        while (start < end && Character.isWhitespace(line.charAt(start))) start++;
+        if (start < end && line.charAt(start) == '|') start++;
+
+        for (int i = start; i < end; i++) {
+            char ch = line.charAt(i);
+            if (ch == '\\' && i + 1 < end && line.charAt(i + 1) == '|') {
+                cell.append('|');
+                i++;
+            } else if (ch == '|') {
+                cells.add(cell.toString().strip());
+                cell.setLength(0);
+            } else {
+                cell.append(ch);
+            }
+        }
+        cells.add(cell.toString().strip());
         return cells;
+    }
+
+    /** True when the character at {@code idx} is preceded by an odd run of backslashes. */
+    private static boolean isEscaped(String line, int idx) {
+        int backslashes = 0;
+        for (int i = idx - 1; i >= 0 && line.charAt(i) == '\\'; i--) backslashes++;
+        return backslashes % 2 == 1;
     }
 
     /**
