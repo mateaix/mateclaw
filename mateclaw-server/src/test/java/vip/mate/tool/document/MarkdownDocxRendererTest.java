@@ -89,6 +89,47 @@ class MarkdownDocxRendererTest {
     }
 
     @Test
+    @DisplayName("A single-column table is still rendered as a table")
+    void singleColumnTableIsStillATable() throws Exception {
+        String md = """
+                | item |
+                | --- |
+                | one |
+                | two |
+                """;
+
+        byte[] bytes = renderer.render(md, "A4");
+        try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(bytes))) {
+            assertEquals(1, doc.getTables().size(), "a one-column table must not degrade into paragraphs");
+            XWPFTable table = doc.getTables().get(0);
+            assertEquals(3, table.getRows().size(), "header + 2 data rows");
+            assertEquals("item", table.getRow(0).getCell(0).getText().trim());
+            assertEquals("one", table.getRow(1).getCell(0).getText().trim());
+            assertEquals("two", table.getRow(2).getCell(0).getText().trim());
+        }
+    }
+
+    @Test
+    @DisplayName("An escaped pipe stays inside one table cell")
+    void escapedPipeStaysInsideOneCell() throws Exception {
+        String md = """
+                | command | note |
+                | --- | --- |
+                | a \\| b | x |
+                """;
+
+        byte[] bytes = renderer.render(md, "A4");
+        try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(bytes))) {
+            XWPFTable table = doc.getTables().get(0);
+            assertEquals(2, table.getRow(0).getTableCells().size(),
+                    "the escaped pipe must not widen the table");
+            assertEquals("a | b", table.getRow(1).getCell(0).getText().trim());
+            assertEquals("x", table.getRow(1).getCell(1).getText().trim(),
+                    "the cell after it must not shift right");
+        }
+    }
+
+    @Test
     @DisplayName("LETTER page size sets the right page width")
     void letterPageSizeSetsWidth() throws Exception {
         byte[] bytes = renderer.render("# Hello", "LETTER");
