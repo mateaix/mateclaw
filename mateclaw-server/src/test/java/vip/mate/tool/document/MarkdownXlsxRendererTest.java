@@ -64,4 +64,18 @@ class MarkdownXlsxRendererTest {
         assertEquals(CellType.NUMERIC, rendered.getCellType(), cell + " should stay numeric");
         assertEquals(expected, rendered.getNumericCellValue());
     }
+
+    /** A one-column table is still a table; its separator row is metadata, not data. */
+    @Test
+    void singleColumnTableHasNoSeparatorRow() throws Exception {
+        String markdown = "# Sheet\n| item |\n| --- |\n| one |\n| two |\n";
+        byte[] bytes = new MarkdownXlsxRenderer().render(markdown);
+        try (XSSFWorkbook wb = new XSSFWorkbook(new ByteArrayInputStream(bytes))) {
+            Sheet sheet = wb.getSheetAt(0);
+            assertEquals(2, sheet.getLastRowNum(), "header + 2 data rows, no separator row");
+            assertEquals("item", sheet.getRow(0).getCell(0).getStringCellValue());
+            assertEquals("one", sheet.getRow(1).getCell(0).getStringCellValue());
+            assertEquals("two", sheet.getRow(2).getCell(0).getStringCellValue());
+        }
+    }
 }

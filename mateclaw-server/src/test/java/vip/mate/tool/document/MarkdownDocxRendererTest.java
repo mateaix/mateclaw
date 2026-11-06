@@ -89,6 +89,27 @@ class MarkdownDocxRendererTest {
     }
 
     @Test
+    @DisplayName("A single-column table is still rendered as a table")
+    void singleColumnTableIsStillATable() throws Exception {
+        String md = """
+                | item |
+                | --- |
+                | one |
+                | two |
+                """;
+
+        byte[] bytes = renderer.render(md, "A4");
+        try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(bytes))) {
+            assertEquals(1, doc.getTables().size(), "a one-column table must not degrade into paragraphs");
+            XWPFTable table = doc.getTables().get(0);
+            assertEquals(3, table.getRows().size(), "header + 2 data rows");
+            assertEquals("item", table.getRow(0).getCell(0).getText().trim());
+            assertEquals("one", table.getRow(1).getCell(0).getText().trim());
+            assertEquals("two", table.getRow(2).getCell(0).getText().trim());
+        }
+    }
+
+    @Test
     @DisplayName("LETTER page size sets the right page width")
     void letterPageSizeSetsWidth() throws Exception {
         byte[] bytes = renderer.render("# Hello", "LETTER");

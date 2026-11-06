@@ -70,7 +70,14 @@ public class MarkdownDocxRenderer {
 
     private static final Pattern UNORDERED_ITEM = Pattern.compile("^\\s*[-*]\\s+(.*)$");
     private static final Pattern ORDERED_ITEM = Pattern.compile("^\\s*\\d+\\.\\s+(.*)$");
-    private static final Pattern TABLE_SEPARATOR = Pattern.compile("^\\s*\\|?\\s*:?-{3,}:?\\s*(\\|\\s*:?-{3,}:?\\s*)+\\|?\\s*$");
+    /**
+     * Separator row of a pipe table. The column group is optional so a
+     * one-column table ({@code | item |} / {@code | --- |}) is recognised;
+     * otherwise the block fell through to the paragraph renderer and the whole
+     * table came out as text. A bare {@code ---} still cannot start a table
+     * because the header line must begin with {@code |}.
+     */
+    private static final Pattern TABLE_SEPARATOR = Pattern.compile("^\\s*\\|?\\s*:?-{3,}:?\\s*(\\|\\s*:?-{3,}:?\\s*)*\\|?\\s*$");
 
     /**
      * Image-only line, e.g. {@code ![alt text](path/to/file.png)}. Whitespace around

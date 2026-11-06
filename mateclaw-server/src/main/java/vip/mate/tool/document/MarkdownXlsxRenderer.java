@@ -39,9 +39,16 @@ import java.util.regex.Pattern;
 @Component
 public class MarkdownXlsxRenderer {
 
-    /** Detects the markdown table separator row, e.g. {@code | --- | :---: |}. */
+    /**
+     * Detects the markdown table separator row, e.g. {@code | --- | :---: |}.
+     *
+     * <p>The column group is optional ({@code *}, not {@code +}) so a
+     * one-column table — {@code | item |} over {@code | --- |} — is recognised
+     * too; it used to fall through and the separator row landed in the sheet as
+     * data.
+     */
     private static final Pattern TABLE_SEPARATOR =
-            Pattern.compile("^\\s*\\|?\\s*:?-{3,}:?\\s*(\\|\\s*:?-{3,}:?\\s*)+\\|?\\s*$");
+            Pattern.compile("^\\s*\\|?\\s*:?-{3,}:?\\s*(\\|\\s*:?-{3,}:?\\s*)*\\|?\\s*$");
 
     /** Detects a sheet boundary {@code # Sheet Name}. ## / ### are NOT boundaries. */
     private static final Pattern SHEET_BOUNDARY = Pattern.compile("^#\\s+(.+)$");
