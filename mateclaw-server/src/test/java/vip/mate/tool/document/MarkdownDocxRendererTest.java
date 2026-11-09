@@ -130,6 +130,23 @@ class MarkdownDocxRendererTest {
     }
 
     @Test
+    void mismatchedSeparatorDoesNotOpenTable() throws Exception {
+        byte[] bytes = renderer.render("| first | second |\n| --- |\n| data |\n", "A4");
+        try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(bytes))) {
+            assertEquals(0, doc.getTables().size());
+        }
+    }
+
+    @Test
+    void preservesEscapedPipeAtRowEndAfterTwoBackslashes() throws Exception {
+        String markdown = "| first | last |\n| --- | --- |\n| a | b\\\\|\n";
+        byte[] bytes = renderer.render(markdown, "A4");
+        try (XWPFDocument doc = new XWPFDocument(new ByteArrayInputStream(bytes))) {
+            assertEquals("b\\|", doc.getTables().get(0).getRow(1).getCell(1).getText());
+        }
+    }
+
+    @Test
     @DisplayName("LETTER page size sets the right page width")
     void letterPageSizeSetsWidth() throws Exception {
         byte[] bytes = renderer.render("# Hello", "LETTER");

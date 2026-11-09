@@ -49,6 +49,43 @@ class MarkdownXlsxRendererTest {
         assertEquals(orderNo, cell.getStringCellValue());
     }
 
+    @Test
+    void keepsHighPrecisionDecimalsAsText() throws Exception {
+        String decimal = "0.12345678901234567";
+        Cell cell = firstColumnCell(decimal);
+        assertEquals(CellType.STRING, cell.getCellType());
+        assertEquals(decimal, cell.getStringCellValue());
+    }
+
+    @Test
+    void keepsTinyNonzeroDecimalsAsText() throws Exception {
+        String decimal = "0." + "0".repeat(325) + "1";
+        Cell cell = firstColumnCell(decimal);
+        assertEquals(CellType.STRING, cell.getCellType());
+        assertEquals(decimal, cell.getStringCellValue());
+    }
+
+    @Test
+    void keepsDashOnlyDataAfterSingleColumnSeparator() throws Exception {
+        String markdown = "| item |\n| --- |\n| ---- |\n| after |\n";
+        byte[] bytes = new MarkdownXlsxRenderer().render(markdown);
+        try (XSSFWorkbook wb = new XSSFWorkbook(new ByteArrayInputStream(bytes))) {
+            Sheet sheet = wb.getSheetAt(0);
+            assertEquals(2, sheet.getLastRowNum());
+            assertEquals("----", sheet.getRow(1).getCell(0).getStringCellValue());
+            assertEquals("after", sheet.getRow(2).getCell(0).getStringCellValue());
+        }
+    }
+
+    @Test
+    void preservesEscapedPipeAtRowEndAfterTwoBackslashes() throws Exception {
+        String markdown = "| first | last |\n| --- | --- |\n| a | b\\\\|\n";
+        byte[] bytes = new MarkdownXlsxRenderer().render(markdown);
+        try (XSSFWorkbook wb = new XSSFWorkbook(new ByteArrayInputStream(bytes))) {
+            assertEquals("b\\|", wb.getSheetAt(0).getRow(1).getCell(1).getStringCellValue());
+        }
+    }
+
     /** The convention itself must survive: plain numbers still become numbers. */
     @Test
     void stillStoresPlainNumbersAsNumbers() throws Exception {
@@ -56,6 +93,7 @@ class MarkdownXlsxRendererTest {
         assertNumeric("-3", -3d);
         assertNumeric("0", 0d);
         assertNumeric("0.5", 0.5d);
+        assertNumeric("12.5000000000000000", 12.5d);
         assertNumeric("123456789012345", 123456789012345d);
     }
 

@@ -72,10 +72,7 @@ public class MarkdownDocxRenderer {
     private static final Pattern ORDERED_ITEM = Pattern.compile("^\\s*\\d+\\.\\s+(.*)$");
     /**
      * Separator row of a pipe table. The column group is optional so a
-     * one-column table ({@code | item |} / {@code | --- |}) is recognised;
-     * otherwise the block fell through to the paragraph renderer and the whole
-     * table came out as text. A bare {@code ---} still cannot start a table
-     * because the header line must begin with {@code |}.
+     * one-column table ({@code | item |} / {@code | --- |}) is recognised when the header and separator have the same number of cells.
      */
     private static final Pattern TABLE_SEPARATOR = Pattern.compile("^\\s*\\|?\\s*:?-{3,}:?\\s*(\\|\\s*:?-{3,}:?\\s*)*\\|?\\s*$");
 
@@ -116,7 +113,8 @@ public class MarkdownDocxRenderer {
 
                 // Table block: header line + separator + body rows
                 if (stripped.startsWith("|") && i + 1 < lines.size()
-                        && TABLE_SEPARATOR.matcher(lines.get(i + 1)).matches()) {
+                        && TABLE_SEPARATOR.matcher(lines.get(i + 1)).matches()
+                        && parseTableRow(stripped).length == parseTableRow(lines.get(i + 1)).length) {
                     int end = i + 2;
                     while (end < lines.size() && lines.get(end).strip().startsWith("|")) {
                         end++;
@@ -450,7 +448,10 @@ public class MarkdownDocxRenderer {
         while (end > 0 && Character.isWhitespace(line.charAt(end - 1))) end--;
         // The trailing boundary pipe is not part of the last cell, but an
         // escaped one (…\|) is content.
-        if (end > 0 && line.charAt(end - 1) == '|' && !isEscaped(line, end - 1)) end--;
+        if (end > 0 && line.charAt(end - 1) == '|'
+                && (end == 1 || line.charAt(end - 2) != '\\')) {
+            end--;
+        }
 
         int start = 0;
         while (start < end && Character.isWhitespace(line.charAt(start))) start++;
@@ -470,13 +471,6 @@ public class MarkdownDocxRenderer {
         }
         cells.add(cell.toString().strip());
         return cells.toArray(new String[0]);
-    }
-
-    /** True when the character at {@code idx} is preceded by an odd run of backslashes. */
-    private static boolean isEscaped(String line, int idx) {
-        int backslashes = 0;
-        for (int i = idx - 1; i >= 0 && line.charAt(i) == '\\'; i--) backslashes++;
-        return backslashes % 2 == 1;
     }
 
     private void styleTableBorders(XWPFTable table) {

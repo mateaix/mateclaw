@@ -15,6 +15,7 @@ import org.springframework.stereotype.Component;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -39,16 +40,12 @@ import java.util.regex.Pattern;
 @Component
 public class MarkdownXlsxRenderer {
 
-    /**
-     * Detects the markdown table separator row, e.g. {@code | --- | :---: |}.
-     *
-     * <p>The column group is optional ({@code *}, not {@code +}) so a
-     * one-column table — {@code | item |} over {@code | --- |} — is recognised
-     * too; it used to fall through and the separator row landed in the sheet as
-     * data.
-     */
+    /** Detects the separator row of a multi-column table. */
     private static final Pattern TABLE_SEPARATOR =
-            Pattern.compile("^\\s*\\|?\\s*:?-{3,}:?\\s*(\\|\\s*:?-{3,}:?\\s*)*\\|?\\s*$");
+            Pattern.compile("^\\s*\\|?\\s*:?-{3,}:?\\s*(\\|\\s*:?-{3,}:?\\s*)+\\|?\\s*$");
+
+    private static final Pattern SINGLE_COLUMN_SEPARATOR =
+            Pattern.compile("^\\s*\\|?\\s*:?-{3,}:?\\s*\\|?\\s*$");
 
     /** Detects a sheet boundary {@code # Sheet Name}. ## / ### are NOT boundaries. */
     private static final Pattern SHEET_BOUNDARY = Pattern.compile("^#\\s+(.+)$");
@@ -57,11 +54,9 @@ public class MarkdownXlsxRenderer {
     private static final Pattern NUMERIC = Pattern.compile("^-?\\d+(\\.\\d+)?$");
 
     /**
-     * Excel stores numbers as IEEE-754 doubles, which keep at most 15
-     * significant decimal digits. Past that the workbook shows a different
-     * value than the report asked for.
+     * Excel keeps at most 15 significant decimal digits.
      */
-    private static final int MAX_EXACT_INTEGER_DIGITS = 15;
+    private static final int MAX_EXCEL_DIGITS = 15;
 
     public byte[] render(String markdown) throws IOException {
         if (markdown == null) markdown = "";
@@ -100,8 +95,9 @@ public class MarkdownXlsxRenderer {
         String currentName = null;
         List<List<String>> currentRows = new ArrayList<>();
 
-        for (String rawLine : markdown.split("\\R", -1)) {
-            String line = rawLine.strip();
+        String[] lines = markdown.split("\\R", -1);
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i].strip();
             if (line.isEmpty()) continue;
 
             var sheetMatch = SHEET_BOUNDARY.matcher(line);
@@ -128,6 +124,12 @@ public class MarkdownXlsxRenderer {
                 List<String> cells = splitTableRow(line);
                 if (!cells.isEmpty()) {
                     currentRows.add(cells);
+                    // Only the line immediately after the single-column header
+                    // can be its separator. Dash-only body cells are data.
+                    if (currentRows.size() == 1 && cells.size() == 1 && i + 1 < lines.length
+                            && SINGLE_COLUMN_SEPARATOR.matcher(lines[i + 1]).matches()) {
+                        i++;
+                    }
                 }
             }
             // Other content (paragraphs, sub-headings) is intentionally ignored —
@@ -157,7 +159,10 @@ public class MarkdownXlsxRenderer {
         while (end > 0 && Character.isWhitespace(line.charAt(end - 1))) end--;
         // The trailing boundary pipe is not part of the last cell, but an
         // escaped one (…\|) is content.
-        if (end > 0 && line.charAt(end - 1) == '|' && !isEscaped(line, end - 1)) end--;
+        if (end > 0 && line.charAt(end - 1) == '|'
+                && (end == 1 || line.charAt(end - 2) != '\\')) {
+            end--;
+        }
 
         int start = 0;
         while (start < end && Character.isWhitespace(line.charAt(start))) start++;
@@ -179,13 +184,6 @@ public class MarkdownXlsxRenderer {
         return cells;
     }
 
-    /** True when the character at {@code idx} is preceded by an odd run of backslashes. */
-    private static boolean isEscaped(String line, int idx) {
-        int backslashes = 0;
-        for (int i = idx - 1; i >= 0 && line.charAt(i) == '\\'; i--) backslashes++;
-        return backslashes % 2 == 1;
-    }
-
     /**
      * Whether the cell text can be written as an Excel number without changing
      * what the reader sees.
@@ -195,8 +193,8 @@ public class MarkdownXlsxRenderer {
      * loses its tail (a 19-digit order number is displayed as
      * {@code 1.23457E+20}). Both shapes are identifiers in practice: part
      * numbers, batch codes, order numbers, phone numbers. So they stay text.
-     * Decimal numbers and integers that fit are still stored as numbers, which
-     * keeps them summable and sortable.
+     * Decimals also stay text if they exceed Excel's significant-digit limit
+     * or fall below its nonzero range.
      */
     static boolean isStorableNumber(String value) {
         if (value == null || !NUMERIC.matcher(value).matches()) {
@@ -208,7 +206,12 @@ public class MarkdownXlsxRenderer {
         if (integerPart.length() > 1 && integerPart.charAt(0) == '0') {
             return false;
         }
-        return integerPart.length() <= MAX_EXACT_INTEGER_DIGITS;
+        if (integerPart.length() > MAX_EXCEL_DIGITS) {
+            return false;
+        }
+        BigDecimal decimal = new BigDecimal(value).stripTrailingZeros();
+        return decimal.precision() <= MAX_EXCEL_DIGITS
+                && (decimal.signum() == 0 || Math.abs(decimal.doubleValue()) >= Double.MIN_NORMAL);
     }
 
     private void writeSheetBody(Sheet sheet, List<List<String>> rows, CellStyle headerStyle) {
