@@ -70,7 +70,14 @@ public class MarkdownDocxRenderer {
 
     private static final Pattern UNORDERED_ITEM = Pattern.compile("^\\s*[-*]\\s+(.*)$");
     private static final Pattern ORDERED_ITEM = Pattern.compile("^\\s*\\d+\\.\\s+(.*)$");
-    private static final Pattern TABLE_SEPARATOR = Pattern.compile("^\\s*\\|?\\s*:?-{3,}:?\\s*(\\|\\s*:?-{3,}:?\\s*)+\\|?\\s*$");
+    /**
+     * Separator row of a pipe table. The column group is optional so a
+     * one-column table ({@code | item |} / {@code | --- |}) is recognised;
+     * otherwise the block fell through to the paragraph renderer and the whole
+     * table came out as text. A bare {@code ---} still cannot start a table
+     * because the header line must begin with {@code |}.
+     */
+    private static final Pattern TABLE_SEPARATOR = Pattern.compile("^\\s*\\|?\\s*:?-{3,}:?\\s*(\\|\\s*:?-{3,}:?\\s*)*\\|?\\s*$");
 
     /**
      * Image-only line, e.g. {@code ![alt text](path/to/file.png)}. Whitespace around
@@ -427,15 +434,49 @@ public class MarkdownDocxRenderer {
         }
     }
 
+    /**
+     * Split a pipe-table row into cells, honouring GFM's pipe escape.
+     *
+     * <p>A pipe that belongs to a cell is written {@code \|} — it is content,
+     * not a column boundary, so a row like {@code | a \| b | x |} has two
+     * cells. Splitting on every pipe produced three, which widened the whole
+     * table by a column and left the backslash visible in the cell text.
+     */
     private String[] parseTableRow(String line) {
-        String trimmed = line.strip();
-        if (trimmed.startsWith("|")) trimmed = trimmed.substring(1);
-        if (trimmed.endsWith("|")) trimmed = trimmed.substring(0, trimmed.length() - 1);
-        String[] parts = trimmed.split("\\|", -1);
-        for (int i = 0; i < parts.length; i++) {
-            parts[i] = parts[i].strip();
+        List<String> cells = new ArrayList<>();
+        StringBuilder cell = new StringBuilder();
+
+        int end = line.length();
+        while (end > 0 && Character.isWhitespace(line.charAt(end - 1))) end--;
+        // The trailing boundary pipe is not part of the last cell, but an
+        // escaped one (…\|) is content.
+        if (end > 0 && line.charAt(end - 1) == '|' && !isEscaped(line, end - 1)) end--;
+
+        int start = 0;
+        while (start < end && Character.isWhitespace(line.charAt(start))) start++;
+        if (start < end && line.charAt(start) == '|') start++;
+
+        for (int i = start; i < end; i++) {
+            char ch = line.charAt(i);
+            if (ch == '\\' && i + 1 < end && line.charAt(i + 1) == '|') {
+                cell.append('|');
+                i++;
+            } else if (ch == '|') {
+                cells.add(cell.toString().strip());
+                cell.setLength(0);
+            } else {
+                cell.append(ch);
+            }
         }
-        return parts;
+        cells.add(cell.toString().strip());
+        return cells.toArray(new String[0]);
+    }
+
+    /** True when the character at {@code idx} is preceded by an odd run of backslashes. */
+    private static boolean isEscaped(String line, int idx) {
+        int backslashes = 0;
+        for (int i = idx - 1; i >= 0 && line.charAt(i) == '\\'; i--) backslashes++;
+        return backslashes % 2 == 1;
     }
 
     private void styleTableBorders(XWPFTable table) {
