@@ -378,6 +378,9 @@ public final class TaskFinalizationCoordinator {
             case "Summary unavailable" -> "汇总回答调用失败或被中断，任务是否完成尚未确认";
             case "Summary verification unavailable" -> "汇总或核验过程发生内部异常，任务是否完成尚未确认";
             case "TASK_UNFINISHED", "Task is unfinished", "Continuation requires unfinished work" -> "最终核验发现仍有任务未完成";
+            case "DRAFT_REPETITION" -> "模型重复生成同一段内容，已停止生成；最终回答尚未完成核验";
+            case "DRAFT_THINKING_LIMIT" -> "模型思考过久仍未给出回答，已停止生成；可关闭深度思考或拆分任务后重试";
+            case "DRAFT_OUTPUT_LIMIT" -> "模型在给出最终答案前耗尽输出 token 预算；可增加输出预算或拆分任务后重试";
             case "Runtime ended before verification" -> "模型生成提前结束，尚未完成最终核验";
             default -> "无法确认最终回答符合执行事实与任务完整性要求";
         };
@@ -409,7 +412,7 @@ public final class TaskFinalizationCoordinator {
         if (reason == null) return null;
         for (Diagnostic value : Diagnostic.values()) if (value.name().equals(reason)) return reason;
         return switch (reason) {
-            case "SUMMARY_OUTPUT_LIMIT" -> reason;
+            case "SUMMARY_OUTPUT_LIMIT", "DRAFT_REPETITION", "DRAFT_THINKING_LIMIT", "DRAFT_OUTPUT_LIMIT" -> reason;
             case "Checker unavailable", "Verification unavailable" -> Diagnostic.CHECKER_UNAVAILABLE.name();
             case "Summary unavailable" -> "SUMMARY_UNAVAILABLE";
             case "Summary verification unavailable" -> "SUMMARY_EXCEPTION";

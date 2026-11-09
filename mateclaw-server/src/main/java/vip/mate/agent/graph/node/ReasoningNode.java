@@ -2,6 +2,7 @@ package vip.mate.agent.graph.node;
 
 import vip.mate.llm.chatmodel.ChatModelDefaults;
 import vip.mate.agent.runtime.state.RunState;
+import vip.mate.agent.runtime.state.RuntimeExecutionScope;
 import vip.mate.agent.runtime.state.NodeAction;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -1039,6 +1040,7 @@ public class ReasoningNode implements NodeAction {
         ));
 
         NodeStreamingChatHelper.StreamResult result = null;
+        boolean recoveredSilently = false;
         try {
             if (promptOverflow) {
                 String overflowMessage = (mandatoryPrefixOverflow
@@ -1224,6 +1226,43 @@ public class ReasoningNode implements NodeAction {
                 messages = nudgeHistory;
                 promptMessages = nudgedMessages;
             }
+            // The tools already ran. Retry the interrupted draft once using the
+            // same evidence, with no ability to replay those calls. Reserve the
+            // following logical call for the normal publication review.
+            if (bufferedCandidate && (result.partial() || result.isOutputTokenLimit())
+                    && !result.stopped() && !result.hasToolCalls()
+                    && !finalizationCoordinator.stopped(conversationId)
+                    && lastTurnIsToolResponse(promptMessages)
+                    && !StringUtils.hasText(accessor.longFormDraft())
+                    && hasLlmCallBudget(accessor.maxIterations(), nextLlmCallCount, 2)) {
+                List<Message> recoveryMessages = new ArrayList<>(promptMessages);
+                recoveryMessages.addFirst(new SystemMessage("The previous draft was interrupted. "
+                        + "Write a concise complete replacement from the existing tool results. "
+                        + "Do not rerun tools, reconstruct missing evidence, or claim unfinished work succeeded."));
+                int recoveryOutput = Math.min(outputReserveTokens, effectiveMaxOutputTokens());
+                if (recoveryOutput > 0 && TokenEstimator.estimateTokens(recoveryMessages) + recoveryOutput
+                        <= loopContextWindowTokens()) {
+                    ChatOptions recoveryOptions = TaskFinalizationCoordinator.summaryRetryOptions(chatModel, recoveryOutput);
+                    var recoveryState = new RunState(state.data());
+                    recoveryState.replace(MateClawStateKeys.REQUESTED_THINKING_LEVEL, "off");
+                    var recoveryPrompt = new Prompt(recoveryMessages, recoveryOptions);
+                    nextLlmCallCount++;
+                    try {
+                        var recovered = RuntimeExecutionScope.call(recoveryState, () ->
+                                streamingHelper.streamCallSilent(chatModel, recoveryPrompt, conversationId,
+                                        "reasoning_post_tool_recovery"));
+                        recoveredSilently = recovered.stopped() || (!recovered.partial() && !recovered.hasToolCalls()
+                                && !recovered.isOutputTokenLimit() && recovered.errorMessage() == null
+                                && StringUtils.hasText(recovered.text()) && !isRuntimeErrorPlaceholder(recovered.text()));
+                        result = recoveredSilently ? mergeCandidateUsage(result, recovered)
+                                : TaskFinalizationCoordinator.addUsage(result, recovered);
+                    } catch (CancellationException e) {
+                        throw e;
+                    } catch (Exception e) {
+                        log.debug("[ReasoningNode] Post-tool draft recovery failed: {}", e.getClass().getSimpleName());
+                    }
+                }
+            }
         } catch (CancellationException ce) {
             // "调用已发出但尚未产出内容时用户停止" — streamHelper 抛 CancellationException。
             // 返回空 finalAnswer + STOPPED，让 FinalAnswerNode 按 STOPPED 语义处理。
@@ -1245,10 +1284,10 @@ public class ReasoningNode implements NodeAction {
 
         // ======= 处理 StreamResult =======
 
-        if (holdContent && (result.stopped() || result.partial()
+        if (holdContent && (result.stopped() || result.partial() || result.isOutputTokenLimit()
                 || finalizationCoordinator.stopped(conversationId))) {
             return reasonOutput().finalAnswer(result.stopped() || finalizationCoordinator.stopped(conversationId)
-                    ? "" : vip.mate.agent.graph.guard.TaskFinalizationCoordinator.incompleteAnswer("Runtime ended before verification"))
+                    ? "" : vip.mate.agent.graph.guard.TaskFinalizationCoordinator.incompleteAnswer(bufferedDraftStopReason(result)))
                     .needsToolCall(false).shouldSummarize(false).contentStreamed(false)
                     .llmCallCount(nextLlmCallCount).mergeUsage(state,result)
                     .finishReason(result.stopped() || finalizationCoordinator.stopped(conversationId)
@@ -1564,7 +1603,7 @@ public class ReasoningNode implements NodeAction {
                         .streamedContent(holdContent ? "" : (content != null ? content : ""))
                         .streamedThinking(result.thinking())
                         .contentStreamed(!holdContent)
-                        .thinkingStreamed(!result.thinking().isEmpty())
+                        .thinkingStreamed(!recoveredSilently && !result.thinking().isEmpty())
                         .llmCallCount(nextLlmCallCount)
                         .mergeUsage(state, result)
                         .events(buildEvents(phaseEvent, iterStartEvent))
@@ -1687,12 +1726,21 @@ public class ReasoningNode implements NodeAction {
                     .streamedContent(!holdContent && evidenceInsufficient ? accumulatedContent : "")
                     .finishReason(evidenceInsufficient ? FinishReason.EVIDENCE_INSUFFICIENT : FinishReason.NORMAL)
                     .contentStreamed(!holdContent && !evidenceInsufficient && Objects.equals(answerWithSources, accumulatedContent))
-                    .thinkingStreamed(!result.thinking().isEmpty())
+                    .thinkingStreamed(!recoveredSilently && !result.thinking().isEmpty())
                     .llmCallCount(nextLlmCallCount)
                     .mergeUsage(state, result)
                     .events(buildEvents(phaseEvent, iterStartEvent, iterEndEvent))
                     .build();
         }
+    }
+
+    private static String bufferedDraftStopReason(NodeStreamingChatHelper.StreamResult result) {
+        if (result.isOutputTokenLimit()) return "DRAFT_OUTPUT_LIMIT";
+        return switch (Objects.toString(result.errorMessage(), "")) {
+            case "content_repetition" -> "DRAFT_REPETITION";
+            case "thinking_only_no_content" -> "DRAFT_THINKING_LIMIT";
+            default -> "Runtime ended before verification";
+        };
     }
 
     /** Replace candidate content/status while retaining every returned attempt's usage exactly once. */

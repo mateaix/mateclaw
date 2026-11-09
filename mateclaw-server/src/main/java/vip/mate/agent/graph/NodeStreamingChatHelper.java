@@ -1672,7 +1672,7 @@ public class NodeStreamingChatHelper {
         // ===== 成功（检查是否因 thinking-only 软上限或内容重复被截断） =====
         boolean truncatedByThinkingCap = thinkingOnlyCapTriggered.get();
         boolean truncatedByContentRepeat = contentRepeatCapTriggered.get();
-        boolean thinkingTokenLimit = "length".equalsIgnoreCase(finishReason.get())
+        boolean thinkingTokenLimit = isOutputLimitFinishReason(finishReason.get())
                 && thinkingAccum.length() > 0 && contentAccum.toString().isBlank()
                 && toolCallAccumulators.isEmpty();
         boolean truncated = truncatedByThinkingCap || truncatedByContentRepeat || thinkingTokenLimit;
@@ -2317,6 +2317,10 @@ public class NodeStreamingChatHelper {
         public boolean countsHealth() { return countsHealth; }
     }
 
+    private static boolean isOutputLimitFinishReason(String reason) {
+        return "length".equalsIgnoreCase(reason) || "max_tokens".equalsIgnoreCase(reason);
+    }
+
     /**
      * 流式调用结果
      */
@@ -2396,7 +2400,7 @@ public class NodeStreamingChatHelper {
             if (stopped || hasToolCalls || errorType != ErrorType.NONE) return false;
             if ("thinking_token_limit".equals(errorMessage)) return true;
             return errorMessage == null && assistantMessage != null
-                    && "length".equalsIgnoreCase(String.valueOf(assistantMessage.getMetadata().get("generationFinishReason")));
+                    && isOutputLimitFinishReason(String.valueOf(assistantMessage.getMetadata().get("generationFinishReason")));
         }
 
         /** 是否有任何可保存的内容（text/thinking/toolCalls） */

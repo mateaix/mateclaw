@@ -15,7 +15,6 @@ import io.agentscope.core.event.RequestStopEvent;
 import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.message.GenerateReason;
 import io.agentscope.core.message.Msg;
-import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.core.middleware.AgentInput;
 import io.agentscope.core.middleware.MiddlewareBase;
@@ -28,7 +27,6 @@ import io.agentscope.core.model.ToolSchema;
 import lombok.extern.slf4j.Slf4j;
 
 import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
 
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -59,8 +57,6 @@ public final class NativePolicyDriver implements AgentRuntime {
             new ObjectMapper()
                     .enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
                     .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
-    private static final String EMPTY_SCRATCH_TEXT =
-            "Application policy round completed without visible text.";
     public static final String BATCH_RESULT = "native_guarded_batch_result";
     public static final String END = "end";
 
@@ -193,8 +189,9 @@ public final class NativePolicyDriver implements AgentRuntime {
                     Flux<RunStep> execution =
                             agent.streamEvents("Internal orchestration only", context)
                                     .doOnComplete(() -> session.steps.tryEmitComplete())
-                                    .doOnError(session.steps::tryEmitError)
                                     .thenMany(Flux.empty());
+                    // The execution publisher owns errors. Emitting the same error on steps
+                    // as well races the two terminal signals in merge.
                     return Flux.merge(session.steps.asFlux(), execution)
                             .doFinally(
                                     signal -> {
@@ -286,10 +283,11 @@ public final class NativePolicyDriver implements AgentRuntime {
                                         ensureRunning();
                                         List<ContentBlock> blocks = new ArrayList<>();
                                         scratchArguments.clear();
-                                        for (AssistantMessage.ToolCall call :
-                                                !terminal && ACTION_NODE.equals(reasoningRoute)
-                                                        ? calls()
-                                                        : List.<AssistantMessage.ToolCall>of()) {
+                                        if (terminal || !ACTION_NODE.equals(reasoningRoute)) {
+                                            throw new IllegalStateException(
+                                                    "SDK model requires an application tool batch");
+                                        }
+                                        for (AssistantMessage.ToolCall call : calls()) {
                                             if (call.id() == null
                                                     || call.id().isBlank()
                                                     || !dispatchedCallIds.add(call.id())) {
@@ -328,36 +326,9 @@ public final class NativePolicyDriver implements AgentRuntime {
                                                             scratchContent,
                                                             null));
                                         }
-                                        if (blocks.isEmpty()) {
-                                            List<Message> history =
-                                                    state.value(MESSAGES, List.<Message>of());
-                                            String text =
-                                                    history.stream()
-                                                            .filter(
-                                                                    AssistantMessage.class
-                                                                            ::isInstance)
-                                                            .map(AssistantMessage.class::cast)
-                                                            .reduce((first, last) -> last)
-                                                            .map(AssistantMessage::getText)
-                                                            .orElse("");
-                                            // Keep a visible SDK scratch response even when
-                                            // the application policy produced no visible text.
-                                            // This marker exists only in discarded SDK scratch
-                                            // history, never application history.
-                                            blocks.add(
-                                                    TextBlock.builder()
-                                                            .text(
-                                                                    text == null || text.isEmpty()
-                                                                            ? EMPTY_SCRATCH_TEXT
-                                                                            : text)
-                                                            .build());
-                                        }
                                         return ChatResponse.builder()
                                                 .content(blocks)
-                                                .finishReason(
-                                                        terminal || calls().isEmpty()
-                                                                ? "stop"
-                                                                : "tool_calls")
+                                                .finishReason("tool_calls")
                                                 .build();
                                     })
                             .subscribeOn(Schedulers.boundedElastic())
@@ -537,17 +508,12 @@ public final class NativePolicyDriver implements AgentRuntime {
                     return Mono.fromCallable(Session.this::prepareReasoning)
                             .subscribeOn(Schedulers.boundedElastic())
                             .repeat(() -> !terminal && !ACTION_NODE.equals(reasoningRoute))
-                            .thenMany(Flux.defer(() -> next.apply(input)))
-                            .concatWith(
-                                    Flux.defer(
-                                            () ->
-                                                    terminal
-                                                            ? Flux.just(
-                                                                    new RequestStopEvent(
-                                                                            "application_terminal",
-                                                                            GenerateReason
-                                                                                    .MIDDLEWARE_STOP_REQUESTED))
-                                                            : Flux.empty()));
+                            .thenMany(Flux.defer(() -> {
+                                if (!terminal) return next.apply(input);
+                                // FinalAnswerNode already published the application result.
+                                return Flux.just(new RequestStopEvent("application_terminal",
+                                        GenerateReason.MIDDLEWARE_STOP_REQUESTED));
+                            }));
                 }
             };
         }
