@@ -606,7 +606,8 @@ public class ToolExecutionExecutor {
                 continue;
             }
 
-            events.add(GraphEventPublisher.toolStart(toolCall.id(), toolName, arguments));
+            var started = GraphEventPublisher.toolStart(toolCall.id(), toolName, arguments);
+            events.add(started);
 
             // 0. 子会话工具拦截：委派上下文中的子 Agent 禁止调用特定工具
             if (vip.mate.tool.builtin.DelegationContext.currentDepth() > 0) {
@@ -730,7 +731,7 @@ public class ToolExecutionExecutor {
 
             // 4. 分类: concurrencySafe
             boolean safe = isConcurrencySafe(toolName);
-            preparedCalls.add(new PreparedToolCall(toolCall, responseName, callback, arguments, safe, allResponses.size(),
+            preparedCalls.add(new PreparedToolCall(toolCall, responseName, callback, arguments, started, safe, allResponses.size(),
                     conversationId, requesterId, workspaceBasePath, safeOrigin, DelegationContext.current(), new AtomicBoolean(), UUID.randomUUID().toString(), rawEvidenceRef));
             // 占位，Phase 2 填充
             allResponses.add(null);
@@ -1170,8 +1171,7 @@ public class ToolExecutionExecutor {
             throwIfStopRequested(pc.conversationId);
             if (streamTracker != null) {
                 streamTracker.updateRunningTool(pc.conversationId, toolName);
-                streamTracker.broadcastObject(pc.conversationId, GraphEventPublisher.EVENT_TOOL_START,
-                        GraphEventPublisher.toolStart(pc.toolCall.id(), toolName, pc.arguments).data());
+                streamTracker.broadcastLiveToolEvent(pc.conversationId, pc.started);
             }
             log.info("[ToolExecutor] Executing tool: {} with args: {}",
                     toolName, pc.arguments != null && pc.arguments.length() > 200
@@ -1234,18 +1234,15 @@ public class ToolExecutionExecutor {
                         pc.toolCall.id(), toolName, fullResult, System.currentTimeMillis()));
                 GraphEventPublisher.GraphEvent directEvent =
                         GraphEventPublisher.toolDirectResult(pc.toolCall.id(), toolName, fullResult);
+                var completed = GraphEventPublisher.toolComplete(pc.toolCall.id(), toolName,
+                        DIRECT_TOOL_PLACEHOLDER, !resultCapture.isError(), resultCapture.structuredContent());
                 events.add(directEvent);
+                events.add(completed);
                 if (streamTracker != null) {
-                    streamTracker.broadcastObject(pc.conversationId,
-                            GraphEventPublisher.EVENT_TOOL_DIRECT_RESULT, directEvent.data());
-                    streamTracker.broadcastObject(pc.conversationId,
-                            GraphEventPublisher.EVENT_TOOL_COMPLETE,
-                            GraphEventPublisher.toolComplete(pc.toolCall.id(), toolName,
-                                    DIRECT_TOOL_PLACEHOLDER, !resultCapture.isError(), resultCapture.structuredContent()).data());
+                    streamTracker.broadcastLiveToolEvent(pc.conversationId, directEvent);
+                    streamTracker.broadcastLiveToolEvent(pc.conversationId, completed);
                     streamTracker.updateRunningTool(pc.conversationId, null);
                 }
-                events.add(GraphEventPublisher.toolComplete(
-                        pc.toolCall.id(), toolName, DIRECT_TOOL_PLACEHOLDER, !resultCapture.isError(), resultCapture.structuredContent()));
                 // Placeholder keeps the tool_call_id ↔ tool_response pairing valid
                 // for OpenAI-compatible providers, while withholding the data from
                 // any subsequent LLM round (the graph won't take a next round —
@@ -1282,10 +1279,11 @@ public class ToolExecutionExecutor {
                     result, toolName, pc.toolCall.id(), pc.conversationId, pc.workspaceBasePath);
             log.info("[ToolExecutor] Tool {} returned {} chars{}", toolName, rawLen,
                     result != null && result.length() < rawLen ? " (now " + result.length() + " after spill/truncate)" : "");
-            events.add(GraphEventPublisher.toolComplete(pc.toolCall.id(), toolName, result, !resultCapture.isError(), resultCapture.structuredContent()));
+            var completed = GraphEventPublisher.toolComplete(pc.toolCall.id(), toolName, result,
+                    !resultCapture.isError(), resultCapture.structuredContent());
+            events.add(completed);
             if (streamTracker != null) {
-                streamTracker.broadcastObject(pc.conversationId, GraphEventPublisher.EVENT_TOOL_COMPLETE,
-                        GraphEventPublisher.toolComplete(pc.toolCall.id(), toolName, result, !resultCapture.isError(), resultCapture.structuredContent()).data());
+                streamTracker.broadcastLiveToolEvent(pc.conversationId, completed);
                 streamTracker.updateRunningTool(pc.conversationId, null);
             }
             // Append the card-rendering directive to the LLM-facing response only,
@@ -1324,10 +1322,10 @@ public class ToolExecutionExecutor {
                             : resultCapture.isError() && resultCapture.errorText() != null && !resultCapture.errorText().isBlank()
                                     ? resultCapture.errorText()
                                     : normalizeToolExecutionError(e);
-            events.add(GraphEventPublisher.toolComplete(pc.toolCall.id(), toolName, reportedError, false));
+            var completed = GraphEventPublisher.toolComplete(pc.toolCall.id(), toolName, reportedError, false);
+            events.add(completed);
             if (streamTracker != null) {
-                streamTracker.broadcastObject(pc.conversationId, GraphEventPublisher.EVENT_TOOL_COMPLETE,
-                        GraphEventPublisher.toolComplete(pc.toolCall.id(), toolName, reportedError, false).data());
+                streamTracker.broadcastLiveToolEvent(pc.conversationId, completed);
                 streamTracker.updateRunningTool(pc.conversationId, null);
             }
             return new ToolResponseMessage.ToolResponse(
@@ -2051,6 +2049,7 @@ public class ToolExecutionExecutor {
             String responseName,
             ToolCallback callback,
             String arguments,
+            GraphEventPublisher.GraphEvent started,
             boolean concurrencySafe,
             int resultIndex,
             String conversationId,
