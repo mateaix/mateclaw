@@ -705,8 +705,8 @@ export default {
     iterationLimitTitle: '任务尚未完成：已达迭代上限',
     iterationLimitDescription: '本次运行已达到最大迭代次数，已保留当前结果。可在 Agent 设置中调高「最大迭代次数」，或拆分任务后发送消息继续。',
     // EVIDENCE_INSUFFICIENT 提示卡（finishReason=evidence_insufficient）
-    evidenceTitle: '任务已完成，但部分源码引用未被验证',
-    evidenceDescription: '回答全文已保留并展示。底部「[证据不足] …」列出的类/文件并未在本次工具结果里被实际读取，模型可能基于命名推断。如需确认这些引用，请追问让模型逐一读取后再下结论。',
+    evidenceTitle: '回答已保留，部分来源引用尚未验证',
+    evidenceDescription: '回答全文已保留并展示。底部「[证据不足] …」列出的来源标注或源码引用未通过本轮证据校验。请结合原始工具结果核对，必要时继续检索；此提示不代表任务已完成。',
     // feedback_event card — emitted when a turn ends in a non-transient error.
     // Buttons are data-driven from the event's `actions` array; labels live
     // under chat.feedback.{action} so a future backend can ship a new action

@@ -705,8 +705,8 @@ export default {
     iterationLimitTitle: 'Task is incomplete: iteration limit reached',
     iterationLimitDescription: 'This run reached its iteration limit. Results so far are preserved. Increase “Max Iterations” in the agent settings, or split the task and send a follow-up to continue.',
     // EVIDENCE_INSUFFICIENT info card (finishReason=evidence_insufficient)
-    evidenceTitle: 'Run completed — some source references could not be verified',
-    evidenceDescription: 'The full answer is preserved above. The classes/files listed in the trailing "[evidence insufficient] …" line were not actually opened during this run; the model may have inferred them from naming. Ask a follow-up to have each one read before relying on those references.',
+    evidenceTitle: 'Answer preserved — some source references remain unverified',
+    evidenceDescription: 'The full answer is preserved above. Source citations or code references listed in the trailing warning did not pass evidence validation. Check the original tool results and retrieve more evidence if needed. This notice does not establish task completion.',
     // feedback_event card — emitted when a turn ends in a non-transient error.
     // Buttons are data-driven from the event's `actions` array; labels live
     // under chat.feedback.{action} so a future backend can ship a new action

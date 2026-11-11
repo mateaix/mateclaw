@@ -174,21 +174,29 @@ public record SourceEvidenceLedger(
         LinkedHashSet<String> unsupported = new LinkedHashSet<>();
         LinkedHashSet<String> unsupportedFileStems = new LinkedHashSet<>();
 
-        Matcher fileMatcher = JAVA_FILE_REF.matcher(answer);
-        while (fileMatcher.find()) {
-            String ref = fileMatcher.group();
-            if (!hasFileName(ref)) {
-                unsupported.add(ref);
-                unsupportedFileStems.add(ref.substring(0, ref.length() - ".java".length()));
+        // Wiki-only business answers are not claims about inspected Java source.
+        // Keep strict source validation when Java files/types (including failed reads) were observed.
+        boolean javaEvidence = !sourceSymbols.isEmpty()
+                || sourcePaths.stream().anyMatch(path -> path.endsWith(".java"))
+                || failedPaths.stream().anyMatch(path -> path.endsWith(".java"));
+        if (javaEvidence || !hasWikiEvidence()) {
+            Matcher fileMatcher = JAVA_FILE_REF.matcher(answer);
+            while (fileMatcher.find()) {
+                String ref = fileMatcher.group();
+                if (!hasFileName(ref)) {
+                    unsupported.add(ref);
+                    unsupportedFileStems.add(ref.substring(0, ref.length() - ".java".length()));
+                }
             }
-        }
 
-        Matcher symbolMatcher = JAVA_SYMBOL_REF.matcher(answer);
-        while (symbolMatcher.find()) {
-            String ref = symbolMatcher.group();
-            if (!unsupportedFileStems.contains(ref) && !sourceSymbols.contains(ref) && !hasFileName(ref + ".java")) {
-                unsupported.add(ref);
+            Matcher symbolMatcher = JAVA_SYMBOL_REF.matcher(answer);
+            while (symbolMatcher.find()) {
+                String ref = symbolMatcher.group();
+                if (!unsupportedFileStems.contains(ref) && !sourceSymbols.contains(ref) && !hasFileName(ref + ".java")) {
+                    unsupported.add(ref);
+                }
             }
+
         }
 
         validateWikiCitations(answer, unsupported);
@@ -209,12 +217,16 @@ public record SourceEvidenceLedger(
         StringBuilder additions = new StringBuilder();
 
         for (Integer index : used) {
-            WikiCitation citation = wikiCitation(index);
+            WikiCitation citation = wikiCitationForAnswer(answer, index);
             if (citation == null) {
                 continue;
             }
             String canonicalLine = citation.sourceLine();
-            if (sourceLineFor(result, index) != null) {
+            String existingSource = sourceLineFor(result, index);
+            if (existingSource != null && !citation.matchesSourceLine(existingSource)) continue;
+            boolean plainSource = Pattern.compile("(?m)^\\s*\\[" + index + "\\]\\s+.+$")
+                    .matcher(result).find();
+            if (plainSource) {
                 // Normalize in-place: replace the existing (possibly
                 // non-canonical) source line with the standard format so
                 // the frontend can reliably parse the source table.
@@ -255,7 +267,7 @@ public record SourceEvidenceLedger(
         }
 
         for (Integer index : indexes) {
-            WikiCitation citation = wikiCitation(index);
+            WikiCitation citation = wikiCitationForAnswer(answer, index);
             if (citation == null) {
                 unsupported.add("wiki citation [" + index + "]");
                 continue;
@@ -288,10 +300,39 @@ public record SourceEvidenceLedger(
                 .orElse(null);
     }
 
+    // Retrieval indexes are local to each tool call. An explicit answer source
+    // table may renumber observed sources; validate the identity, not that local number.
+    private WikiCitation wikiCitationForAnswer(String answer, int index) {
+        String line = sourceLineFor(answer, index);
+        if (line != null) {
+            var matches = wikiCitations.stream().filter(c -> c.matchesSourceLine(line)).toList();
+            var exact = matches.stream().filter(c -> line.equals(c.title())
+                    || line.equals(c.sourceLine().substring(c.sourceLine().indexOf("] ") + 2))).toList();
+            if (!exact.isEmpty()) matches = exact;
+            if (!matches.isEmpty()) {
+                int specificity = matches.stream().mapToInt(c -> c.title().length()).max().orElse(0);
+                var best = matches.stream().filter(c -> c.title().length() == specificity).toList();
+                if (best.size() == 1) {
+                    var c = best.getFirst();
+                    return new WikiCitation(index, c.chunkId(), c.title(), c.section(), c.pageNumber());
+                }
+                // Multiple chunks of one page support the title, but do not
+                // authorize inventing a particular section/page for a title-only citation.
+                String title = best.getFirst().title();
+                if (!title.isBlank() && best.stream().allMatch(c -> c.title().equals(title)))
+                    return new WikiCitation(index, "", title, "", null);
+            }
+        }
+        return wikiCitation(index);
+    }
+
     private static String sourceLineFor(String answer, int index) {
         Pattern pattern = Pattern.compile("(?m)^\\s*\\[" + index + "\\]\\s+(.+)$");
         Matcher matcher = pattern.matcher(answer);
-        return matcher.find() ? matcher.group(1).trim() : null;
+        if (matcher.find()) return matcher.group(1).trim();
+        Pattern table = Pattern.compile("(?m)^\\s*\\|\\s*\\[" + index + "\\]\\s*\\|\\s*([^|]+)");
+        Matcher row = table.matcher(answer);
+        return row.find() ? row.group(1).trim() : null;
     }
 
     /**
@@ -468,8 +509,18 @@ public record SourceEvidenceLedger(
             if (citation == null || citation.index() < 1) {
                 return;
             }
-            wikiCitations.removeIf(existing -> existing.index() == citation.index());
-            wikiCitations.add(citation.normalized());
+            WikiCitation normalized = citation.normalized();
+            boolean known = wikiCitations.stream().anyMatch(existing ->
+                    existing.chunkId().equals(normalized.chunkId()) && existing.title().equals(normalized.title())
+                            && existing.section().equals(normalized.section())
+                            && java.util.Objects.equals(existing.pageNumber(), normalized.pageNumber()));
+            if (known) return;
+            int index = normalized.index();
+            if (wikiCitations.stream().anyMatch(existing -> existing.index() == normalized.index())) {
+                index = wikiCitations.stream().mapToInt(WikiCitation::index).max().orElse(0) + 1;
+            }
+            wikiCitations.add(new WikiCitation(index, normalized.chunkId(), normalized.title(),
+                    normalized.section(), normalized.pageNumber()));
         }
 
         SourceEvidenceLedger build() {
