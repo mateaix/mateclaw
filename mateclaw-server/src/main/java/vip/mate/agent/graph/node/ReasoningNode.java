@@ -970,6 +970,17 @@ public class ReasoningNode implements NodeAction {
 
         var assembledContext = CONTEXT_ASSEMBLER.assemble(nonHistoryPrefix, messages, options,
                 loopContextWindowTokens(), outputReserveTokens);
+        if (assembledContext.overflow()
+                && (holdContent || prefixBudgetPlan != null && prefixBudgetPlan.enabled())) {
+            ChatOptions fitted = fitOutputToRemainingWindow(options, assembledContext, outputReserveTokens);
+            if (fitted != options) {
+                options = fitted;
+                outputReserveTokens = outputReserveTokens(options, effectiveMaxOutputTokens());
+                assembledContext = CONTEXT_ASSEMBLER.assembleRetry(nonHistoryPrefix,
+                        assembledContext.history(), ModelContextAssembler.latestUser(messages), options,
+                        loopContextWindowTokens(), outputReserveTokens);
+            }
+        }
         // Only log when the budget actually modified the list — a triggered-
         // but-no-op pass is normal (history fits comfortably under the tail
         // budget) and would otherwise spam logs every iteration.
@@ -1081,7 +1092,8 @@ public class ReasoningNode implements NodeAction {
             // PTL 处理：结构化压缩后重试。复用 nonHistoryPrefix 保证重试
             // Prompt 仍带 wiki / runtime context；早期的 tail-only 路径会把
             // wiki 段一起丢掉，重试后的 prompt 比原始更短少一层信息。
-            if (!payloadRecovery && !promptOverflow && result.isPromptTooLong() && conversationWindowManager != null) {
+            if (!payloadRecovery && !mandatoryPrefixOverflow && result.isPromptTooLong()
+                    && conversationWindowManager != null) {
                 // Structured compaction can itself invoke the model. Keep one
                 // slot for the actual retry and do not start with just one left.
                 if (!hasLlmCallBudget(accessor.maxIterations(), nextLlmCallCount, 2)) {
@@ -1125,9 +1137,20 @@ public class ReasoningNode implements NodeAction {
                             NodeStreamingChatHelper.ErrorType.PROMPT_TOO_LONG, false, 0, 0, 0));
                     compactedMessages = null;
                 }
-                var retryContext = compactedMessages == null ? null : CONTEXT_ASSEMBLER.assembleRetry(
+                var retryContext = compactedMessages == null || compactedMessages.isEmpty() ? null : CONTEXT_ASSEMBLER.assembleRetry(
                         nonHistoryPrefix, compactedMessages, ModelContextAssembler.latestUser(messages), options,
                         loopContextWindowTokens(), outputReserveTokens);
+                if (retryContext != null && retryContext.overflow()
+                        && (holdContent || prefixBudgetPlan != null && prefixBudgetPlan.enabled())) {
+                    ChatOptions fitted = fitOutputToRemainingWindow(options, retryContext, outputReserveTokens);
+                    if (fitted != options) {
+                        options = fitted;
+                        outputReserveTokens = outputReserveTokens(options, effectiveMaxOutputTokens());
+                        retryContext = CONTEXT_ASSEMBLER.assembleRetry(nonHistoryPrefix, compactedMessages,
+                                ModelContextAssembler.latestUser(messages), options,
+                                loopContextWindowTokens(), outputReserveTokens);
+                    }
+                }
                 if (retryContext != null && retryContext.reduces(assembledContext)) {
                     compactedMessages = retryContext.history();
                     List<Message> retryPromptMessages = retryContext.prompt().getInstructions();
@@ -1155,6 +1178,7 @@ public class ReasoningNode implements NodeAction {
                         if (!hasLlmCallBudget(accessor.maxIterations(), nextLlmCallCount - 1, 1)) {
                             return retryBudgetStop(state, nextLlmCallCount - 1, result);
                         }
+                        localPromptRejected = false;
                         result = mergeCandidateUsage(result, callCandidate(holdContent, retryPrompt, conversationId, "reasoning_compact_retry"));
                         // Later nudges must use the history actually sent here.
                         messages = compactedMessages;
@@ -1732,6 +1756,27 @@ public class ReasoningNode implements NodeAction {
                     .events(buildEvents(phaseEvent, iterStartEvent, iterEndEvent))
                     .build();
         }
+    }
+
+    private ChatOptions fitOutputToRemainingWindow(ChatOptions options,
+                                                   ModelContextAssembler.Assembly context,
+                                                   int reservedOutput) {
+        // Leave room for estimation error instead of sending a request exactly at the limit.
+        int margin = Math.min(1024, Math.max(128, loopContextWindowTokens() / 100));
+        long inputTokens = context.estimatedTokens() - reservedOutput;
+        long available = (long) loopContextWindowTokens() - inputTokens - margin;
+        long minimum = MIN_CLAMPED_OUTPUT_TOKENS;
+        if (options instanceof AnthropicChatOptions anthropic && anthropic.getThinking() != null) {
+            minimum += anthropic.getThinking().enabled().map(thinking -> thinking.budgetTokens()).orElse(0L);
+        }
+        if (available < minimum || available >= reservedOutput) return options;
+        int maximum = Math.toIntExact(available);
+        log.info("[ReasoningNode] Reducing this request's output allowance {} -> {} tokens to fit retained context",
+                reservedOutput, maximum);
+        if (options instanceof OpenAiChatOptions openAi && openAi.getMaxCompletionTokens() != null) {
+            return openAi.mutate().maxTokens(null).maxCompletionTokens(maximum).build();
+        }
+        return options.mutate().maxTokens(maximum).build();
     }
 
     private static String bufferedDraftStopReason(NodeStreamingChatHelper.StreamResult result) {
