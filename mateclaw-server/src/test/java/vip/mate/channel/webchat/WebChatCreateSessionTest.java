@@ -85,7 +85,7 @@ class WebChatCreateSessionTest {
         Map<String, Object> data = r.getData();
         assertThat(data.get("sessionId")).isEqualTo("s1");
         assertThat(data.get("conversationId"))
-                .isEqualTo(WebChatController.deriveConversationId(API_KEY, "visitorA", "s1"));
+                .isEqualTo(WebChatController.deriveConversationId(CHANNEL_ID, "visitorA", "s1"));
         assertThat(data.get("visitorToken"))
                 .isEqualTo(WebChatController.computeVisitorToken(SECRET, CHANNEL_ID, "visitorA"));
         // No title supplied → default placeholder, will be derived from first user message later.
@@ -156,7 +156,7 @@ class WebChatCreateSessionTest {
         String owner = WebChatController.webchatUsername("visitorE");
         for (int i = 1; i <= 5; i++) {
             conversationService.getOrCreateWebchatConversation(
-                    WebChatController.deriveConversationId(API_KEY, "visitorE", "seed" + i),
+                    WebChatController.deriveConversationId(CHANNEL_ID, "visitorE", "seed" + i),
                     null, owner, 1L, "seed" + i);
         }
 
