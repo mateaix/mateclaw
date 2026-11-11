@@ -7,14 +7,15 @@ import vip.mate.tool.ToolInputValidationException;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 class DocxRenderToolReturnDirectTest {
 
     @Test
-    void docxRenderToolsReturnGeneratedFileDirectly() throws Exception {
-        assertReturnDirect("renderDocx", String.class, String.class, String.class, ToolContext.class);
-        assertReturnDirect("renderDocxFromFile", String.class, String.class, String.class, ToolContext.class);
-        assertReturnDirect("renderDocxFromFiles", java.util.List.class, String.class, String.class, ToolContext.class);
+    void docxRenderToolsAllowModelToSummarizeGeneratedDeliverable() throws Exception {
+        assertModelContinuation("renderDocx", String.class, String.class, String.class, ToolContext.class);
+        assertModelContinuation("renderDocxFromFile", String.class, String.class, String.class, ToolContext.class);
+        assertModelContinuation("renderDocxFromFiles", java.util.List.class, String.class, String.class, ToolContext.class);
     }
 
     @Test
@@ -27,11 +28,11 @@ class DocxRenderToolReturnDirectTest {
         assertTrue(error.getMessage().contains("markdown must not be blank"));
     }
 
-    private static void assertReturnDirect(String methodName, Class<?>... parameterTypes) throws Exception {
+    private static void assertModelContinuation(String methodName, Class<?>... parameterTypes) throws Exception {
         Tool tool = DocxRenderTool.class
                 .getMethod(methodName, parameterTypes)
                 .getAnnotation(Tool.class);
 
-        assertTrue(tool.returnDirect(), methodName + " must stop the tool loop after producing a download link");
+        assertFalse(tool.returnDirect(), methodName + " must let the model summarize the deliverable and remaining work");
     }
 }
