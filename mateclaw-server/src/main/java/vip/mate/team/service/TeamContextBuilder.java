@@ -171,7 +171,7 @@ public class TeamContextBuilder {
                 Member results are delivered to you as system messages in this conversation. Review them, cross-check against the original request, then synthesize ONE coherent reply for the user. Do not forward raw member output unedited.
 
                 ### Handling blockers
-                When a member reports a blocker the task auto-fails and you are notified with the reason. Resolve the missing input (provide context, adjust the description), then re-dispatch it with `team_tasks(action="retry", taskId=...)`, or cancel it with `action="cancel"` if it is no longer needed.
+                When a member reports a blocker the task auto-fails and you are notified with the reason. Resolve the missing input (provide context, adjust the description), then re-dispatch it with `team_tasks(action="retry", taskId=...)`, or cancel it with `action="cancel"` if it is no longer needed. Lead retries retain the task's dispatch count. If the retry tool reports the dispatch limit, stop and ask the user to review/reset it from the task board; never create duplicate tasks to bypass the limit.
                 """;
     }
 

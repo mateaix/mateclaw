@@ -351,4 +351,87 @@ class TeamWorkerOutputPersistenceTest {
         assertNull(tasks.getTask(5L).getLockExpiresAt());
         assertTrue(output().contains("Long-running worker verification complete"));
     }
+    private String retryAsLead() {
+        return tool.team_tasks("retry", "5", null, null, null, null, null, null, null, null,
+                null, null, null, null, null, null, null, null, null);
+    }
+
+    @Test
+    void leadCannotResetExhaustedDispatchBudgetEvenAfterRepeatedRequests() {
+        jdbc.update("UPDATE mate_team_task SET status='failed',dispatch_count=3,reason='dispatch limit' WHERE id=5");
+        for (int request=0; request<12; request++) {
+            String reply=retryAsLead();
+            assertTrue(reply.startsWith("Error:"), reply);
+            assertTrue(reply.contains("limit"), reply);
+            assertEquals(3,tasks.getTask(5L).getDispatchCount());
+            assertEquals("failed",tasks.getTask(5L).getStatus());
+            assertEquals("dispatch limit",tasks.getTask(5L).getReason());
+        }
+        verify(dispatch,never()).requestDispatch(anyLong());
+        verifyNoInteractions(events);
+        assertEquals(0,jdbc.queryForObject("SELECT count(*) FROM mate_team_task_event WHERE task_id=5",Integer.class));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings={"failed","stale"})
+    void leadRetryKeepsAttemptsAndFailureFeedback(String status) {
+        jdbc.update("UPDATE mate_team_task SET status=?,dispatch_count=2,reason='Missing input' WHERE id=5",status);
+        assertTrue(retryAsLead().startsWith("✓"));
+        assertEquals("pending",tasks.getTask(5L).getStatus());
+        assertEquals(2,tasks.getTask(5L).getDispatchCount());
+        assertEquals("Missing input",tasks.getTask(5L).getReason());
+        assertTrue(tasks.assignTask(5L,2L));
+        assertTrue(tasks.tryAcquireDispatch(5L));
+        assertEquals(3,tasks.getTask(5L).getDispatchCount());
+        assertTrue(tasks.failTask(5L,"Still missing input"));
+        assertTrue(retryAsLead().startsWith("Error:"));
+        verify(dispatch,times(1)).requestDispatch(10L);
+    }
+
+    @Test
+    void fullLeadRetryCycleStopsAtThreeTotalDispatchesButHumanCanReset() {
+        when(agents.chatWithUsage(eq(2L),anyString(),anyString()))
+                .thenThrow(new IllegalStateException("Simulated unavailable input"));
+        for(int attempt=1;attempt<=3;attempt++) {
+            dispatch.runTask(10L,tasks.getTask(5L));
+            assertEquals("failed",tasks.getTask(5L).getStatus());
+            assertEquals(attempt,tasks.getTask(5L).getDispatchCount());
+            if(attempt<3) {
+                assertTrue(retryAsLead().startsWith("✓"));
+                assertTrue(tasks.assignTask(5L,2L));
+                assertTrue(tasks.tryAcquireDispatch(5L));
+            }
+        }
+        for(int request=0;request<12;request++) assertTrue(retryAsLead().startsWith("Error:"));
+        verify(agents,times(3)).chatWithUsage(eq(2L),anyString(),anyString());
+        assertEquals(3,tasks.getTask(5L).getDispatchCount());
+        // The authenticated human-only controller intentionally retains its explicit reset path.
+        assertTrue(tasks.retryTask(5L));
+        assertEquals(0,tasks.getTask(5L).getDispatchCount());
+        assertTrue(tasks.assignTask(5L,2L));
+        assertTrue(tasks.tryAcquireDispatch(5L));
+        assertEquals(1,tasks.getTask(5L).getDispatchCount());
+    }
+
+    @Test
+    void concurrentLeadRetriesHaveOneWinnerAndCannotResetBudget() throws Exception {
+        jdbc.update("UPDATE mate_team_task SET status='failed',dispatch_count=2 WHERE id=5");
+        var start=new CountDownLatch(1);
+        java.util.concurrent.Callable<String> retry=()->{
+            ToolExecutionContext.set("lead-conv","system");
+            try {start.await();return retryAsLead();}
+            finally {ToolExecutionContext.clear();}
+        };
+        try(var pool=Executors.newFixedThreadPool(2)) {
+            var first=pool.submit(retry);var second=pool.submit(retry);start.countDown();
+            var replies=java.util.List.of(first.get(10,TimeUnit.SECONDS),second.get(10,TimeUnit.SECONDS));
+            assertEquals(1,replies.stream().filter(r->r.startsWith("✓")).count());
+            assertEquals(1,replies.stream().filter(r->r.startsWith("Error:")).count());
+        }
+        assertEquals(2,tasks.getTask(5L).getDispatchCount());
+        assertEquals("pending",tasks.getTask(5L).getStatus());
+        verify(dispatch,times(1)).requestDispatch(10L);
+        assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM mate_team_task_event WHERE task_id=5 AND event_type='retried'",Integer.class));
+    }
+
 }

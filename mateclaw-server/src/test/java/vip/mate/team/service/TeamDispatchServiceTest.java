@@ -778,4 +778,15 @@ class TeamDispatchServiceTest {
             assertTrue(result.contains("Final verified"));
         }
     }
+    @Test
+    @SuppressWarnings("unchecked")
+    void duplicateMemberRunnerRequeuesWithoutResettingDispatchBudget() {
+        var busy=(java.util.Set<Long>)org.springframework.test.util.ReflectionTestUtils.getField(service,"runningMembers");
+        busy.add(MEMBER_A);
+        service.runTask(TEAM_ID,task(5L,MEMBER_A));
+        verify(taskService).requeueUnusableResult(eq(5L),contains("already executing"));
+        verify(taskService,never()).retryTask(anyLong());
+        verifyNoInteractions(agentService);
+    }
+
 }

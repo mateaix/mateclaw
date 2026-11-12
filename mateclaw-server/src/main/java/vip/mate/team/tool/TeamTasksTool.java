@@ -80,7 +80,7 @@ public class TeamTasksTool {
             + "(taskId, text); 'attach' to register a produced file on the task "
             + "(taskId, name, url — the download link returned by a render tool); "
             + "'cancel' (lead only; taskId, text as reason); "
-            + "'retry' a failed/stale task back to pending (lead only; taskId). "
+            + "'retry' a failed/stale task back to pending within its remaining dispatch budget (lead only; taskId). "
             + "Only usable when you belong to an agent team.")
     public String team_tasks(
             @ToolParam(description = "One of: start_run, create, seal_run, list, get, output, complete, progress, comment, attach, cancel, retry")
@@ -345,14 +345,16 @@ public class TeamTasksTool {
             return "Error: only the team lead can retry tasks.";
         }
         requireTaskInTeam(team, taskId);
-        if (!taskService.retryTask(taskId)) {
-            return "Error: only failed or stale tasks can be retried.";
+        if (!taskService.retryTaskFromLead(taskId)) {
+            return "Error: retry refused: the task must be failed/stale and below its dispatch attempt limit. "
+                    + "Do not retry an exhausted task or recreate it to bypass the limit; ask the user to review "
+                    + "and explicitly reset the task from the task board if another attempt is needed.";
         }
         taskService.recordEvent(team.getId(), taskId, TeamTaskEventEntity.RETRIED,
                 TeamTaskService.AUTHOR_AGENT, String.valueOf(agentId), null);
         eventChannel.publishTaskEvent(taskService.getTask(taskId), "team_task_retried", Map.of());
         dispatchService.requestDispatch(team.getId());
-        return "✓ Task reset to pending; it will be re-dispatched.";
+        return "✓ Task returned to pending within its remaining dispatch budget; it will be re-dispatched.";
     }
 
     // ==================== rendering ====================

@@ -326,6 +326,7 @@ public class TeamAnnounceService {
 
                 Review these results against the original request, then reply to the user with ONE synthesized answer. \
                 For failed tasks, fix the missing input and re-dispatch with team_tasks(action="retry", taskId=...), or cancel them. \
+                Lead retries do not reset the dispatch limit. If retry is refused at the limit, stop and ask the user to review/reset the task from the task board; do not recreate the task to bypass the limit. \
                 Tasks in in_review await human approval — mention that instead of treating them as done.""");
         return sb.toString();
     }
