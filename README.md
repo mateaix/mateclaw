@@ -207,6 +207,11 @@ docker compose up -d          # http://localhost:18080
 
 Download from [GitHub Releases](https://github.com/mateaix/mateclaw/releases). Bundles JRE 21. No Java install needed.
 
+## One-Click Deploy
+
+<a href="https://repocloud.io/details/MateClaw/"><img src="https://d16t0pc4846x52.cloudfront.net/deploylobe.svg" alt="Deploy on RepoCloud" height="42"></a>
+<a href="https://railway.com/deploy/mateclaw"><img src="https://railway.com/button.svg" alt="Deploy on Railway" height="42"></a>
+
 ---
 
 ## Architecture
