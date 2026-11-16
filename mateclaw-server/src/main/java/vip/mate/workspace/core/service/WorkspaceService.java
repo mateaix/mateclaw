@@ -46,6 +46,18 @@ public class WorkspaceService {
     /** 默认工作区 slug */
     public static final String DEFAULT_SLUG = "default";
 
+    /**
+     * 全局共享预置 Agent 的工作区 ID。
+     *
+     * <p>预置 Agent（General Assistant / Task Planner / 内容工作室等）本质是产品级
+     * 配置而非某个工作区的私有数据，故以保留值 {@code 0} 标记为"全局"。它们在
+     * {@code listAgentsByWorkspace} 中与本工作区 Agent 一并返回（只读），从而每个
+     * 新建工作区开箱即有预置 Agent、子代理委派可用，且产品只需维护一份（单一事实源）。
+     * 注意 {@code mate_agent.workspace_id} 为 {@code NOT NULL DEFAULT 1}，故用 {@code 0}
+     * 而非 {@code NULL} 表示全局，避免改动列约束。
+     */
+    public static final long GLOBAL_WORKSPACE_ID = 0L;
+
     /** 成员资格缓存：key = "workspaceId:userId"，value = role string（null 表示非成员） */
     private final Cache<String, String> membershipCache = Caffeine.newBuilder()
             .expireAfterWrite(Duration.ofSeconds(60))
