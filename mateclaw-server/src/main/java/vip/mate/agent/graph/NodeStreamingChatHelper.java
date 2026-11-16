@@ -1357,7 +1357,25 @@ public class NodeStreamingChatHelper {
 
         Disposable subscription = streamWithIdleGuard
                 .doOnNext(chatResponse -> {
-                    if (chatResponse == null || chatResponse.getResults() == null || chatResponse.getResults().isEmpty()) {
+                    if (chatResponse == null) return;
+                    // Usage-only terminal frames have no generations. Read reported counters
+                    // before the content guard so completed calls do not silently become zero.
+                    if (chatResponse.getMetadata() != null && chatResponse.getMetadata().getUsage() != null) {
+                        var usage = chatResponse.getMetadata().getUsage();
+                        if (usage.getPromptTokens() != null && usage.getPromptTokens() > 0) {
+                            promptTokens.set(usage.getPromptTokens().intValue());
+                        }
+                        if (usage.getCompletionTokens() != null && usage.getCompletionTokens() > 0) {
+                            completionTokens.set(usage.getCompletionTokens().intValue());
+                        }
+                        // Reflective extraction of provider-native cache / reasoning
+                        // counters (Anthropic / OpenAI-compatible / DashScope).
+                        var cache = vip.mate.llm.cache.CacheUsageExtractor.extract(usage);
+                        if (cache.cacheReadTokens() > 0)  cacheReadTokens.set(cache.cacheReadTokens());
+                        if (cache.cacheWriteTokens() > 0) cacheWriteTokens.set(cache.cacheWriteTokens());
+                        if (cache.reasoningTokens() > 0)  reasoningTokens.set(cache.reasoningTokens());
+                    }
+                    if (chatResponse.getResults() == null || chatResponse.getResults().isEmpty()) {
                         return;
                     }
                     var generation = chatResponse.getResult();
@@ -1499,23 +1517,6 @@ public class NodeStreamingChatHelper {
                             contentRepeatCapTriggered.set(true);
                             return;
                         }
-                    }
-
-                    // 8. 提取 token usage（通常最后一个 chunk 携带完整 usage）
-                    if (chatResponse.getMetadata() != null && chatResponse.getMetadata().getUsage() != null) {
-                        var usage = chatResponse.getMetadata().getUsage();
-                        if (usage.getPromptTokens() != null && usage.getPromptTokens() > 0) {
-                            promptTokens.set(usage.getPromptTokens().intValue());
-                        }
-                        if (usage.getCompletionTokens() != null && usage.getCompletionTokens() > 0) {
-                            completionTokens.set(usage.getCompletionTokens().intValue());
-                        }
-                        // Reflective extraction of provider-native cache / reasoning
-                        // counters (Anthropic / OpenAI-compatible / DashScope).
-                        var cache = vip.mate.llm.cache.CacheUsageExtractor.extract(usage);
-                        if (cache.cacheReadTokens() > 0)  cacheReadTokens.set(cache.cacheReadTokens());
-                        if (cache.cacheWriteTokens() > 0) cacheWriteTokens.set(cache.cacheWriteTokens());
-                        if (cache.reasoningTokens() > 0)  reasoningTokens.set(cache.reasoningTokens());
                     }
                 })
                 .subscribe(

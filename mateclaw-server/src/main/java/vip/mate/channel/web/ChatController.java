@@ -421,8 +421,9 @@ public class ChatController {
                                                 accumulator.toMetadataJson());  // includes toolCalls metadata
                                     } else if (replayWasStopped) {
                                         boolean replayIsFollowup = replayInterrupt == ChatStreamTracker.InterruptType.USER_INTERRUPT_WITH_FOLLOWUP;
-                                        savedAssistant = conversationService.saveMessage(conversationId, "assistant",
-                                                replayIsFollowup ? "[已中断]" : "[已停止生成]", null, persistStatus);
+                                        savedAssistant = saveAssistantWithUsage(conversationId,
+                                                replayIsFollowup ? "[已中断]" : "[已停止生成]", null,
+                                                persistStatus, accumulator);
                                     } else {
                                         savedAssistant = saveEmptyAssistantPlaceholder(
                                                 conversationId, persistStatus, accumulator, "SSE replay doOnComplete");
@@ -502,12 +503,13 @@ public class ChatController {
                                                 accumulator.getRuntimeProviderId(),
                                                 accumulator.toMetadataJson());
                                     } else if (isUserStop) {
-                                        savedAssistant = conversationService.saveMessage(conversationId, "assistant",
-                                                replayIsFollowup ? "[已中断]" : "[已停止生成]", null, errStatus);
+                                        savedAssistant = saveAssistantWithUsage(conversationId,
+                                                replayIsFollowup ? "[已中断]" : "[已停止生成]", null,
+                                                errStatus, accumulator);
                                     } else {
-                                        savedAssistant = conversationService.saveMessage(conversationId, "assistant",
+                                        savedAssistant = saveAssistantWithUsage(conversationId,
                                                 "[错误] " + (e.getMessage() != null ? e.getMessage() : "replay error"),
-                                                null, "failed");
+                                                null, "failed", accumulator);
                                     }
 
                                     if (replayIsFollowup) {
@@ -752,8 +754,9 @@ public class ChatController {
                                             accumulator.getRuntimeProviderId(),
                                             accumulator.toMetadataJson());
                                 } else if (wasStopped) {
-                                    savedAssistant = conversationService.saveMessage(conversationId, "assistant",
-                                            isInterruptFollowup ? "[已中断]" : "[已停止生成]", null, persistStatus);
+                                    savedAssistant = saveAssistantWithUsage(conversationId,
+                                            isInterruptFollowup ? "[已中断]" : "[已停止生成]", null,
+                                            persistStatus, accumulator);
                                 } else {
                                     savedAssistant = saveEmptyAssistantPlaceholder(
                                             conversationId, persistStatus, accumulator, "SSE doOnComplete");
@@ -873,8 +876,9 @@ public class ChatController {
                                             accumulator.getRuntimeProviderId(),
                                             accumulator.toMetadataJson());
                                 } else {
-                                    savedAssistant = conversationService.saveMessage(conversationId, "assistant",
-                                            isInterruptFollowup ? "[已中断]" : "[已停止生成]", null, status);
+                                    savedAssistant = saveAssistantWithUsage(conversationId,
+                                            isInterruptFollowup ? "[已中断]" : "[已停止生成]", null,
+                                            status, accumulator);
                                 }
 
                                 if (isInterruptFollowup) {
@@ -895,7 +899,8 @@ public class ChatController {
                                     ));
                                     int stoppedMsgCount = conversationService.getMessageCount(conversationId);
                                     broadcastEvent(conversationId, "done", buildDonePayload(
-                                            conversationId, "stopped", savedAssistant, 0, 0,
+                                            conversationId, "stopped", savedAssistant,
+                                            accumulator.getPromptTokens(), accumulator.getCompletionTokens(),
                                             isAssistantPersisted(savedAssistant), stoppedMsgCount));
                                 }
                             } catch (Exception e) {
@@ -978,10 +983,12 @@ public class ChatController {
                                             accumulator.getRuntimeProviderId(),
                                             accumulator.toMetadataJson());
                                 } else if (isUserStop) {
-                                    savedAssistant = conversationService.saveMessage(conversationId, "assistant",
-                                            isInterruptFollowup ? "[已中断]" : "[已停止生成]", null, status);
+                                    savedAssistant = saveAssistantWithUsage(conversationId,
+                                            isInterruptFollowup ? "[已中断]" : "[已停止生成]", null,
+                                            status, accumulator);
                                 } else {
-                                    savedAssistant = conversationService.saveMessage(conversationId, "assistant", "[错误] " + errorMsg, null, "failed");
+                                    savedAssistant = saveAssistantWithUsage(conversationId,
+                                            "[错误] " + errorMsg, null, "failed", accumulator);
                                 }
 
                                 if (isInterruptFollowup) {
@@ -1774,8 +1781,8 @@ public class ChatController {
                                     accumulator.toMetadataJson());
                         } else {
                             String errorMsg = e.getMessage() != null ? e.getMessage() : "queued stream error";
-                            savedAssistant = conversationService.saveMessage(conversationId, "assistant",
-                                    "[错误] " + errorMsg, null, "failed");
+                            savedAssistant = saveAssistantWithUsage(conversationId,
+                                    "[错误] " + errorMsg, null, "failed", accumulator);
                         }
                         broadcastEvent(conversationId, "error", buildErrorPayload(
                                 conversationId,
@@ -1968,8 +1975,13 @@ public class ChatController {
         log.warn("{} with empty accumulator: conversationId={}, status={}, finishReason={}, phase={}, hasSegments={}",
                 source, conversationId, status, accumulator.getFinishReason(),
                 accumulator.getCurrentPhase(), !accumulator.segmentsEmpty());
-        return conversationService.saveMessage(conversationId, "assistant",
-                emptyAssistantPlaceholder(status), null, status,
+        return saveAssistantWithUsage(conversationId, emptyAssistantPlaceholder(status), null, status, accumulator);
+    }
+
+    private MessageEntity saveAssistantWithUsage(String conversationId, String text,
+                                                List<MessageContentPart> parts, String status,
+                                                AgentStreamAccumulator accumulator) {
+        return conversationService.saveMessage(conversationId, "assistant", text, parts, status,
                 accumulator.getPromptTokens(),
                 accumulator.getCompletionTokens(),
                 accumulator.getCacheReadTokens(),
@@ -2079,7 +2091,7 @@ public class ChatController {
         try {
             String text = accumulator.getContent();
             List<MessageContentPart> parts = accumulator.toAssistantParts();
-            if (text.isBlank() && parts.isEmpty()) {
+            if (text.isBlank() && parts.isEmpty() && !accumulator.hasUsage()) {
                 log.warn("[ChatController] Emergency save skipped (empty accumulator): conversationId={}, finishReason={}, phase={}, hasSegments={}",
                         conversationId, accumulator.getFinishReason(), accumulator.getCurrentPhase(),
                         !accumulator.segmentsEmpty());
