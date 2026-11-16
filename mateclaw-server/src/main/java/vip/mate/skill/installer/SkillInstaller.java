@@ -305,23 +305,9 @@ public class SkillInstaller {
      */
     private void persistBundleFiles(SkillEntity skillEntity, SkillBundle bundle, boolean force, String origin,
                                     Long workspaceId) {
-        Map<String, String> combined = new LinkedHashMap<>();
-        if (bundle.references() != null) {
-            for (var e : bundle.references().entrySet()) {
-                String key = e.getKey().startsWith("references/") ? e.getKey() : "references/" + e.getKey();
-                combined.put(key, e.getValue());
-            }
-        }
-        if (bundle.scripts() != null) {
-            for (var e : bundle.scripts().entrySet()) {
-                String key = e.getKey().startsWith("scripts/") ? e.getKey() : "scripts/" + e.getKey();
-                combined.put(key, e.getValue());
-            }
-        }
-
-        var dbApply = skillFileService.applyBundleFiles(skillEntity.getId(), combined, force);
-        var fsApply = workspaceManager.applyBundleFiles(skillEntity.getName(),
-                bundle.references(), bundle.scripts(), force, workspaceId);
+        Map<String, byte[]> combined = bundle.allFiles();
+        var dbApply = skillFileService.applyBundleBytes(skillEntity.getId(), combined, force);
+        var fsApply = workspaceManager.applyBundleBytes(skillEntity.getName(), combined, force, workspaceId);
 
         log.info("Persisted bundle for '{}' ({}): db(write={}, prune={}, preservedScripts={}, preservedRefs={}) " +
                         "fs(refs write={}, prune={}, preserved={} | scripts write={}, prune={}, preserved={})",

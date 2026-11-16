@@ -522,6 +522,40 @@ public class SkillWorkspaceManager {
         );
     }
 
+    /** Materialize byte-preserving imports using the same empty-bucket pruning guard. */
+    public ApplyBundleResult applyBundleBytes(String skillName, Map<String, byte[]> files,
+                                              boolean force, Long workspaceId) {
+        Path workspaceDir = resolveConventionPath(skillName, workspaceId);
+        int refsWritten = 0, scriptsWritten = 0;
+        Map<String, Set<String>> keep = new HashMap<>();
+        for (String prefix : vip.mate.skill.workspace.bundle.SkillBundleFiles.DB_BUCKET_PREFIXES)
+            keep.put(prefix, new HashSet<>());
+        for (var entry : files.entrySet()) {
+            String relative = entry.getKey().replace('\\', '/');
+            String prefix = keep.keySet().stream().filter(relative::startsWith).findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException("Unsupported bundle path: " + relative));
+            Path target = validateWritePath(workspaceDir, relative);
+            if (target == null) throw new IllegalArgumentException("Unsafe file path rejected: " + relative);
+            try {
+                for (Path part = target; part != null && part.startsWith(workspaceDir); part = part.getParent()) {
+                    if (Files.isSymbolicLink(part)) throw new IllegalArgumentException("Symlink in bundle path: " + relative);
+                }
+                Files.createDirectories(target.getParent());
+                Files.write(target, entry.getValue());
+            } catch (IOException e) {
+                throw new IllegalStateException("Failed to materialize skill attachment: " + relative, e);
+            }
+            keep.get(prefix).add(relative.substring(prefix.length()));
+            if (prefix.equals("references/")) refsWritten++;
+            if (prefix.equals("scripts/")) scriptsWritten++;
+        }
+        var refs = pruneBucket(workspaceDir.resolve("references"), keep.get("references/"), force, skillName, "references");
+        var scripts = pruneBucket(workspaceDir.resolve("scripts"), keep.get("scripts/"), force, skillName, "scripts");
+        pruneBucket(workspaceDir.resolve("templates"), keep.get("templates/"), force, skillName, "templates");
+        return new ApplyBundleResult(refsWritten, refs.deleted(), refs.preservedDueToEmpty(),
+                scriptsWritten, scripts.deleted(), scripts.preservedDueToEmpty());
+    }
+
     private int applyBucket(String skillName, String bucketPrefix, Map<String, String> entries, Long workspaceId) {
         if (entries == null || entries.isEmpty()) return 0;
         int written = 0;
