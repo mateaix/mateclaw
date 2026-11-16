@@ -3100,7 +3100,7 @@ public class FeishuChannelAdapter extends AbstractChannelAdapter implements Stre
             sendFallbackText(targetId, part, mediaType);
             return;
         }
-        String fileName = part.getFileName() != null ? part.getFileName() : defaultFileName;
+        String fileName = FeishuAttachmentNames.resolve(part.getFileName(), source, defaultFileName);
         uploadAndSendAttachment(targetId, channelId, source, fileName,
                 mediaType, part.getContentType(), null);
     }
