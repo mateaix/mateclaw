@@ -40,7 +40,7 @@ public class EditFileTool {
     private final I18nService i18n;
 
     @ConcurrencyUnsafe("in-place file edit — must not race with reads/writes on the same path")
-    @Tool(description = "Edit file content via find-and-replace. Finds exact match of old_text and replaces with new_text. "
+    @Tool(description = "Edit file content via find-and-replace. Matches old_text allowing newline-style differences and preserves file line endings. "
             + "Returns structured JSON with filePath, replacements count. "
             + "May require user approval when security rules flag the edit. "
             + "Replaces first occurrence by default; set replaceAll=true for all.")
@@ -90,26 +90,14 @@ public class EditFileTool {
                     ? new String(MemberFileAccess.read(MemberFileIsolation.root(ctx), path, 32 * 1024 * 1024), StandardCharsets.UTF_8)
                     : Files.readString(path, StandardCharsets.UTF_8);
 
-            // 检查 oldText 是否存在
-            if (!content.contains(oldText)) {
+            Replacement edit = replacePreservingNewlines(content, oldText, newText,
+                    Boolean.TRUE.equals(replaceAll));
+            if (edit.count() == 0) {
                 return errorResult(filePath, i18n.msg("tool.edit_file.error.old_not_found"));
             }
-
-            // 执行替换
-            String newContent;
-            int replacements;
-            boolean doReplaceAll = replaceAll != null && replaceAll;
-
-            if (doReplaceAll) {
-                // 统计匹配次数
-                replacements = countOccurrences(content, oldText);
-                newContent = content.replace(oldText, newText);
-            } else {
-                // 只替换第一处
-                int idx = content.indexOf(oldText);
-                newContent = content.substring(0, idx) + newText + content.substring(idx + oldText.length());
-                replacements = 1;
-            }
+            String newContent = edit.content();
+            int replacements = edit.count();
+            boolean doReplaceAll = Boolean.TRUE.equals(replaceAll);
 
             // 写回文件
             if (MemberFileIsolation.isEnabled()) MemberFileAccess.write(MemberFileIsolation.root(ctx), path, newContent.getBytes(StandardCharsets.UTF_8), false);
@@ -129,14 +117,57 @@ public class EditFileTool {
         return JSONUtil.toJsonPrettyStr(result);
     }
 
-    private int countOccurrences(String text, String target) {
-        int count = 0;
-        int idx = 0;
-        while ((idx = text.indexOf(target, idx)) != -1) {
-            count++;
-            idx += target.length();
+    private record Replacement(String content, int count) {}
+
+    /** Match an LF view, but copy untouched spans directly from the original. */
+    static Replacement replacePreservingNewlines(String original, String oldText, String newText, boolean all) {
+        StringBuilder normalized = new StringBuilder();
+        int[] offsets = new int[original.length() + 1];
+        java.util.List<String> endings = new java.util.ArrayList<>();
+        for (int i = 0; i < original.length(); i++) {
+            offsets[normalized.length()] = i;
+            char c = original.charAt(i);
+            if (c == '\r') {
+                boolean paired = i + 1 < original.length() && original.charAt(i + 1) == '\n';
+                endings.add(paired ? "\r\n" : "\r");
+                if (paired) i++;
+                normalized.append('\n');
+            } else {
+                if (c == '\n') endings.add("\n");
+                normalized.append(c);
+            }
         }
-        return count;
+        offsets[normalized.length()] = original.length();
+        String view = normalized.toString();
+        String needle = toLf(oldText);
+        String replacement = toLf(newText);
+        String fallback = endings.isEmpty() ? "\n" : endings.get(0);
+        StringBuilder output = new StringBuilder();
+        int cursor = 0, count = 0, match;
+        while ((match = view.indexOf(needle, cursor)) >= 0) {
+            output.append(original, offsets[cursor], offsets[match]);
+            String span = original.substring(offsets[match], offsets[match + needle.length()]);
+            java.util.List<String> local = new java.util.ArrayList<>();
+            var matcher = java.util.regex.Pattern.compile("\r\n|\r|\n").matcher(span);
+            while (matcher.find()) local.add(matcher.group());
+            long breaks = replacement.chars().filter(c -> c == '\n').count();
+            String style = local.isEmpty() ? fallback : local.get(0);
+            int index = 0;
+            for (int i = 0; i < replacement.length(); i++) {
+                char c = replacement.charAt(i);
+                if (c == '\n') output.append(local.size() == breaks ? local.get(index++) : style);
+                else output.append(c);
+            }
+            count++;
+            cursor = match + needle.length();
+            if (!all) break;
+        }
+        output.append(original, offsets[cursor], original.length());
+        return new Replacement(output.toString(), count);
+    }
+
+    private static String toLf(String text) {
+        return text.replace("\r\n", "\n").replace('\r', '\n');
     }
 
     private String errorResult(String filePath, String message) {
