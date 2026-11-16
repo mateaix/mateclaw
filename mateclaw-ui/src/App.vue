@@ -14,6 +14,7 @@
 <script setup lang="ts">
 import { computed, watchEffect } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { chatDocumentTitle, formatChatDocumentTitle } from '@/composables/useChatDocumentTitle'
 import en from 'element-plus/es/locale/lang/en'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import { currentLocale } from '@/i18n'
@@ -48,7 +49,13 @@ useGlobalGeneratedImageBlob()
 const { t } = useI18n()
 
 watchEffect(() => {
-  document.title = t('app.title')
+  document.title = formatChatDocumentTitle(chatDocumentTitle.value, t('app.title'), t('chat.newChat'), {
+    running: t('app.chatTitleStatus.running'),
+    completed: t('app.chatTitleStatus.completed'),
+    failed: t('app.chatTitleStatus.failed'),
+    stopped: t('app.chatTitleStatus.stopped'),
+    awaiting_approval: t('app.chatTitleStatus.awaitingApproval'),
+  })
 })
 
 const elementLocale = computed(() => (currentLocale.value === 'en-US' ? en : zhCn))

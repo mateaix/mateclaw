@@ -304,6 +304,7 @@ let cachedAgents: import('@/types').Agent[] = []
 <script setup lang="ts">
 import { ElMessage } from 'element-plus/es/components/message/index'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index'
+import { useChatDocumentTitle } from '@/composables/useChatDocumentTitle'
 import { defineAsyncComponent, ref, computed, onMounted, onBeforeUnmount, onActivated, onDeactivated, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -795,6 +796,7 @@ const {
   baseUrl: '',
   thinkingLevel,
   onStreamEnd: async (meta) => {
+    chatTitle.finish(meta)
     // Restore the input/attachments if the turn ended in an error and the
     // user hasn't typed something else in the meantime.
     if (meta.reason === 'error' && pendingSendDraft.value) {
@@ -850,6 +852,17 @@ const {
   },
   onQueuedInputSkipped: (reason) => mcToast.warning(t(reason === 'managed_goal_selection_stale'
     ? 'chat.queuedSelectionStaleResend' : 'chat.queuedLegacyResend')),
+})
+
+const currentTitleConversation = computed(() => conversations.value
+  .find(conversation => conversation.conversationId === currentConversationId.value))
+const chatTitle = useChatDocumentTitle({
+  conversationId: currentConversationId,
+  name: computed(() => currentTitleConversation.value?.title || ''),
+  generating: isGenerating,
+  phase: streamPhase,
+  messages,
+  serverRunning: computed(() => currentTitleConversation.value?.streamStatus === 'running'),
 })
 
 const teamRunRouteQuery = computed(() => readTeamRunRouteQuery(route.query))
