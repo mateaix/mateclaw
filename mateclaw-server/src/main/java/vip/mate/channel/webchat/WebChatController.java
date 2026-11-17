@@ -280,7 +280,7 @@ public class WebChatController {
 
                 reactor.core.Disposable disposable = agentService.chatStructuredStream(resolvedAgentId, message, conversationId, visitorId, null, webchatOrigin)
                         .doOnNext(delta -> {
-                            if (delta.isEvent() && "_usage_final".equals(delta.eventType())) {
+                            if (delta.isUsage()) {
                                 Map<String, Object> data = delta.eventData();
                                 usage[0] = ((Number) data.getOrDefault("promptTokens", 0)).intValue();
                                 usage[1] = ((Number) data.getOrDefault("completionTokens", 0)).intValue();
@@ -1378,7 +1378,7 @@ public class WebChatController {
                         replayAgentId, replayPrompt, conversationId,
                         snapshot.getToolCallPayload(), actor, replayOrigin)
                         .doOnNext(delta -> {
-                            if (delta.isEvent() && "_usage_final".equals(delta.eventType())) {
+                            if (delta.isUsage()) {
                                 Map<String, Object> data = delta.eventData();
                                 usage[0] = ((Number) data.getOrDefault("promptTokens", 0)).intValue();
                                 usage[1] = ((Number) data.getOrDefault("completionTokens", 0)).intValue();

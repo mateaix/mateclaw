@@ -12,6 +12,7 @@ import org.springframework.ai.chat.messages.UserMessage;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import vip.mate.agent.AgentService;
+import vip.mate.agent.StreamUsageSnapshot;
 import vip.mate.agent.AgentState;
 import vip.mate.agent.BaseAgent;
 import vip.mate.agent.ContentKind;
@@ -330,6 +331,8 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
                         finalReasoningTokens.set(output.state().value(REASONING_TOKENS, 0));
                         finalModelName.set(output.state().value(RUNTIME_MODEL_NAME, ""));
                         finalProviderId.set(output.state().value(RUNTIME_PROVIDER_ID, ""));
+                        // Publish known usage before any content/tool delta can trigger cancellation.
+                        deltas.add(0, StreamUsageSnapshot.from(output.state()));
 
                         lastIteration.set(output.state().value(CURRENT_ITERATION, 0));
                         lastSoftCap.set(output.state().value(MAX_ITERATIONS, 0));
@@ -529,6 +532,8 @@ public class StateGraphReActAgent extends BaseAgent implements StructuredStreamC
                         finalReasoningTokens.set(output.state().value(REASONING_TOKENS, 0));
                         finalModelName.set(output.state().value(RUNTIME_MODEL_NAME, ""));
                         finalProviderId.set(output.state().value(RUNTIME_PROVIDER_ID, ""));
+                        // Publish known usage before any content/tool delta can trigger cancellation.
+                        deltas.add(0, StreamUsageSnapshot.from(output.state()));
 
                         // 4. Silent-termination guard inputs
                         lastIteration.set(output.state().value(CURRENT_ITERATION, 0));

@@ -960,6 +960,11 @@ public class AgentService {
             return eventType != null;
         }
 
+        /** Cumulative usage snapshots replace earlier values; they are never per-event increments. */
+        public boolean isUsage() {
+            return "_usage_update".equals(eventType) || "_usage_final".equals(eventType);
+        }
+
         public boolean hasPayload() {
             return StringUtils.hasText(content) || StringUtils.hasText(thinking);
         }

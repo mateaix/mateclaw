@@ -30,7 +30,7 @@ import java.util.regex.Pattern;
  * Shared by the Web SSE path ({@code ChatController}) and the IM channel
  * router — live fan-out side effects go through the injected {@link Sink}
  * so each caller keeps its own broadcast semantics. Internal bookkeeping
- * events ({@code _usage_final}, {@code _routing_decision}) are consumed
+ * events ({@code _usage_update}, {@code _usage_final}, {@code _routing_decision}) are consumed
  * here and never reach the sink.
  */
 @Slf4j
@@ -121,7 +121,7 @@ public final class AgentStreamAccumulator {
         if (delta == null) return;
 
         if (delta.isEvent()) {
-            if ("_usage_final".equals(delta.eventType())) {
+            if (delta.isUsage()) {
                 Map<String, Object> data = delta.eventData();
                 promptTokens = ((Number) data.getOrDefault("promptTokens", 0)).intValue();
                 completionTokens = ((Number) data.getOrDefault("completionTokens", 0)).intValue();
@@ -452,6 +452,10 @@ public final class AgentStreamAccumulator {
     public int getCacheReadTokens() { return cacheReadTokens; }
     public int getCacheWriteTokens() { return cacheWriteTokens; }
     public int getReasoningTokens() { return reasoningTokens; }
+    public boolean hasUsage() {
+        return promptTokens > 0 || completionTokens > 0 || cacheReadTokens > 0
+                || cacheWriteTokens > 0 || reasoningTokens > 0;
+    }
     public String getRuntimeModelName() { return runtimeModelName; }
     public String getRuntimeProviderId() { return runtimeProviderId; }
     public String getCurrentPhase() { return currentPhase; }
