@@ -1070,7 +1070,7 @@ public class NodeStreamingChatHelper {
         // system into their top-level system field exactly as before.
         // Preserves the input's options reference so downstream relay logic
         // (options.user = relay token) keeps working.
-        Prompt outbound = MessageNormalizer.normalize(prompt);
+        Prompt outbound = MediaRequestNormalizer.normalize(MessageNormalizer.normalize(prompt));
 
         // PR-2 L4 (RFC-049 §2.4.2): normalize as a pre-egress step (not only on retry).
         // Strip reasoning_content from prior-turn AssistantMessages (i <= lastUserIdx),
