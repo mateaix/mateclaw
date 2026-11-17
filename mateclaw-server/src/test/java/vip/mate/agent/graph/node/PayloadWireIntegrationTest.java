@@ -134,4 +134,52 @@ class PayloadWireIntegrationTest {
             } else assertEquals(mode.equals("recover")?"verified result":"[错误] "+PayloadReduction.INCOMPLETE,output.get(FINAL_ANSWER));
         } finally { server.stop(0); }
     }
+    @org.junit.jupiter.api.Test
+    void historicalMedia413RecoveryShrinksRealHttpBodyAndKeepsCurrentAttachment() throws Exception {
+        var bodies = Collections.synchronizedList(new ArrayList<byte[]>());
+        var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/", exchange -> {
+            byte[] request = exchange.getRequestBody().readAllBytes(); bodies.add(request);
+            boolean reject = request.length > 40_000;
+            String response = reject ? "{\"error\":{\"message\":\"body limit exceeded\"}}"
+                    : "data: {\"id\":\"r\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"fixture\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"verified current attachment\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+            byte[] bytes = response.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", reject ? "application/json" : "text/event-stream");
+            exchange.sendResponseHeaders(reject ? 413 : 200, bytes.length);
+            exchange.getResponseBody().write(bytes); exchange.close();
+        });
+        server.start();
+        try {
+            var service = mock(ModelProviderService.class);
+            when(service.isProviderConfigured(anyString())).thenReturn(true);
+            when(service.readProviderGenerateKwargs(any())).thenReturn(Map.of());
+            var config = new ModelConfigEntity(); config.setModelName("fixture"); config.setRequestTimeoutSeconds(3);
+            var provider = new ModelProviderEntity(); provider.setProviderId("fixture"); provider.setRequireApiKey(false);
+            provider.setBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
+            var model = new OpenAiCompatibleChatModelBuilder(service, null, null, null).build(config, provider, null);
+            var node = new ReasoningNode(model, AgentToolSet.fromCallbacks(List.of(), List.of()), null, false,
+                    new NodeStreamingChatHelper(mock(ChatStreamTracker.class)), null, null, 1024, null, null, null, null);
+            node.setPrefixBudgetPlan(new PrefixBudgetPlan(true, 1_000_000, PrefixBudgetPlan.Profile.NORMAL, 0,0,0,0,0,0,0));
+            byte[] oldBytes = new byte[80_000];
+            byte[] currentBytes = new byte[]{1,2,3,4};
+            var old = UserMessage.builder().text("old image").media(new org.springframework.ai.content.Media(
+                    org.springframework.util.MimeTypeUtils.IMAGE_PNG, new org.springframework.core.io.ByteArrayResource(oldBytes))).build();
+            var active = new vip.mate.agent.BaseAgent.CurrentTurnUserMessage(UserMessage.builder().text("inspect current")
+                    .media(new org.springframework.ai.content.Media(org.springframework.util.MimeTypeUtils.IMAGE_PNG,
+                            new org.springframework.core.io.ByteArrayResource(currentBytes))).build(), null).userMessage();
+            var canonical = List.<Message>of(old, new AssistantMessage("old answer"), active);
+            var output = node.apply(new RunState(Map.of(CONVERSATION_ID, "wire-media-recovery", SYSTEM_PROMPT, "MANDATORY_SKILL",
+                    USER_MESSAGE, "inspect current", MESSAGES, canonical, MAX_ITERATIONS, 100)));
+            assertEquals(2, bodies.size()); assertEquals(2, output.get(LLM_CALL_COUNT));
+            String original = new String(bodies.get(0), StandardCharsets.UTF_8);
+            String retry = new String(bodies.get(1), StandardCharsets.UTF_8);
+            assertTrue(original.contains(Base64.getEncoder().encodeToString(oldBytes)));
+            assertFalse(retry.contains(Base64.getEncoder().encodeToString(oldBytes)));
+            assertTrue(retry.contains(Base64.getEncoder().encodeToString(currentBytes)));
+            assertTrue(retry.contains("inspect current")); assertTrue(retry.contains("MANDATORY_SKILL"));
+            assertTrue(bodies.get(1).length < bodies.get(0).length);
+            assertEquals("verified current attachment", output.get(FINAL_ANSWER));
+            assertEquals(1, old.getMedia().size()); assertEquals(1, active.getMedia().size());
+        } finally { server.stop(0); }
+    }
 }

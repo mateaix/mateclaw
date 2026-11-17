@@ -1239,7 +1239,14 @@ public abstract class BaseAgent {
      * {@link UserMessage} and the routing decision the caller should persist as
      * {@code metadata.routing} and surface to the SSE consumer.
      */
-    public record CurrentTurnUserMessage(UserMessage userMessage, MultimodalRoutingDecision routingDecision) {}
+    public record CurrentTurnUserMessage(UserMessage userMessage, MultimodalRoutingDecision routingDecision) {
+        public CurrentTurnUserMessage {
+            var metadata = new java.util.HashMap<>(userMessage.getMetadata());
+            metadata.put(vip.mate.agent.graph.PayloadReduction.REAL_USER_INPUT, true);
+            userMessage = UserMessage.builder().text(userMessage.getText()).media(userMessage.getMedia())
+                    .metadata(metadata).build();
+        }
+    }
 
     /**
      * Extract a routing-decision payload from the graph input map (placed there

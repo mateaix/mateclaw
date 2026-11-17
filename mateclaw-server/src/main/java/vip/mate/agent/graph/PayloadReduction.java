@@ -8,9 +8,17 @@ public final class PayloadReduction {
     private PayloadReduction() {}
     public static final String INCOMPLETE = "任务未完成：请求体过大（HTTP 413），无法通过缩减历史恢复。请拆分任务或附件，或减少启用的工具后重试；若仍失败，请检查代理或模型服务的请求大小限制。";
 
-    /** Returns a strict subsequence, or null if mandatory input cannot safely shrink. */
+    /** Internal provenance: synthetic continuation messages must never move the user boundary. */
+    public static final String REAL_USER_INPUT = "mateclaw.real_user_input";
+    private static final String OMITTED = "[历史附件已因请求体大小限制省略，本次请求不包含其内容；需要重新查看时请读取原始附件。]";
+
+    /** Returns a smaller request view, or null if mandatory input cannot safely shrink. */
     public static List<Message> reduce(List<Message> messages) {
-        if (messages == null || messages.size() <= 4) return null;
+        if (messages == null) return null;
+        List<Message> mediaView = omitHistoricalMedia(messages);
+        boolean mediaReduced = mediaView != messages;
+        messages = mediaView;
+        if (messages.size() <= 4) return mediaReduced ? messages : null;
         int cut = messages.size() - 4;
         // Move the tail boundary back across every crossing tool pair. Repeat
         // because moving it can expose another pair in a parallel tool batch.
@@ -61,8 +69,8 @@ public final class PayloadReduction {
         List<Message> reduced = new ArrayList<>();
         for (int i = 0; i < messages.size(); i++) {
             Message message = messages.get(i);
-            // Preserve every user and system message, including original goal,
-            // loaded skills and media. Never truncate a mandatory message body.
+            // Preserve all user/system text, including the goal and loaded skills.
+            // Current-turn media is intact; only historical request copies were changed above.
             if (i >= cut || message instanceof SystemMessage || message instanceof UserMessage
                     || message instanceof AssistantMessage assistant
                         && assistant.getToolCalls().stream().anyMatch(t -> protectedIds.contains(t.id()))
@@ -70,7 +78,38 @@ public final class PayloadReduction {
                         && response.getResponses().stream().anyMatch(r -> protectedIds.contains(r.id())))
                 reduced.add(message);
         }
-        return reduced.size() < messages.size() ? reduced : null;
+        return reduced.size() < messages.size() || mediaReduced ? reduced : null;
+    }
+
+    /** Only copies before an explicitly marked real user turn may lose media. */
+    private static List<Message> omitHistoricalMedia(List<Message> messages) {
+        int boundary = -1;
+        for (int i = 0; i < messages.size(); i++) {
+            if (messages.get(i) instanceof UserMessage user
+                    && Boolean.TRUE.equals(user.getMetadata().get(REAL_USER_INPUT))) boundary = i;
+        }
+        if (boundary <= 0) return messages;
+        List<Message> view = null;
+        for (int i = 0; i < boundary; i++) {
+            Message original = messages.get(i);
+            Message copy = original;
+            if (original instanceof UserMessage user && !user.getMedia().isEmpty()) {
+                copy = UserMessage.builder().text(omissionText(user.getText()))
+                        .metadata(user.getMetadata()).build();
+            } else if (original instanceof AssistantMessage assistant && !assistant.getMedia().isEmpty()) {
+                copy = AssistantMessage.builder().content(omissionText(assistant.getText()))
+                        .toolCalls(assistant.getToolCalls()).properties(assistant.getMetadata()).build();
+            }
+            if (copy != original) {
+                if (view == null) view = new ArrayList<>(messages);
+                view.set(i, copy);
+            }
+        }
+        return view != null ? view : messages;
+    }
+
+    private static String omissionText(String text) {
+        return text == null || text.isBlank() ? OMITTED : text + "\n\n" + OMITTED;
     }
 
     public static NodeStreamingChatHelper.StreamResult incomplete(NodeStreamingChatHelper.StreamResult source) {
