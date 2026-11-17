@@ -52,6 +52,7 @@ watchEffect(() => {
   document.title = formatChatDocumentTitle(chatDocumentTitle.value, t('app.title'), t('chat.newChat'), {
     running: t('app.chatTitleStatus.running'),
     completed: t('app.chatTitleStatus.completed'),
+    incomplete: t('app.chatTitleStatus.incomplete'),
     failed: t('app.chatTitleStatus.failed'),
     stopped: t('app.chatTitleStatus.stopped'),
     awaiting_approval: t('app.chatTitleStatus.awaitingApproval'),

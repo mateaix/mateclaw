@@ -1371,6 +1371,22 @@ public class ReasoningNode implements NodeAction {
             return builder.build();
         }
 
+        if (result.isOutputTokenLimit()) {
+            // Provider termination is authoritative even when useful text preceded it.
+            // Keep the partial transcript; do not retry or ask a checker to endorse it.
+            return reasonOutput()
+                    .needsToolCall(false)
+                    .shouldSummarize(false)
+                    .finalAnswer(result.text() != null ? result.text() : "")
+                    .finalThinking(result.thinking() != null ? result.thinking() : "")
+                    .llmCallCount(nextLlmCallCount)
+                    .finishReason(FinishReason.INCOMPLETE)
+                    .contentStreamed(!holdContent)
+                    .thinkingStreamed(!holdContent && result.thinking() != null && !result.thinking().isEmpty())
+                    .mergeUsage(state, result)
+                    .build();
+        }
+
         if (result.partial() && "content_repetition".equals(result.errorMessage())) {
             // Reasoning loop: the helper disposed the stream because the
             // model emitted the same paragraph 4+ times in a row (qwen3.6

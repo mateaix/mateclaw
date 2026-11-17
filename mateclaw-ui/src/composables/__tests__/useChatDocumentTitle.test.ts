@@ -3,7 +3,7 @@ import { computed, createApp, defineComponent, h, KeepAlive, nextTick, ref, watc
 import type { Message } from '@/types'
 import { chatDocumentTitle, formatChatDocumentTitle, useChatDocumentTitle } from '../useChatDocumentTitle'
 
-const labels = { running: '运行中', completed: '已完成', failed: '失败', stopped: '已停止', awaiting_approval: '等待审批' }
+const labels = { running: '运行中', completed: '已完成', incomplete: '未完成', failed: '失败', stopped: '已停止', awaiting_approval: '等待审批' }
 const cleanups: (() => void)[] = []
 afterEach(() => { cleanups.splice(0).forEach(fn => fn()); chatDocumentTitle.value = null })
 function mount() {
@@ -58,6 +58,10 @@ describe('chat document title', () => {
     state.finish('completed'); await nextTick()
     // A stale list snapshot must not override a fresh terminal stream event.
     expect(document.title).toContain('[已完成]')
+  })
+  it('does not label truncated answers as completed', async () => {
+    const state = mount(); state.finish('incomplete'); await nextTick()
+    expect(document.title).toBe('[未完成] 报告 · MateClaw')
   })
   it('does not present approval or cancellation as completion', async () => {
     const state = mount(); state.phase.value = 'awaiting_approval'; await nextTick()

@@ -83,7 +83,7 @@ export default {
     validity: { UNKNOWN: '未知', UNAVAILABLE: '不可用', STALE: '已过期', VALID: '有效' },
   },
   app: {
-    chatTitleStatus: { running: '运行中', completed: '已完成', failed: '失败', stopped: '已停止', awaitingApproval: '等待审批' },
+    chatTitleStatus: { incomplete: '未完成', running: '运行中', completed: '已完成', failed: '失败', stopped: '已停止', awaitingApproval: '等待审批' },
     title: 'MateClaw - AI 助手',
   },
   router: {

@@ -2,7 +2,7 @@ import { computed, onActivated, onBeforeUnmount, onDeactivated, ref, shallowRef,
 import type { Message } from '@/types'
 import type { StreamEndMeta } from './chat/useChat'
 
-export type ChatTitleStatus = 'idle' | 'running' | 'completed' | 'failed' | 'stopped' | 'awaiting_approval'
+export type ChatTitleStatus = 'idle' | 'running' | 'completed' | 'incomplete' | 'failed' | 'stopped' | 'awaiting_approval'
 export interface ChatTitleContext { conversationId: string; name: string; status: ChatTitleStatus }
 // App.vue is the single document.title writer, including locale changes.
 export const chatDocumentTitle = shallowRef<ChatTitleContext | null>(null)
@@ -61,6 +61,7 @@ export function useChatDocumentTitle(options: ChatTitleOptions) {
   const finish = (meta: StreamEndMeta) => {
     if (!meta.conversationId) return
     const status: ChatTitleStatus = meta.reason === 'completed' ? 'completed'
+      : meta.reason === 'incomplete' ? 'incomplete'
       : meta.reason === 'awaiting_approval' ? 'awaiting_approval'
       : meta.reason === 'error' || meta.reason === 'failed' ? 'failed' : 'stopped'
     outcomes.set(meta.conversationId, status)

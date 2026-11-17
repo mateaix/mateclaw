@@ -2015,6 +2015,8 @@ public class ChatController {
                     Map<String, Object> parsed = objectMapper.readValue(
                             MessageMetadataJson.normalize(rawMetadata),
                             new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+                    Object finishReason = parsed.get("finishReason");
+                    if (finishReason instanceof String reason && !reason.isBlank()) payload.put("finishReason", reason);
                     Object segs = parsed.get("segments");
                     if (segs instanceof java.util.List<?> list && !list.isEmpty()) {
                         payload.put("segments", segs);

@@ -83,7 +83,7 @@ export default {
     validity: { UNKNOWN: 'Unknown', UNAVAILABLE: 'Unavailable', STALE: 'Stale', VALID: 'Valid' },
   },
   app: {
-    chatTitleStatus: { running: 'Running', completed: 'Completed', failed: 'Failed', stopped: 'Stopped', awaitingApproval: 'Awaiting approval' },
+    chatTitleStatus: { incomplete: 'Incomplete', running: 'Running', completed: 'Completed', failed: 'Failed', stopped: 'Stopped', awaitingApproval: 'Awaiting approval' },
     title: 'MateClaw - AI Assistant',
   },
   router: {
