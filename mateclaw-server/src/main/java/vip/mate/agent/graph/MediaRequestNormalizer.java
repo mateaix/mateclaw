@@ -19,14 +19,14 @@ public final class MediaRequestNormalizer {
             Message normalized = message;
             if (message instanceof UserMessage user) {
                 var media = validMedia(user.getMedia());
-                if (media.size() != user.getMedia().size()) {
+                if (!media.equals(user.getMedia())) {
                     String text = user.getText();
                     if (media.isEmpty() && (text == null || text.isBlank())) text = EMPTY_MEDIA;
                     normalized = UserMessage.builder().text(text).media(media).metadata(user.getMetadata()).build();
                 }
             } else if (message instanceof AssistantMessage assistant) {
                 var media = validMedia(assistant.getMedia());
-                if (media.size() != assistant.getMedia().size()) {
+                if (!media.equals(assistant.getMedia())) {
                     String text = assistant.getText();
                     if (media.isEmpty() && assistant.getToolCalls().isEmpty() && (text == null || text.isBlank())) text = EMPTY_MEDIA;
                     normalized = AssistantMessage.builder().content(text).media(media)
@@ -40,7 +40,7 @@ public final class MediaRequestNormalizer {
     }
 
     private static List<Media> validMedia(List<Media> media) {
-        return media.stream().filter(item -> !isEmpty(item)).toList();
+        return media.stream().filter(item -> !isEmpty(item)).map(RequestImageResizer::resize).toList();
     }
 
     private static boolean isEmpty(Media media) {
