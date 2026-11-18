@@ -35,17 +35,19 @@ public class LocalShellTool {
     private final ObjectMapper objectMapper;
 
     @ConcurrencyUnsafe("local shell command execution can mutate global state on the user's machine")
-    @Tool(description = """
-            LOCAL: Execute a shell command on the USER'S LOCAL DESKTOP machine (not \
-            the server). Uses cmd.exe on Windows, /bin/sh on macOS/Linux. ALWAYS \
-            prompts the user for native approval on the desktop before running. \
-            Returns structured JSON with exitCode, stdout, stderr, timedOut \
-            (stdout/stderr truncated to ~10KB each). Use execute_shell_command for \
-            server-side execution.""")
-    public String local_execute_shell(
+    @Tool(name = "local_execute_shell", description = "LOCAL: Execute a command on the USER'S LOCAL DESKTOP, not the server. "
+            + "Always prompts for native desktop approval. Provide a concise intent title in the conversation language. "
+            + "Returns exitCode, stdout, stderr, timedOut. Use execute_shell_command for server execution.")
+    public String localExecuteShell(
             @ToolParam(description = "Shell command to execute on the user's local machine") String command,
+            @ToolParam(description = "Display-only single-line command intent. Never claim an execution result or include secrets.", required = false) String title,
             @ToolParam(description = "Timeout in seconds, default 60, hard cap 300", required = false) Integer timeoutSeconds,
             @Nullable ToolContext ctx) {
+        return local_execute_shell(command, timeoutSeconds, ctx);
+    }
+
+    /** Legacy Java entry point keeps the actual command and native approval path unchanged. */
+    public String local_execute_shell(String command, Integer timeoutSeconds, @Nullable ToolContext ctx) {
         int cmdTimeout = (timeoutSeconds != null && timeoutSeconds > 0) ? timeoutSeconds : DEFAULT_TIMEOUT_SECONDS;
         cmdTimeout = Math.min(cmdTimeout, MAX_TIMEOUT_SECONDS);
 

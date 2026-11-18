@@ -33,9 +33,28 @@ const displayName = computed(() => {
   return getToolLabel(raw)
 })
 
+const shellArgs = computed<Record<string, unknown> | null>(() => {
+  if (!['execute_shell_command','local_execute_shell'].includes(props.segment.toolName || '')) return null
+  try {
+    const value = JSON.parse(props.segment.toolArgs || '')
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null
+  } catch { return null }
+})
+const intentTitle = computed(() => {
+  const raw = shellArgs.value?.title
+  if (typeof raw !== 'string') return ''
+  const value = raw.replace(/[\u0000-\u001f\u007f]/g,' ').replace(/\s+/g,' ').trim()
+  const chars = Array.from(value)
+  return chars.length > 120 ? chars.slice(0,120).join('') + '…' : value
+})
+
 const truncatedArgs = computed(() => {
   const args = props.segment.toolArgs || ''
   if (!args) return ''
+  if (shellArgs.value) {
+    const command = shellArgs.value.command
+    return typeof command === 'string' ? command.length > 80 ? command.slice(0,80) + '...' : command : ''
+  }
   try {
     const parsed = JSON.parse(args)
     const vals = Object.values(parsed).filter(v => typeof v === 'string') as string[]
@@ -81,7 +100,7 @@ const hasChildActivity = computed(() =>
 
 // The body is expandable when there's any nested detail to show – either the
 // child's activity timeline or the final result preview.
-const hasBody = computed(() => hasChildActivity.value || !!props.segment.toolResult)
+const hasBody = computed(() => hasChildActivity.value || !!props.segment.toolResult || typeof shellArgs.value?.command === 'string')
 
 function childStepStatus(i: number): 'pending' | 'running' | 'completed' {
   const plan = childPlan.value
@@ -134,6 +153,7 @@ const detailStatus = computed<'running' | 'completed' | 'error'>(() => {
         <el-icon v-else :size="12"><Setting /></el-icon>
       </span>
       <span class="seg-tool__name">{{ displayName }}</span>
+      <span v-if="intentTitle" class="seg-tool__intent" :title="intentTitle">{{ intentTitle }}</span>
       <span v-if="isDelegation && childProgress" class="seg-tool__badge">{{ childProgress }}</span>
       <el-icon v-if="isStalled" class="seg-tool__stale" :title="$t('chat.subagentStalled')" :size="12"><WarningFilled /></el-icon>
       <span v-if="truncatedArgs" class="seg-tool__args">{{ truncatedArgs }}</span>
@@ -163,6 +183,7 @@ const detailStatus = computed<'running' | 'completed' | 'error'>(() => {
     </div>
     <Transition name="seg-slide">
       <div v-if="expanded && hasBody" class="seg-tool__body">
+        <pre v-if="shellArgs && typeof shellArgs.command === 'string'" class="seg-tool__command">{{ shellArgs.command }}</pre>
         <!-- Nested subagent timeline (delegation segments) -->
         <div v-if="hasChildActivity" class="seg-child">
           <!-- The child agent's own plan checklist, if it ran in plan mode -->
@@ -436,4 +457,15 @@ const detailStatus = computed<'running' | 'completed' | 'error'>(() => {
   color: var(--mc-text-tertiary);
   line-height: 1.3;
 }
+</style>
+
+<style scoped>
+.seg-tool__intent {
+  min-width: 0; max-width: 280px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-weight: 500; color: var(--mc-text-primary);
+}
+</style>
+
+<style scoped>
+.seg-tool__command { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mc-font-mono, monospace); }
 </style>

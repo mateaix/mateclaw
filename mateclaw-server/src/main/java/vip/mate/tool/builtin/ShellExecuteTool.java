@@ -56,16 +56,19 @@ public class ShellExecuteTool {
             .toLowerCase(Locale.ROOT).contains("win");
 
     @vip.mate.tool.ConcurrencyUnsafe("shell command execution can mutate global state in ways the executor can't reason about")
-    @Tool(description = "Execute a shell command on the local server. For running system commands, viewing files, running scripts. "
-            + "Uses cmd.exe on Windows, /bin/sh on Linux/macOS. "
-            + "Dangerous operations trigger security approval. Returns structured result with exitCode, stdout, stderr, timedOut, "
-            + "and (when the command wrote files) a generatedFiles string of [name](url) download links — echo them so the user can download what you produced.")
-    public String execute_shell_command(
+    @Tool(name = "execute_shell_command", description = "Execute a shell command on the local server. Uses cmd.exe on Windows and /bin/sh on Linux/macOS. "
+            + "Dangerous operations trigger security approval. Provide a concise intent title in the conversation language. "
+            + "Returns exitCode, stdout, stderr, timedOut and generatedFiles download links; echo those links for generated files.")
+    public String executeShellCommand(
             @ToolParam(description = "Shell command to execute") String command,
+            @ToolParam(description = "Display-only, concise single-line command intent. Describe the intended action, never claim success or include secrets.", required = false) String title,
             @ToolParam(description = "Timeout in seconds, default 60", required = false) Integer timeoutSeconds,
-            // RFC-063r §2.5: hidden from LLM by JsonSchemaGenerator. Carries the
-            // ChatOrigin so the workspace boundary check honors per-agent basePath.
             @Nullable ToolContext ctx) {
+        return execute_shell_command(command, timeoutSeconds, ctx);
+    }
+
+    /** Legacy Java entry point; presentation metadata never reaches execution. */
+    public String execute_shell_command(String command, Integer timeoutSeconds, @Nullable ToolContext ctx) {
 
         if (vip.mate.workspace.core.service.MemberFileIsolation.isEnabled()) {
             return executeIsolated(command, timeoutSeconds, ctx);
