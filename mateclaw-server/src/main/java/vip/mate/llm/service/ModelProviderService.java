@@ -143,6 +143,7 @@ public class ModelProviderService {
     }
 
     public ProviderInfoDTO updateProviderConfig(String providerId, ProviderConfigRequest request) {
+        ModelParameterValidator.validateGenerateKwargs(request.getGenerateKwargs());
         ModelProviderEntity provider = getProvider(providerId);
         if (StringUtils.hasText(request.getApiKey())) {
             provider.setApiKey(request.getApiKey().trim());
