@@ -60,6 +60,29 @@ public class LocalShellTool {
                 origin, "local_execute_shell", "execute_shell",
                 LocalToolBridgeService.CAP_SHELL, params,
                 cmdTimeout + APPROVAL_SLACK_SECONDS, true);
+        recordOutcome(result, ctx);
         return LocalToolFormat.render(result, objectMapper);
     }
+    private static void recordOutcome(LocalToolBridgeService.BridgeResult result, @Nullable ToolContext ctx) {
+        var data = result.data();
+        boolean cancelled = data != null && data.path("cancelled").asBoolean(false);
+        boolean timedOut = data != null && data.path("timedOut").asBoolean(false);
+        boolean nonzeroExit = data != null && data.path("exitCode").isIntegralNumber()
+                && data.path("exitCode").asLong() != 0;
+        var error = data == null ? null : data.path("error");
+        boolean payloadError = error != null && (error.isBoolean() && error.asBoolean()
+                || error.isTextual() && !error.textValue().isEmpty());
+        boolean failed = !result.ok() || cancelled || timedOut || nonzeroExit || payloadError;
+        if (!failed) return;
+        var capture = vip.mate.tool.mcp.runtime.McpToolResultCapture.from(ctx);
+        // The full desktop error stays in the result. Keep status metadata free of command output.
+        if (capture != null) capture.recordFailure(cancelled ? "Local shell command cancelled"
+                : timedOut ? "Local shell command timed out" : "Local shell command failed");
+        var sink = vip.mate.execution.evidence.service.ExecutionObservationSink.from(ctx);
+        if (sink != null) {
+            if (cancelled) sink.toolCancelled();
+            else sink.toolFailure();
+        }
+    }
+
 }

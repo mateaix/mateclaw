@@ -3,6 +3,7 @@ import { ref, computed, watch } from 'vue'
 import { Loading, Select, CloseBold, ArrowDown, Document, Setting, Connection, WarningFilled, Clock, View } from '@element-plus/icons-vue'
 import { useToolLabel } from '@/composables/useToolLabel'
 import type { MessageSegment } from '@/types'
+import { shellToolFailure } from '@/utils/shellToolOutcome'
 import DelegationNodeView from './DelegationNodeView.vue'
 import ExecutionDetailDialog from './ExecutionDetailDialog.vue'
 import ToolResultView from './tool-results/ToolResultView.vue'
@@ -77,8 +78,9 @@ const isRead = computed(() => {
   return n.includes('read') || n.includes('Read')
 })
 
-const isSuccess = computed(() => props.segment.status === 'completed' && props.segment.toolSuccess !== false)
-const isError = computed(() => props.segment.status === 'error' || props.segment.toolSuccess === false)
+const shellFailure = computed(() => shellToolFailure(props.segment))
+const isSuccess = computed(() => props.segment.status === 'completed' && props.segment.toolSuccess !== false && !shellFailure.value)
+const isError = computed(() => props.segment.status === 'error' || props.segment.toolSuccess === false || !!shellFailure.value)
 const isRunning = computed(() => props.segment.status === 'running')
 // MCP progress bar: show when running AND progress data is available
 const hasProgress = computed(() => isRunning.value && props.segment.progress != null)
@@ -153,6 +155,7 @@ const detailStatus = computed<'running' | 'completed' | 'error'>(() => {
         <el-icon v-else :size="12"><Setting /></el-icon>
       </span>
       <span class="seg-tool__name">{{ displayName }}</span>
+      <span v-if="shellFailure" class="seg-tool__outcome">{{ $t(`chat.shellResult.${shellFailure.reason}`, { code: shellFailure.exitCode }) }}</span>
       <span v-if="intentTitle" class="seg-tool__intent" :title="intentTitle">{{ intentTitle }}</span>
       <span v-if="isDelegation && childProgress" class="seg-tool__badge">{{ childProgress }}</span>
       <el-icon v-if="isStalled" class="seg-tool__stale" :title="$t('chat.subagentStalled')" :size="12"><WarningFilled /></el-icon>
@@ -460,6 +463,7 @@ const detailStatus = computed<'running' | 'completed' | 'error'>(() => {
 </style>
 
 <style scoped>
+.seg-tool__outcome { color: var(--mc-danger); flex-shrink: 0; font-weight: 500; }
 .seg-tool__intent {
   min-width: 0; max-width: 280px; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; font-weight: 500; color: var(--mc-text-primary);

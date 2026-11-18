@@ -351,6 +351,13 @@ export default {
     },
     stopped: '已被用户手动中止',
     interrupted: '已中断并继续处理下一条消息',
+    shellResult: {
+      exit: '退出码 {code}',
+      timeout: '执行超时',
+      cancelled: '已取消',
+      offline: '桌面未连接',
+      failed: '执行失败',
+    },
     subagentStalled: '子 Agent 无进展',
     subagentAsync: '后台运行中，结果稍后获取',
     executionPlan: '执行计划',

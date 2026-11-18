@@ -73,3 +73,34 @@ describe('shell intent titles', () => {
     expect(mount({...segment(),toolName:'execute_shell_command',toolArgs:'{"title":'}).querySelector('.seg-tool__intent')).toBeNull()
   })
 })
+
+describe('shell execution outcome', () => {
+  it.each([
+    ['execute_shell_command', { exitCode: 7 }, 'exit'],
+    ['execute_shell_command', { exitCode: -1, timedOut: true }, 'timeout'],
+    ['local_execute_shell', { error: true, code: 'OFFLINE', message: '<script>offline</script>' }, 'offline'],
+    ['local_execute_shell', { cancelled: true }, 'cancelled'],
+  ])('shows failed historical %s results even if transport success was true', (toolName, result, reason) => {
+    const host = mount({ ...segment(), toolName, toolResult: JSON.stringify(result), toolSuccess: true })
+    expect(host.querySelector('.seg-tool.is-error')).not.toBeNull()
+    expect(host.querySelector('.seg-tool.is-success')).toBeNull()
+    expect(host.querySelector('.seg-tool__outcome')?.textContent).toContain(`chat.shellResult.${reason}`)
+    expect(host.querySelector('script')).toBeNull()
+  })
+  it('keeps stderr-only successful commands green and does not infer failure for unrelated tools', () => {
+    expect(mount({ ...segment(), toolName:'execute_shell_command', toolResult:'{"exitCode":0,"stderr":"warning"}' }).querySelector('.is-success')).not.toBeNull()
+    expect(mount({ ...segment(), toolName:'search', toolResult:'{"exitCode":7}' }).querySelector('.is-error')).toBeNull()
+  })
+  it('does not turn a running call red because of an earlier result', () => {
+    const host = mount({ ...segment('running'), toolName:'execute_shell_command', toolResult:'{"exitCode":7}' })
+    expect(host.querySelector('.is-running')).not.toBeNull()
+    expect(host.querySelector('.is-error')).toBeNull()
+  })
+})
+
+it('handles double-serialized historical shell output without treating plain text as an outcome', () => {
+  expect(mount({ ...segment(), toolName:'execute_shell_command', toolResult:JSON.stringify(JSON.stringify({exitCode:9})) }).querySelector('.is-error')).not.toBeNull()
+  for (const toolResult of ['not JSON', 'null', '[]', '{"stdout":"exitCode: 7","exitCode":0}']) {
+    expect(mount({ ...segment(), toolName:'execute_shell_command', toolResult }).querySelector('.is-error')).toBeNull()
+  }
+})

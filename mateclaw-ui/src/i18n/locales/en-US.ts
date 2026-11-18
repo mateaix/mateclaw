@@ -351,6 +351,13 @@ export default {
     },
     stopped: 'Stopped manually by user',
     interrupted: 'Interrupted and continued with the next message',
+    shellResult: {
+      exit: 'Exit code {code}',
+      timeout: 'Timed out',
+      cancelled: 'Cancelled',
+      offline: 'Desktop offline',
+      failed: 'Execution failed',
+    },
     subagentStalled: 'Subagent stalled — no progress',
     subagentAsync: 'Running in background — result via task_output',
     executionPlan: 'Execution Plan',

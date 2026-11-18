@@ -97,7 +97,7 @@ public class ShellExecuteTool {
             result.set("stderr", e.getMessage());
             result.set("timedOut", false);
             result.set("error", e.getMessage());
-            return JSONUtil.toJsonPrettyStr(result);
+            return renderResult(result, ctx);
         }
 
         Path stdoutFile = null;
@@ -191,7 +191,7 @@ public class ShellExecuteTool {
             deleteQuietly(stderrFile);
         }
 
-        return JSONUtil.toJsonPrettyStr(result);
+        return renderResult(result, ctx);
     }
 
     /**
@@ -229,6 +229,19 @@ public class ShellExecuteTool {
             result.set("exitCode", -1); result.set("stdout", ""); result.set("timedOut", false);
             result.set("stderr", "Isolated execution failed: " + e.getMessage());
             if (evidence != null) evidence.command(null, false, false, true);
+        }
+        return renderResult(result, ctx);
+    }
+
+    /** Report the native outcome before serialization; output text is never used as evidence. */
+    private static String renderResult(JSONObject result, @Nullable ToolContext ctx) {
+        boolean cancelled = Boolean.TRUE.equals(result.getBool("cancelled"));
+        boolean timedOut = Boolean.TRUE.equals(result.getBool("timedOut"));
+        Integer exitCode = result.getInt("exitCode");
+        if (cancelled || timedOut || exitCode != null && exitCode != 0 || result.containsKey("error")) {
+            var capture = vip.mate.tool.mcp.runtime.McpToolResultCapture.from(ctx);
+            if (capture != null) capture.recordFailure(cancelled ? "Shell command cancelled"
+                    : timedOut ? "Shell command timed out" : "Shell command failed (exit code " + exitCode + ")");
         }
         return JSONUtil.toJsonPrettyStr(result);
     }
