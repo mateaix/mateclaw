@@ -4485,6 +4485,7 @@ export default {
       toggleFailed: '切换技能状态失败',
     },
     import: {
+      cancelUnavailable: '安装已进入写入阶段、已结束或暂不可取消，请查看最新状态。',
       title: '导入技能',
       urlTab: '从 URL 安装',
       searchTab: '搜索市场',

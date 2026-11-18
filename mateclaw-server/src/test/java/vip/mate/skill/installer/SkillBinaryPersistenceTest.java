@@ -21,7 +21,7 @@ class SkillBinaryPersistenceTest {
         var applied = new SkillFileService.ApplyResult(2, 0, false, false);
         when(store.applyBundleFiles(anyLong(), anyMap(), anyBoolean())).thenReturn(applied);
         when(store.applyBundleBytes(anyLong(), anyMap(), anyBoolean())).thenReturn(applied);
-        var installer = new SkillInstaller(null, null, manager, null, store, new com.fasterxml.jackson.databind.ObjectMapper(), event -> {});
+        var installer = new SkillInstaller(null, null, manager, null, store, new com.fasterxml.jackson.databind.ObjectMapper(), event -> {}, new SkillInstallWorker());
         byte[] binary = {(byte)0xff, 0, 1, 13, 10};
         var bundle = new SkillBundle("test", "# test", Map.of(), Map.of("run.py", "print('中文')\r\n"), "github", "test", "1", "", "", "",
                 Map.of("references/font.woff", binary, "templates/sample.docx", binary));

@@ -4393,6 +4393,7 @@ export default {
       toggleFailed: 'Failed to toggle skill status',
     },
     import: {
+      cancelUnavailable: 'Installation is committing, finished, or unavailable for cancellation. Check its latest status.',
       title: 'Import Skill',
       urlTab: 'From URL',
       searchTab: 'Search Hub',

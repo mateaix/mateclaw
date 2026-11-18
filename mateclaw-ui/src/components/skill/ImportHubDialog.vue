@@ -131,7 +131,7 @@
             <span class="progress-status" :class="'status-' + currentTask.status.toLowerCase()">
               {{ getStatusLabel(currentTask.status) }}
             </span>
-            <button v-if="currentTask.status === 'INSTALLING'" class="btn-cancel" @click="cancelInstall">
+            <button v-if="['PENDING', 'INSTALLING'].includes(currentTask.status) && currentTask.cancellable !== false" class="btn-cancel" @click="cancelInstall">
               {{ t('skills.import.cancel') }}
             </button>
           </div>
@@ -148,7 +148,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, watch, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { mcToast } from '@/composables/useMcToast'
 import { useFileDrop } from '@/composables/useFileDrop'
@@ -181,6 +181,7 @@ const zipFile = ref<File | null>(null)
 const zipInputRef = ref<HTMLInputElement | null>(null)
 const { isDragging, onDragEnter, onDragLeave, onDrop } = useFileDrop(handleDroppedZip)
 let pollTimer: ReturnType<typeof setInterval> | null = null
+let disposed = false
 
 watch(() => props.visible, (val) => {
   if (!val) {
@@ -214,19 +215,24 @@ async function doInstall(bundleUrl: string) {
       enable: enableAfterInstall.value,
       overwrite: overwriteExisting.value,
     })
+    if (disposed) return
     currentTask.value = res.data
     startPolling(res.data.taskId)
   } catch (e: any) {
+    if (disposed) return
     mcToast.error(e?.message || t('skills.import.failed'))
     installing.value = false
   }
 }
 
 function startPolling(taskId: string) {
+  if (disposed) return
   stopPolling()
   pollTimer = setInterval(async () => {
     try {
       const res: any = await skillInstallApi.getStatus(taskId)
+      if (disposed || currentTask.value?.taskId !== taskId) return
+      if (!installing.value && ['COMPLETED','FAILED','CANCELLED'].includes(currentTask.value.status)) return
       currentTask.value = res.data
       const status = res.data?.status
       if (status === 'COMPLETED' || status === 'FAILED' || status === 'CANCELLED') {
@@ -241,6 +247,7 @@ function startPolling(taskId: string) {
         }
       }
     } catch {
+      if (disposed || currentTask.value?.taskId !== taskId) return
       stopPolling()
       installing.value = false
     }
@@ -254,13 +261,25 @@ function stopPolling() {
   }
 }
 
+onBeforeUnmount(() => { disposed = true; stopPolling() })
+
 async function cancelInstall() {
   if (!currentTask.value) return
+  const taskId = currentTask.value.taskId
   try {
-    await skillInstallApi.cancelInstall(currentTask.value.taskId)
+    await skillInstallApi.cancelInstall(taskId)
+    if (disposed || currentTask.value?.taskId !== taskId) return
+    currentTask.value = { ...currentTask.value, status: 'CANCELLED', cancellable: false }
+    stopPolling()
+    installing.value = false
     mcToast.info(t('skills.import.cancelled'))
   } catch {
-    // ignore
+    if (disposed || currentTask.value?.taskId !== taskId) return
+    try {
+      const res: any = await skillInstallApi.getStatus(taskId)
+      if (!disposed && currentTask.value?.taskId === taskId) currentTask.value = res.data
+    } catch { /* polling retains ownership of transient status failures */ }
+    if (!disposed) mcToast.warning(t('skills.import.cancelUnavailable'))
   }
 }
 

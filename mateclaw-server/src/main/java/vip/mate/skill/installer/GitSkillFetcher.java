@@ -111,6 +111,9 @@ public class GitSkillFetcher {
                     parsed.getFrontmatter().getOrDefault("icon", "").toString(),
                     files
             );
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
         } catch (Exception e) {
             log.error("Failed to fetch skill from GitHub {}: {}", repoUrl, e.getMessage());
             return null;
@@ -158,16 +161,28 @@ public class GitSkillFetcher {
 
         Process process = pb.start();
 
-        boolean finished = process.waitFor(CLONE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-        if (!finished) {
-            process.destroyForcibly();
-            throw new IOException("git clone timed out after " + CLONE_TIMEOUT_SECONDS + "s");
-        }
+        try {
+            boolean finished = process.waitFor(CLONE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            if (!finished) {
+                throw new IOException("git clone timed out after " + CLONE_TIMEOUT_SECONDS + "s");
+            }
 
-        int exitCode = process.exitValue();
-        if (exitCode != 0) {
-            String output = new String(process.getInputStream().readAllBytes());
-            throw new IOException("git clone failed (exit=" + exitCode + "): " + output);
+            int exitCode = process.exitValue();
+            if (exitCode != 0) {
+                String output = new String(process.getInputStream().readAllBytes());
+                throw new IOException("git clone failed (exit=" + exitCode + "): " + output);
+            }
+
+        } finally {
+            if (process.isAlive()) {
+                try (var children = process.descendants()) {
+                    var snapshot = children.toList();
+                    for (int i = snapshot.size() - 1; i >= 0; i--) snapshot.get(i).destroyForcibly();
+                }
+                process.destroyForcibly();
+                try { process.waitFor(2, TimeUnit.SECONDS); }
+                catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+            }
         }
 
         log.info("Cloned {} (ref={}) to {}", repoUrl, ref, targetDir);

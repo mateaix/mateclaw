@@ -553,6 +553,8 @@ export interface InstallRequest {
 }
 
 export interface InstallTask {
+  /** Cancellation is no longer safe once filesystem/DB writes start. */
+  cancellable?: boolean
   taskId: string
   bundleUrl: string
   status: 'PENDING' | 'INSTALLING' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
