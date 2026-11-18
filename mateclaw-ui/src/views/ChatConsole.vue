@@ -775,7 +775,7 @@ async function handleAnswerQuote(quote: AnswerQuote) {
 // Post-render augmentations (ECharts, KaTeX, Mermaid) all watch the same
 // MessageList container — placeholders emitted by useMarkdownRenderer get
 // upgraded in place after Vue paints the rendered Markdown HTML.
-const echartsContainerRef = computed(() => messageListRef.value?.$el as HTMLElement | null)
+const echartsContainerRef = computed(() => messageListRef.value?.contentElement ?? null)
 const { startObserving: startECharts, dispose: disposeECharts } = useEChartsRenderer(echartsContainerRef)
 const { startObserving: startKatex, dispose: disposeKatex } = useKatexRenderer(echartsContainerRef)
 const { startObserving: startMermaid, dispose: disposeMermaid } = useMermaidRenderer(echartsContainerRef)

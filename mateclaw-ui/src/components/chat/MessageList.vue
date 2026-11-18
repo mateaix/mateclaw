@@ -356,7 +356,8 @@ onMounted(() => document.addEventListener('keydown', handleGlobalKeydown))
 const { quote: answerQuote, position: quotePosition, apply: applyAnswerQuote, clear: clearAnswerQuote } =
   useAnswerQuote(scrollRef, computed(() => Boolean(props.readonly)), quote => emit('quote',quote))
 
-defineExpose({ resetScrollLock: resetLock })
+// The quote Teleport makes this a fragment; $el is not a usable DOM container.
+defineExpose({ resetScrollLock: resetLock, contentElement: contentRef })
 
 onUnmounted(() => {
   clearDockTimer()
