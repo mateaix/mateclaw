@@ -31,8 +31,8 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
         <!-- Spring ecosystem -->
-        <spring-boot.version>4.1.1</spring-boot.version>
-        <spring-ai.version>2.0.1</spring-ai.version>
+        <spring-boot.version>4.1.2</spring-boot.version>
+        <spring-ai.version>2.0.2</spring-ai.version>
 
         <jsonschema-generator.version>5.0.0</jsonschema-generator.version>
         <springdoc.version>3.1.1</springdoc.version>
