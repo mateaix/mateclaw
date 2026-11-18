@@ -3,6 +3,8 @@
     class="message-wrapper"
     :class="[role, { 'is-last': isLast }]"
     :data-role="role"
+    :data-message-id="message.id"
+    :data-conversation-id="message.conversationId"
     :data-status="status"
     @mouseenter="hovered = true"
     @mouseleave="hovered = false"
@@ -191,7 +193,7 @@
           -->
           <UserMessageContent v-if="role === 'user'" :content="displayContent" />
           <template v-else>
-            <div class="markdown-body compact-markdown" v-html="renderedContent"></div>
+            <div data-quote-answer class="markdown-body compact-markdown" v-html="renderedContent"></div>
             <TypingCursor v-if="showCursor" :typing="isGenerating" />
           </template>
         </div>

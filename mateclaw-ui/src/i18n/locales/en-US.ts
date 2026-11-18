@@ -502,6 +502,7 @@ export default {
     ttsPlay: 'Read Aloud',
     ttsStop: 'Stop Reading',
     conversations: 'Conversations',
+    quoteSelection: 'Quote selection',
     newChat: 'New Chat',
     loadingAgents: 'Loading employees...',
     selectAgent: 'Please select an employee',

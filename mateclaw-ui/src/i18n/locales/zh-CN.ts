@@ -502,6 +502,7 @@ export default {
     ttsPlay: '朗读',
     ttsStop: '停止朗读',
     conversations: '会话列表',
+    quoteSelection: '引用所选内容',
     newChat: '新对话',
     loadingAgents: '加载员工中...',
     selectAgent: '请选择数字员工',
