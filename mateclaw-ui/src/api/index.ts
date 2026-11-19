@@ -236,6 +236,9 @@ export const conversationApi = {
 }
 
 // ==================== Skill ====================
+export interface SkillSnapshotPreviewEntry { skillId: string; name: string; action: 'restore'|'unchanged'|'missing'|'archive'; changedFields: string[] }
+export interface SkillSnapshotPreviewData { snapshotId: string; restoreCount: number; unchangedCount: number; missingCount: number; archiveCount: number; entries: SkillSnapshotPreviewEntry[] }
+
 export interface SkillLessonEntry { id: string; heading: string; content: string; deletable: boolean }
 
 export const skillApi = {
@@ -354,6 +357,7 @@ export const skillApi = {
   curatorAdopt: (skillIds: string[]) => http.post('/skills/curator/adopt', skillIds),
   /** Take skills back from autonomous curation. */
   curatorRelease: (skillIds: string[]) => http.post('/skills/curator/release', skillIds),
+  curatorSnapshotPreview: (id: string) => http.get(`/skills/curator/snapshots/${encodeURIComponent(id)}/preview`),
   curatorSnapshots: () => http.get('/skills/curator/snapshots'),
   /** Capture a restore point on demand. */
   curatorSnapshotCapture: (reason?: string) =>

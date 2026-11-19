@@ -1315,6 +1315,18 @@ public class SkillController {
         return R.ok(out);
     }
 
+    @Operation(summary = "Preview snapshot restore impact without changing the skill library")
+    @GetMapping("/curator/snapshots/{snapshotId}/preview")
+    @RequireWorkspaceRole("member")
+    public R<vip.mate.skill.lifecycle.SkillSnapshotService.SnapshotPreview> previewSnapshot(@PathVariable String snapshotId,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        long id;
+        try { id = Long.parseLong(snapshotId.strip()); }
+        catch (NumberFormatException e) { throw new MateClawException("err.skill.snapshot_not_found", 400, "Invalid snapshot id"); }
+        try { return R.ok(skillSnapshotService.preview(id, workspaceId)); }
+        catch (IllegalArgumentException e) { throw new MateClawException("err.skill.snapshot_not_found", 404, e.getMessage()); }
+    }
+
     @Operation(summary = "将技能库回滚到指定还原点")
     @PostMapping("/curator/snapshots/{snapshotId}/restore")
     @RequireWorkspaceRole("admin")

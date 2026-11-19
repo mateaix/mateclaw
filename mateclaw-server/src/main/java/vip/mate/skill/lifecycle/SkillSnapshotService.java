@@ -240,6 +240,96 @@ public class SkillSnapshotService {
         return out;
     }
 
+    public record PreviewEntry(String skillId, String name, String action, List<String> changedFields) {}
+    public record SnapshotPreview(String snapshotId, int restoreCount, int unchangedCount, int missingCount, int archiveCount, List<PreviewEntry> entries) {}
+    /** Read-only impact preview. It is not a reservation: restore re-reads the library. */
+    public SnapshotPreview preview(Long snapshotId, Long workspaceId) {
+        long scope = normalizeWorkspaceId(workspaceId);
+        SkillSnapshotEntity snapshot = snapshotMapper.selectOne(new LambdaQueryWrapper<SkillSnapshotEntity>()
+                .eq(SkillSnapshotEntity::getId, snapshotId).eq(SkillSnapshotEntity::getWorkspaceId, scope));
+        if (snapshot == null || !Long.valueOf(scope).equals(snapshot.getWorkspaceId())) {
+            throw new IllegalArgumentException("Snapshot not found in this workspace");
+        }
+        JsonNode payload;
+        try { payload = objectMapper.readTree(snapshot.getPayload()); }
+        catch (Exception e) { throw new IllegalArgumentException("Snapshot payload is unreadable", e); }
+        if (payload == null || !payload.isArray()) throw new IllegalArgumentException("Snapshot payload must be an array");
+        List<SkillEntity> rows = skillMapper.selectList(new LambdaQueryWrapper<SkillEntity>()
+                .eq(SkillEntity::getBuiltin, false).eq(SkillEntity::getWorkspaceId, scope));
+        Map<Long, SkillEntity> current = new LinkedHashMap<>();
+        for (SkillEntity skill : rows == null ? List.<SkillEntity>of() : rows) {
+            if (skill.getId() != null && Long.valueOf(scope).equals(skill.getWorkspaceId()) && !Boolean.TRUE.equals(skill.getBuiltin()))
+                current.put(skill.getId(), skill);
+        }
+        Set<Long> ids = new HashSet<>();
+        List<PreviewEntry> entries = new ArrayList<>();
+        int restored = 0, unchanged = 0, missing = 0, archived = 0;
+        for (JsonNode node : payload) {
+            validatePreviewNode(node);
+            Long id;
+            try { id = Long.valueOf(node.path("id").asText()); }
+            catch (Exception e) { throw new IllegalArgumentException("Snapshot contains an invalid skill identity"); }
+            if (id <= 0 || !ids.add(id)) throw new IllegalArgumentException("Snapshot contains invalid or duplicate skill identities");
+            SkillEntity skill = current.get(id);
+            if (skill == null) {
+                missing++;
+                entries.add(new PreviewEntry(String.valueOf(id), node.path("name").asText(""), "missing", List.of()));
+                continue;
+            }
+            ObjectNode now = toNode(skill);
+            List<String> changed = new ArrayList<>();
+            for (String field : List.of("skillContent", "description", "version", "tags", "origin", "lifecycleState", "enabled", "pinned",
+                    "lastActivityAt", "curatorSeenAt", "archivedAt")) {
+                if (List.of("lastActivityAt", "curatorSeenAt", "archivedAt").contains(field) && !node.has(field)) continue;
+                JsonNode expected = node.has(field) ? node.get(field) : objectMapper.nullNode();
+                if (List.of("lastActivityAt", "curatorSeenAt", "archivedAt").contains(field) && expected.isTextual())
+                    expected = expected.asText().isBlank() ? objectMapper.nullNode()
+                            : objectMapper.getNodeFactory().textNode(LocalDateTime.parse(expected.asText()).toString());
+                if (!expected.equals(now.get(field))) changed.add(field);
+            }
+            boolean expectedWorkspace = !"archived".equals(textOrNull(node, "lifecycleState"))
+                    && (node.has("workspacePresent") ? node.path("workspacePresent").asBoolean(false)
+                        : now.path("workspacePresent").asBoolean(false) || "archived".equals(skill.getLifecycleState()));
+            if (expectedWorkspace != now.path("workspacePresent").asBoolean(false)) changed.add("workspacePresent");
+            restored++;
+            if (changed.isEmpty()) unchanged++;
+            entries.add(new PreviewEntry(String.valueOf(id), skill.getName(), changed.isEmpty() ? "unchanged" : "restore", List.copyOf(changed)));
+        }
+        for (SkillEntity skill : current.values()) {
+            if (!ids.contains(skill.getId())) {
+                archived++;
+                List<String> changed = new ArrayList<>();
+                if (!"archived".equals(skill.getLifecycleState())) changed.add("lifecycleState");
+                if (!Boolean.FALSE.equals(skill.getEnabled())) changed.add("enabled");
+                changed.add("archivedAt");
+                if (workspaceManager.conventionWorkspaceExists(skill.getName(), scope)) changed.add("workspacePresent");
+                entries.add(new PreviewEntry(String.valueOf(skill.getId()), skill.getName(), "archive", List.copyOf(changed)));
+            }
+        }
+        return new SnapshotPreview(String.valueOf(snapshotId), restored, unchanged, missing, archived, List.copyOf(entries));
+    }
+
+    private static void validatePreviewNode(JsonNode node) {
+        if (!node.isObject()) throw new IllegalArgumentException("Snapshot entries must be objects");
+        for (String field : List.of("name", "skillContent", "description", "version", "tags", "origin", "lifecycleState")) {
+            JsonNode value = node.get(field);
+            if (value != null && !value.isNull() && !value.isTextual())
+                throw new IllegalArgumentException("Snapshot contains an invalid text field: " + field);
+        }
+        for (String field : List.of("enabled", "pinned", "workspacePresent")) {
+            JsonNode value = node.get(field);
+            if (value != null && !value.isNull() && !value.isBoolean())
+                throw new IllegalArgumentException("Snapshot contains an invalid boolean field: " + field);
+        }
+        for (String field : List.of("lastActivityAt", "curatorSeenAt", "archivedAt")) {
+            JsonNode value = node.get(field);
+            if (value == null || value.isNull()) continue;
+            if (!value.isTextual()) throw new IllegalArgumentException("Snapshot contains an invalid date field: " + field);
+            try { if (!value.asText().isBlank()) LocalDateTime.parse(value.asText()); }
+            catch (RuntimeException e) { throw new IllegalArgumentException("Snapshot contains an invalid date field: " + field); }
+        }
+    }
+
     /** Recent snapshots, newest first, without their payloads. */
     public List<Map<String, Object>> list(int limit) {
         return list(1L, limit);
