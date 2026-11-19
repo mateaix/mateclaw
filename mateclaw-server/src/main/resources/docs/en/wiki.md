@@ -9,6 +9,10 @@ head:
 
 # LLM Wiki
 
+## 3.1.0: per-document entities and consistent citations
+
+Use the entity-extraction action for a selected document in the raw-material panel. Extraction stays scoped to that source and existing workspace/knowledge-base permissions. Across repeated retrievals, answers are preserved and citations reconcile with actual sources rather than being overwritten or mismatched.
+
 A knowledge base isn't a place you search. It's a place you **read**.
 
 Most AI knowledge systems do one thing: chunk your files, embed them, hand back fragments at query time. You get pieces. You can't browse them. You can't tell what the system "knows" without asking. Nothing is ever *finished*.

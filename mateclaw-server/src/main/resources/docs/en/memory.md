@@ -9,6 +9,10 @@ head:
 
 # AI Memory System
 
+## 3.1.0: exact edits and selection isolation
+
+Manual section edits match the full heading while retaining adjacent sections and original line endings. Duplicate headings produce a conflict rather than overwriting an ambiguous section. Switching employee, file or conversation during a save/delete cannot redirect the asynchronous operation to the newly selected object.
+
 **Memory is how the system gets better at knowing you.**
 
 Everything else in MateClaw is static the moment you configure it. Agents, tools, knowledge bases — they change when you change them. Memory is the one part that changes on its own, as a byproduct of actual use. That's the whole point.

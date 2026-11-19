@@ -1,5 +1,11 @@
 # Models
 
+## 3.1.0: validate parameters before saving
+
+Model/provider writes validate options consumed by the runtime: temperature must be finite and nonnegative, top-p must be between 0 and 1, and output limits must be positive integers. Explicit context windows range from 1,024 to 20,000,000 tokens; nonpositive values select inference. `chatOptions` / `chat_options` must be JSON objects. Unknown vendor extensions remain the endpoint's responsibility.
+
+Providers share concurrency limits, with busy/cooldown states distinguished from ordinary model failures. Failover identity and usage telemetry use the actual fallback model. Azure unified OpenAI endpoints retain required query parameters.
+
 **Pick a model. Just one. Add more later.**
 
 MateClaw doesn't care which LLM you use. It talks to every mainstream provider through five protocol adapters, supports 15+ cloud providers and 4 local runtimes, and lets you swap models at runtime without touching agent configuration. The only opinion MateClaw has is that you should **start with one and add more when you need them** — not configure everything on day one.

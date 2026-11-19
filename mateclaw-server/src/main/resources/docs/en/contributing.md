@@ -18,7 +18,13 @@ cd mateclaw
 ### 2. Start the backend
 
 ```bash
-# From the repository root; use its configured models and workspace
+# Java 21 + Maven; run from the repository root.
+mvn -pl mateclaw-plugin-api -am install -DskipTests
+[ -f .env.local ] || (umask 077; printf 'JWT_SECRET=%s\n' "$(openssl rand -hex 48)" > .env.local)
+set -a
+source .env.local
+set +a
+# Use the configured root database and workspace
 SPRING_DATASOURCE_URL="jdbc:h2:file:$PWD/data/mateclaw;MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE" \
 MATECLAW_WORKSPACE_SANDBOX_ROOT="$PWD/data/workspace" \
 mvn -pl mateclaw-server spring-boot:run
@@ -38,7 +44,7 @@ npm install
 npm run dev -- --host 127.0.0.1
 ```
 
-Frontend on port 5173, proxies `/api` to the backend.
+Frontend on port 5173, proxies `/api` to the backend. Keep the JWT secret in `.env.local` across restarts and never commit that file.
 
 ### 4. Verify
 
@@ -53,7 +59,7 @@ Open [http://localhost:5173](http://localhost:5173). Log in with `admin` / `admi
 git checkout -b feat/your-feature-name
 
 # 2. Work in small, meaningful commits
-git add <specific files>
+git add path/to/changed-file
 git commit -m "feat(scope): what you changed"
 
 # 3. Keep up to date with upstream

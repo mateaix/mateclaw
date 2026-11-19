@@ -19,13 +19,13 @@ hero:
       text: GitHub
       link: https://github.com/mateaix/mateclaw
     - theme: alt
-      text: 3.0.0 Release Notes
-      link: /en/releases/3.0.0
+      text: 3.1.0 Release Notes
+      link: /en/releases/3.1.0
 
 features:
   - icon: ⚙️
-    title: 3.0.0 — Execution architecture upgrade
-    details: 3.0.0 upgrades to Java 21, Spring Boot 4 and Spring AI 2. AgentScope 2 drives ReAct and plan-step execution loops; MateClaw retains approvals, permissions, Goals, SSE and persistence. Released 2026-10-26; see Releases for installers.
+    title: 3.1.0 — Skill governance and execution reliability
+    details: Withdraw individual lessons, preview restores, edit memory precisely and quote answers into follow-ups. Improve context/media recovery, tool results, Wiki citations and channel delivery. Current dependencies are Boot 4.1.2, Spring AI 2.0.2 and AgentScope 2.0.5.
   - icon: ✅
     title: 2.3.0 — Managed JSON acceptance
     details: Users select required top-level fields; the server binds checks to current requirements and immutable JSON versions. Execution evidence defaults to observation, and ordinary artifact diagnostics do not replace acceptance bindings.

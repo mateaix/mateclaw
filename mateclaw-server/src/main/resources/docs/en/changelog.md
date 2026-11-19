@@ -1,87 +1,73 @@
-# 3.0.0: execution architecture upgrade
+# 3.1.0: skill lesson governance and execution reliability
 
-Release date: **2026-10-26**. These notes cover the 3.0.0 stable release. Source and package versions are `3.0.0`; download published packages from [GitHub Releases](https://github.com/mateaix/mateclaw/releases).
+Version: **3.1.0**. Release date: **2026-11-19**. These notes cover features and fixes after `v3.0.0`; the [3.0.0 execution architecture upgrade](https://claw.mate.vip/docs/en/releases/3.0.0) remains a historical record. Published packages are listed on [GitHub Releases](https://github.com/mateaix/mateclaw/releases).
 
-## Cumulative changes since 2.3.0
+3.1.0 makes learned skill lessons easier to inspect and withdraw, presents chat, tool and channel outcomes more accurately, and improves long-context, historical-media and failure recovery.
 
-3.0.0 includes the former 2.4.0 development cycle; 2.4.0 was not published as a separate stable release. The groups below cover capabilities added before the architecture migration as well.
+## Skill lessons and memory
 
-### Workspaces and conversations
+- **Withdraw individual lessons:** durable identities identify the exact lesson being withdrawn instead of relying on its display position. Market listings and lesson panels refresh after changes.
+- **Preview snapshot restoration:** inspect the skill changes and their impact before confirming a restore.
+- **Trustworthy review results:** incomplete scans cannot be treated as successful reviews; results refresh after review actions.
+- **Cancellable installation:** skill installation runs asynchronously with cancellation and completion managed by task lifecycle.
+- **Attachment integrity:** binary attachments survive bundle imports. The `x-intel` installation source is pinned and remote-shell installation is removed (#685).
+- **Precise memory edits:** untouched sections remain intact. Asynchronous saves and deletions stay bound to the memory object selected when the operation began, preventing edits from leaking across selections or conversations.
 
-- Member file isolation is an opt-in strict sandbox. With `MATECLAW_WORKSPACE_SANDBOX_MEMBER_ISOLATION_ENABLED=true`, authenticated user and workspace identities determine the file root; missing identity denies access without shared-directory fallback. Only six audited builtin file/code tools are available; DSH, MCP/plugin tools, shared skill scripts and unauthenticated channel identities are unavailable. This differs from personal memory-file fallback. (#644).
-- Persistent channel conversations expire stale query context. Uploaded images resolve from conversation storage; directory uploads retain directory metadata and validate containment.
-- Employee drafts accept JSON following reasoning blocks, and explicit tool opt-out is respected even for general capabilities (#648, #655).
+Reflection and routine mining remain disabled by default and require explicit workspace-policy configuration. Lesson governance changes do not automatically expand skill execution permissions.
 
-### Structured decisions, Goals, plans and teams
+## Chat status and tool results
 
-- A bounded typed Choice / Boolean / Score decision pipeline adds durable audit, OFF / SHADOW / ACTIVE modes and scenario overrides. SHADOW is the default; suggestions cannot bypass domain constraints.
-- Goal continuation, plan employee routing and team worker-result judgment share the decision foundation. Domain transactions commit outcomes and state; delayed decisions validate identity and fences.
-- Richer routing context, worker contracts, delegated-step result checks and bounded Goal recovery retain existing completion gates and record applied follow-up suppression.
+- Quote selected answer text into follow-up drafts. Browser titles and favicons reflect conversation and run status.
+- Shell tools show short intent titles without changing command arguments. Failed commands use actual execution outcomes, including correct rendering of historical failures.
+- Native-loop tool events publish once. Fragment message lists retain a DOM container for rendering and positioning (#683).
+- Output-limited answers retain incomplete status instead of appearing successful. Stopped native streams preserve token usage already reported by the provider.
+- Usage lists show recent dates first, and language guidance stays consistent across user-visible responses (#679).
 
-### Models and DeepSeek Harness
+## Models, context and execution recovery
 
-- DSH moves to the SDK runtime with pinned versions and controlled upgrades. Failed health checks invalidate cached health and broken settings remain editable (#650).
-- Model probes validate completed responses rather than accepting connection success or empty output (#658).
+- Validate generation parameters before saving model/provider configuration. Support Azure unified OpenAI endpoints while preserving required endpoint query parameters.
+- Bound concurrent requests through shared provider limits and clarify busy/cooldown failures. Failover uses the actual fallback model identity and provider telemetry (#676).
+- Unify context assembly and preserve compacted history. Attempt recovery from local context overflow before rejecting history (#684).
+- Downscale oversized images and filter empty media in request copies. Oversized requests can omit historical media while persisted original attachments remain intact.
+- Bound skill overviews/discovery and retain verification evidence. Raise the default iteration budget from 10 to 100 for newly created employees, retain existing employee settings, and explain capped runs (#672, #674).
+- Honor tool timeout overrides and abort unfinished plan steps. Recover plan summaries and surface finalization failures (#672, #681).
+- Enforce cumulative team-dispatch budgets across Lead retries rather than granting a fresh full budget on every retry (#688).
+- Harden H2 interrupted-write recovery and authentication-session persistence (#681).
 
-### Read-aloud, chat and tool presentation
+## Wiki, documents and channels
 
-- Edge and DashScope read-aloud are restored, with provider voice lists, selection and preview (#646).
-- Structured MCP results get dedicated presentation below the final answer. Ordinary tool results no longer automatically become final-answer text (#651, #656, #661).
+- **Per-source entity extraction:** extract entities from a selected document in the Wiki raw-material panel (#673).
+- **Consistent answers and citations:** preserve answers and reconcile citations across retrievals. Recover interrupted document analysis and keep empty child sessions out of ordinary history (#683, #686).
+- **Document delivery:** continue reasoning after DOCX generation instead of treating tool completion as task completion (#687). Preserve Markdown table values, handle export edge cases, and retain file newline styles during text edits.
+- **Message delivery:** split long DingTalk Markdown and validate delivery acknowledgements. Preserve readable Feishu attachment names. Prevent proxy buffering on Team and A2A event streams.
 
-### Channels and database operations
+## DeepSeek Harness, desktop and deployment
 
-- Application-owned Feishu WebSocket readiness and lifecycle release owned resources on shutdown and reconnect (#659).
-- Unsupported webhook channels are rejected before configuration persistence (#654).
-- Flyway validation failures block startup by default; history repair requires explicit opt-in, with backup and recovery guidance (#657).
-- Commercial-edition overview and links are added; commercial modules are not included in the open-source edition.
+DSH adds the optional **`0.2.2-rc.1`** candidate, requiring **Node.js 24.9+ (24.x)**. The managed-install default remains **`0.2.0-rc.1`**. Updating MateClaw does not automatically switch an existing DSH configuration to the candidate.
 
-## Finalization, team delivery and deployment
+Candidate upgrades retain runtime homes, configuration and rollback generations, restore file observation guards, and bind configured model capacities. Installation, SDK handshake, real chat and Bash checks passed in native mode on macOS arm64. These checks do not cover Linux/Windows, persisted V3→V4 history migration, multi-hour endurance or production rollback. The macOS Docker shared-directory Landlock `EACCES` limitation remains; see [DSH integration](./deepseek-harness).
 
-- Long tasks check completion before returning a final answer and can continue unfinished work within runtime limits. Requests that need user input wait for a reply instead of repeatedly starting action turns (#668).
-- When reasoning consumes the response output budget, final-answer generation can retry within runtime limits. DeepSeek Flash thinking controls are applied consistently (#672).
-- Team worker progress retains full result evidence and runtime failure causes. A Team Run publishes completion after final synthesis, keeping worker output, progress and the delivered summary consistent.
-- DSH keeps its reviewed default SDK version; `0.2.1-rc.2` is an opt-in candidate. Docker runtime images pin Node.js 22 and include bubblewrap for Linux sandbox execution (#670). Candidate checks on macOS arm64 do not establish Linux or Windows acceptance; see [DSH setup and limitations](./deepseek-harness).
-- Every backend requires a non-empty `JWT_SECRET` of at least 32 UTF-8 bytes. Desktop local mode generates and persists its secret; source and server deployments must configure and retain theirs. See [configuration](./config).
+Desktop fixes harden multi-platform packaging and macOS signing/notarization of native binaries inside the server JAR. Publishing signed installers still depends on the corresponding platform artifacts, certificates and validation results.
 
-## Platform and execution core
+Existing managed deployments gain offline-upgrade preflight backups, trial migrations and search-health checks, with backup-symlink and documentation-route fixes. These are deployment-specific operational improvements; availability and migration scope follow the deployment plan.
 
-Java 21, Spring Boot 4.1.1, Spring AI 2.0.1 and AgentScope Java 2.0.4. Spring AI Alibaba starter and Graph dependencies are removed. AgentScope drives ordinary ReAct and the reasoning/tool/observation loop inside each Plan-Execute step. MateClaw retains overall plan scheduling, Goal budgets and acceptance, and team coordination.
+## Dependency versions
 
-ApplicationGuardedToolkit delegates tool batches to the application executor, retaining approvals, workspace permissions, audit and cancellation. Model requests use existing Spring AI/provider adapters; MateClaw owns SSE, history and persistence.
+| Component | 3.0.0 | 3.1.0 |
+| --- | --- | --- |
+| Java / desktop JRE | 21 | 21 |
+| Spring Boot | 4.1.1 | **4.1.2** |
+| Spring AI | 2.0.1 | **2.0.2** |
+| AgentScope Java | 2.0.4 | **2.0.5** |
+| MyBatis Plus | 3.5.17 | **3.5.18.1** |
 
-## Models, tools and recovery
-
-- Native DashScope chat and embedding adapters replace Alibaba AI integration; the native speech SDK remains.
-- OpenAI/Anthropic adapters preserve reasoning, media, cache and usage. Cancellation aborts owned HTTP calls before reader cleanup and prevents subsequent failover.
-- MCP SDK 0.18.3 preserves call IDs, structured results and protocol errors; local execution capabilities stay out of wire metadata.
-- Goal tool checkpoints persist execution identity before side effects. Uncertain outcomes block blind replay, retaining approval recovery and session isolation.
-- MyBatis Plus 3.5.17 uses the Spring Boot 4 starter; string IDs and existing conversation contracts are retained.
-- Binary skill bundles and bundled documentation synchronization are hardened.
+AgentScope 2.0.5 supplies stable core fixes with regression checks for trailing-JSON rejection and string round trips. The synchronous Anthropic adapter also selects the correct generation so final text and tool calls are retained. Application code still owns model requests, approvals, permissions, memory, compaction and persistence. No beta Harness is introduced, and unused SDK queues/JDBC/Redis stores require no migration.
 
 ## Upgrade and validation
 
-Stop the old process and back up the database, workspace, plugins and configuration before upgrading. Build with Java 21 and check third-party plugin compatibility. Rollback uses the pre-upgrade backup; downgrading an upgraded database is not verified.
+1. Back up the database, workspace, plugins, `.env` / `.env.local`, and DSH runtime directories. Retain the JWT secret to keep existing login tokens valid.
+2. For source development, install `mateclaw-plugin-api` first, then start the backend from the repository root with explicit root `data/` database/workspace paths as shown in [Contributing](./contributing). Start the frontend in `mateclaw-ui/`.
+3. Keep Flyway validation enabled and do not edit applied migrations. This dependency upgrade does not require changing database engines. An existing MySQL deployment cannot use PostgreSQL Compose as an automatic data migration.
+4. Verify model readiness, text answers, tool outcomes, history, cancellation/recovery and the channels you use. Roll back with the pre-upgrade backup and its matching application version.
 
-Validation covers the Maven reactor, frontend build, PostgreSQL/MySQL migrations and transactional pagination, approvals/cancellation, process-crash recovery and six-hour sustained execution. A real Kingbase instance was not tested. Existing frontend interaction contracts remain compatible; this migration does not rewrite the chat UI.
-
-## Context-budget consistency on AgentScope 2.0.4
-
-The native execution path stays on the stable AgentScope Java 2.0.4 API; it does not adopt a beta Harness dependency. Spring AI's native option combination resolves partial runtime options against model defaults. Shared request estimates cover messages, effective tool callback schemas and one output reserve, including OpenAI completion limits. Explicitly empty runtime callbacks suppress default tools, and long totals prevent integer overflow. Reasoning preparation, compaction retries and summary-model guards use the shared estimate while retaining call budgets, permissions, approvals and Goal acceptance.
-
-These checks estimate request size; they do not guarantee provider acceptance, exact billing or correct tool arguments. See [model budget rules](./models#context-budgets-and-request-preparation-3-0-0).
-
-## Upgrade checklist
-
-1. Stop the previous backend. Back up the database together with workspace files, plugin files and configuration, including the JWT secret. Retain the previous application package for rollback.
-2. Build with Java 21 and check plugins against the Boot 4 / Spring AI 2 interfaces. Preserve the database profile and paths. In a source checkout, start from the repository root with explicit root `data/` database and workspace paths; `mateclaw-server/data/` is a separate database.
-3. Keep Flyway validation enabled. If migration validation fails, inspect the SQL and schema before considering an explicitly authorized history repair; do not enable automatic repair as an upgrade default. See [database operations](./config).
-4. After startup, check health and login, confirm existing model configurations, then exercise a real model response, tool approval/rejection, cancellation and an existing conversation. For Goal recovery, inspect checkpoints and acceptance evidence before resuming work with side effects.
-5. If rollback is required, stop the new process and restore the pre-upgrade database, files and configuration alongside the old application. Do not assume the old binary can safely open an upgraded database.
-
-## Latest budget regression evidence (2026-10-20)
-
-The budget change passed 342 focused backend tests and the full backend suite: 6,509 tests, zero failures/errors, 50 skipped. These counts describe this verification run rather than every feature listed above.
-
-After restarting the backend against the configured root database and the frontend on port 5173, 20 real-model rounds ran through the frontend API proxy with DeepSeek V4 Flash. Numeric results and streamed/persisted answers matched in all 20 rounds. The original strict audit passed 17/20; manual review accepted 18/20 after identifying a keyword-only false positive in round 15. Original audit flags were retained.
-
-Two rounds remain failed: round 6 placed `language` outside the tool's nested arguments and triggered a schema rejection; round 20 reported 15 progress updates where receipts showed 41. Task-level recovery did not demonstrate a successful retry of the deliberately rejected original `print(1)` call. These results do not establish a fully passing 20-round acceptance run or an efficiency improvement.
+Dependency-upgrade acceptance completed **6,994 backend/Mem0 tests with zero failures and 64 conditional skips**; **518 frontend tests** and the production build passed. Real-model checks covered text, one Bash execution, history continuity, stream cancellation, same-session recovery and message persistence. Skips require external databases, dedicated DSH environments or platform conditions and do not certify those environments.

@@ -1,8 +1,8 @@
 <div align="center">
 
-> **3.0.0 stable release · 2026-10-26**. Java 21 / Spring Boot 4.1.1 / Spring AI 2.0.1 / AgentScope 2.0.4. AgentScope drives execution loops; MateClaw retains tool approvals, permissions, Goals, SSE and persistence. See Releases for stable builds.
-> [3.0.0 architecture changelog](CHANGELOG.md)
-> Includes all changes since 2.3.0: structured decisions, member file isolation, DSH SDK upgrades, voice preview and structured MCP presentation.
+> **3.1.0 stable release · 2026-11-19**. Java 21 / Spring Boot 4.1.2 / Spring AI 2.0.2 / AgentScope Java 2.0.5.
+> Reviewable skill lessons, snapshot restore previews, precise memory edits, clearer chat status and more reliable model/tool execution.
+> [3.1.0 release notes](mateclaw-server/src/main/resources/docs/en/changelog.md) · [Version history](CHANGELOG.md) · [Downloads](https://github.com/mateaix/mateclaw/releases)
 
 
 <p align="center">
@@ -20,7 +20,7 @@
 [![Live Demo](https://img.shields.io/badge/Demo-Online-orange.svg?logo=vercel&label=Demo)](https://claw-demo.mate.vip)
 [![Website](https://img.shields.io/badge/Website-claw.mate.vip-blue.svg?logo=googlechrome&label=Site)](https://claw.mate.vip)
 [![Java Version](https://img.shields.io/badge/Java-21+-blue.svg?logo=openjdk&label=Java)](https://adoptium.net/)
-[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.1.1-brightgreen.svg?logo=springboot)](https://spring.io/projects/spring-boot)
+[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.1.2-brightgreen.svg?logo=springboot)](https://spring.io/projects/spring-boot)
 [![Vue](https://img.shields.io/badge/Vue-3-4FC08D.svg?logo=vuedotjs)](https://vuejs.org/)
 [![Last Commit](https://img.shields.io/github/last-commit/mateaix/mateclaw)](https://github.com/mateaix/mateclaw)
 [![License](https://img.shields.io/badge/license-Apache--2.0-red.svg?logo=opensourceinitiative&label=License)](LICENSE)
@@ -35,7 +35,7 @@
 
 ---
 
-> **3.0.0 — Governed execution, recoverable long tasks and team delivery.** Java 21, Spring Boot 4, Spring AI 2 and AgentScope 2 power the native runtime. Consistent context budgets, final-answer checks and team synthesis strengthen delivery while preserving approvals and workspace boundaries. [Release and upgrade notes](https://claw.mate.vip/docs/en/releases/3.0.0). Release date: **2026-10-26**.
+> **3.1.0 — Reviewable skills and more reliable execution.** Review or withdraw individual lessons, inspect a snapshot restore before applying it, and quote selected answers into follow-up drafts. Model context recovery, tool outcomes, Wiki citations and channel delivery are hardened. [Release and upgrade notes](https://claw.mate.vip/docs/en/releases/3.1.0).
 
 ---
 
@@ -51,15 +51,16 @@ Most AI tools die when their vendor has a bad day. Most forget you the moment th
 
 ---
 
-## What changes in 3.0.0
+## What changes in 3.1.0
 
-3.0.0 includes the unpublished 2.4.0 development cycle. Release date: **2026-10-26**. Download published packages from Releases.
+Changes since [3.0.0](https://claw.mate.vip/docs/en/releases/3.0.0), grouped by what you can use:
 
-- **Native execution:** AgentScope Java **2.0.4** runs ReAct and the tool loop within each Plan-Execute step. MateClaw retains plan scheduling, tool approvals, workspace permissions, cancellation, Goal acceptance and persistence. This path does not require a beta AgentScope Harness API.
-- **Consistent context budgets:** request preparation, compaction retries and summary calls account for messages, effective tool schemas and one output reserve. Partial request options inherit model defaults; an explicitly empty tool list disables inherited callbacks. Estimates are conservative, rather than provider billing counts.
-- **Governed decisions and recovery:** typed decisions default to SHADOW mode; existing domain constraints and Goal budgets still apply. Durable checkpoints block blind replay when side effects are uncertain.
-- **Long tasks and team delivery:** unfinished work can continue within runtime limits, requests needing user input wait for a reply, and Team Runs publish completion after final synthesis. Worker progress preserves full results and failure causes.
-- **Everyday improvements:** opt-in strict member file isolation, managed DSH SDK upgrades, voice selection/preview, structured MCP results and stricter model probes.
+- **Skills and memory:** review and withdraw individual lessons, preview snapshot restoration, install skills asynchronously with cancellation, and preserve exact memory sections without cross-conversation edits.
+- **Chat and tool visibility:** quote selected answer text into follow-up drafts; see conversation status in the browser title and favicon, command-intent titles, actual shell failures and accurate stopped-run token usage.
+- **More reliable execution:** recover context overflow and oversized historical media, validate model parameters before saving, bound provider concurrency, preserve timeout overrides, and cap cumulative team-dispatch budgets.
+- **Knowledge and documents:** extract entities from one Wiki source, reconcile citations across retrievals, continue reasoning after document generation, and preserve Markdown table values, file newline styles and binary skill attachments.
+- **Channels and DSH:** split long DingTalk Markdown, validate delivery acknowledgements and preserve Feishu attachment names. DSH `0.2.2-rc.1` is an optional Node.js 24.9+ (24.x) candidate; the default remains `0.2.0-rc.1`.
+- **Current stack:** Spring Boot **4.1.2**, Spring AI **2.0.2**, AgentScope Java **2.0.5** and MyBatis Plus **3.5.18.1**. Native ReAct and plan-step loops retain MateClaw's approvals, permissions, Goal acceptance and persistence.
 
 Use Java 21 for source builds. Back up the database, workspace, plugins and configuration before migration; use that backup for rollback. [Architecture and upgrade notes](mateclaw-server/src/main/resources/docs/en/changelog.md) · [Model budget rules](mateclaw-server/src/main/resources/docs/en/models.md)
 
@@ -185,6 +186,7 @@ set -a
 source .env.local
 set +a
 # From the repository root; use its configured models and workspace
+mvn -pl mateclaw-plugin-api -am install -DskipTests
 SPRING_DATASOURCE_URL="jdbc:h2:file:$PWD/data/mateclaw;MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE" \
 MATECLAW_WORKSPACE_SANDBOX_ROOT="$PWD/data/workspace" \
 mvn -pl mateclaw-server spring-boot:run  # http://localhost:18088
@@ -200,6 +202,7 @@ On a fresh database, log in with `admin` / `admin123`, change the password, then
 
 ```bash
 cp .env.example .env
+# Edit .env: set JWT_SECRET and replace both database example passwords.
 docker compose up -d          # http://localhost:18080
 ```
 
@@ -228,7 +231,7 @@ Download from [GitHub Releases](https://github.com/mateaix/mateclaw/releases). B
 
 ```
 mateclaw/
-├── mateclaw-server/        Spring Boot 4.1.1 backend (Agent Runtime contract, native AgentScope + DSH)
+├── mateclaw-server/        Spring Boot 4.1.2 backend (Agent Runtime contract, native AgentScope + DSH)
 ├── mateclaw-ui/            Vue 3 + TypeScript admin SPA (built into the server JAR)
 ├── mateclaw-desktop/       Electron desktop app (local-embedded / remote-centralized)
 ├── mateclaw-webchat/       Embeddable chat widget (UMD / ES bundles)
@@ -246,7 +249,7 @@ Desktop binaries ship via [GitHub Releases](https://github.com/mateaix/mateclaw/
 
 | Layer | Technology |
 |---|---|
-| Backend | Spring Boot 4.1.1 · Spring AI 2.0.1 · AgentScope Java 2.0.4 · MyBatis Plus · Flyway |
+| Backend | Spring Boot 4.1.2 · Spring AI 2.0.2 · AgentScope Java 2.0.5 · MyBatis Plus · Flyway |
 | Agent Runtime | `AgentRuntimeProvider` contract · Native AgentScope (ReAct + Plan-Execute) · managed DSH JSON-RPC runtime · normalized events / lifecycle / usage · Tool Guard |
 | Orchestration | Workflow (7 step modes · Pebble DSL) · Triggers (6 pattern types · event governance) · Wiki Transformations (1.3.0+) |
 | Capability Extension | SKILL.md packages · MCP (stdio / SSE / HTTP · per-agent binding) · ACP bridge (Claude Code / Codex) |
@@ -262,7 +265,11 @@ Desktop binaries ship via [GitHub Releases](https://github.com/mateaix/mateclaw/
 
 Full docs at **[claw.mate.vip/docs](https://claw.mate.vip/docs)** — setup, architecture, each subsystem, API reference.
 
-## Roadmap
+## Release history
+
+**v3.1.0 (released) · 2026-11-19** — skill lesson governance, restore previews, precise memory editing, conversation status, and model/tool/context reliability. [3.1.0 notes](https://claw.mate.vip/docs/en/releases/3.1.0).
+
+**v3.0.0 · 2026-10-26** — Java 21, Boot 4, Spring AI 2 and native AgentScope execution architecture. [3.0.0 notes](https://claw.mate.vip/docs/en/releases/3.0.0).
 
 **v2.3.0 (released 2026-09-20) — JSON acceptance and execution evidence for persistent Goals.** Users can configure required JSON fields and bind checks to current requirements and immutable artifact versions. This release also adds controlled worker intervention and skill document/folder uploads, with fixes for DSH history and output budgets, vLLM reasoning, and SSE framing.
 
@@ -341,12 +348,7 @@ Full story in the [v1.7.0 release notes](https://claw.mate.vip/docs/en/releases/
 
 ## Contributing
 
-```bash
-git clone https://github.com/mateaix/mateclaw.git
-cd mateclaw
-mvn -pl mateclaw-server -am clean compile
-cd mateclaw-ui && npm install && npm run dev -- --host 127.0.0.1
-```
+Fork or clone the repository, follow [Quick start](#quick-start), then see the [contribution guide](mateclaw-server/src/main/resources/docs/en/contributing.md) for code conventions and checks.
 
 ---
 

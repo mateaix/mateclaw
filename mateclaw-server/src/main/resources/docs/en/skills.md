@@ -1,5 +1,13 @@
 # Skills
 
+## 3.1.0: lesson withdrawal and restore previews
+
+Review learned entries in the lesson panel and withdraw the intended lesson by durable identity; other lessons remain intact. Market cards and details refresh after changes. Ambiguous legacy records cannot be withdrawn until the intended entry can be identified.
+
+When restoring a curator snapshot, inspect restored, unchanged, missing and archived entries plus changed fields before confirming. Retry a failed preview first. The preview describes current impact; the server still checks permissions and state when applying the restore.
+
+Skill installations run in the background and can be cancelled from their task. Incomplete scans, read failures or scan limits block skill loading. Fix attachments and rescan rather than treating an unfinished check as approval.
+
 ## 2.3.0: document and folder uploads
 
 In skill file management, select `references/`, `templates/`, or `scripts/`, then upload files or choose a folder. The selected folder and descendants remain under that bucket, for example `references/manual/chapter.pdf`. The upload endpoint requires workspace admin access; built-in skill files are read-only. Replacing an existing path requires confirmation.

@@ -1,6 +1,6 @@
 # Quick Start
 
-Release date: **2026-10-26**. These notes cover the 3.0.0 stable release. Source and package versions are `3.0.0`; download published packages from [GitHub Releases](https://github.com/mateaix/mateclaw/releases). Read the [upgrade guidance](./changelog#upgrade-and-validation) before migrating.
+3.1.0 stable release · **2026-11-19**: lesson withdrawal and restore previews, precise memory editing, chat status, and execution/channel reliability. See [Releases](https://github.com/mateaix/mateclaw/releases) for packages and read the [upgrade guidance](./changelog#upgrade-and-validation).
 
 
 Sixty seconds to first message. **One path. Desktop app.**
@@ -11,11 +11,11 @@ If you want Docker or local development instead, those live in [Configuration](.
 
 ## 1. Download
 
-Grab the latest installer from [GitHub Releases](https://github.com/mateaix/mateclaw/releases).
+Download a published installer from [GitHub Releases](https://github.com/mateaix/mateclaw/releases). Available platforms and filenames depend on that release's actual assets.
 
 - **Windows** — `MateClaw-Setup-x.y.z.exe`
 - **macOS** — `MateClaw-x.y.z.dmg`
-- **Linux** — `MateClaw-x.y.z.AppImage`
+- **Linux** — `MateClaw-x.y.z.AppImage` (when provided by that release)
 
 No Java install. No Node install. No Maven. The desktop app bundles JRE 21 and the server JAR.
 
