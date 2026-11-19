@@ -16,6 +16,8 @@ import vip.mate.agent.context.PrefixBudgetPlan;
 import vip.mate.agent.graph.executor.ToolExecutionExecutor;
 import vip.mate.agent.model.AgentEntity;
 import vip.mate.agent.repository.AgentMapper;
+import vip.mate.llm.failover.ProviderHealthProperties;
+import vip.mate.llm.failover.ProviderHealthTracker;
 import vip.mate.llm.model.*;
 import vip.mate.tool.ToolRegistry;
 import vip.mate.tool.builtin.ProgressiveToolBridgeTool;
@@ -146,6 +148,8 @@ class Issue664McpExecutionIntegrationTest {
                         ReflectionTestUtils.setField(builder, field.getName(), mock(field.getType()));
                 }
                 ReflectionTestUtils.setField(builder, "streamTracker", tracker);
+                ReflectionTestUtils.setField(builder, "providerHealthTracker",
+                        new ProviderHealthTracker(new ProviderHealthProperties()));
                 ReflectionTestUtils.setField(builder, "graphObservationProperties", new vip.mate.config.GraphObservationProperties());
                 ReflectionTestUtils.setField(builder, "toolTimeoutProperties", new vip.mate.config.ToolTimeoutProperties());
                 ReflectionTestUtils.setField(builder, "conversationWindowManager", null);

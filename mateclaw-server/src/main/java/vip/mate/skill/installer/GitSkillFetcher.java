@@ -90,8 +90,13 @@ public class GitSkillFetcher {
             }
 
             // 收集 references/ 和 scripts/
-            Map<String, String> references = collectFiles(skillRoot.resolve("references"));
-            Map<String, String> scripts = collectFiles(skillRoot.resolve("scripts"));
+            Map<String, byte[]> files = new HashMap<>();
+            for (String bucket : java.util.List.of("references", "scripts", "templates")) {
+                for (var entry : collectFiles(skillRoot.resolve(bucket)).entrySet())
+                    files.put(bucket + "/" + entry.getKey(), entry.getValue());
+            }
+            Map<String, String> references = textBucket(files, "references/");
+            Map<String, String> scripts = textBucket(files, "scripts/");
 
             return new SkillBundle(
                     name,
@@ -103,8 +108,12 @@ public class GitSkillFetcher {
                     parsed.getFrontmatter().getOrDefault("version", "1.0.0").toString(),
                     parsed.getDescription(),
                     parsed.getFrontmatter().getOrDefault("author", "").toString(),
-                    parsed.getFrontmatter().getOrDefault("icon", "").toString()
+                    parsed.getFrontmatter().getOrDefault("icon", "").toString(),
+                    files
             );
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
         } catch (Exception e) {
             log.error("Failed to fetch skill from GitHub {}: {}", repoUrl, e.getMessage());
             return null;
@@ -152,16 +161,28 @@ public class GitSkillFetcher {
 
         Process process = pb.start();
 
-        boolean finished = process.waitFor(CLONE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-        if (!finished) {
-            process.destroyForcibly();
-            throw new IOException("git clone timed out after " + CLONE_TIMEOUT_SECONDS + "s");
-        }
+        try {
+            boolean finished = process.waitFor(CLONE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            if (!finished) {
+                throw new IOException("git clone timed out after " + CLONE_TIMEOUT_SECONDS + "s");
+            }
 
-        int exitCode = process.exitValue();
-        if (exitCode != 0) {
-            String output = new String(process.getInputStream().readAllBytes());
-            throw new IOException("git clone failed (exit=" + exitCode + "): " + output);
+            int exitCode = process.exitValue();
+            if (exitCode != 0) {
+                String output = new String(process.getInputStream().readAllBytes());
+                throw new IOException("git clone failed (exit=" + exitCode + "): " + output);
+            }
+
+        } finally {
+            if (process.isAlive()) {
+                try (var children = process.descendants()) {
+                    var snapshot = children.toList();
+                    for (int i = snapshot.size() - 1; i >= 0; i--) snapshot.get(i).destroyForcibly();
+                }
+                process.destroyForcibly();
+                try { process.waitFor(2, TimeUnit.SECONDS); }
+                catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+            }
         }
 
         log.info("Cloned {} (ref={}) to {}", repoUrl, ref, targetDir);
@@ -197,8 +218,8 @@ public class GitSkillFetcher {
     /**
      * 收集目录下的所有文件为 relativePath → content 映射
      */
-    private Map<String, String> collectFiles(Path dir) throws IOException {
-        Map<String, String> files = new HashMap<>();
+    private Map<String, byte[]> collectFiles(Path dir) throws IOException {
+        Map<String, byte[]> files = new HashMap<>();
         if (!Files.exists(dir) || !Files.isDirectory(dir)) {
             return files;
         }
@@ -207,13 +228,28 @@ public class GitSkillFetcher {
             @Override
             public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
                 if (attrs.isRegularFile() && attrs.size() < 1_000_000) { // 跳过超过 1MB 的文件
-                    String relativePath = dir.relativize(file).toString();
-                    files.put(relativePath, Files.readString(file));
+                    String relativePath = dir.relativize(file).toString().replace('\\', '/');
+                    files.put(relativePath, Files.readAllBytes(file));
                 }
                 return FileVisitResult.CONTINUE;
             }
         });
         return files;
+    }
+
+    private static Map<String, String> textBucket(Map<String, byte[]> files, String prefix) {
+        Map<String, String> text = new HashMap<>();
+        files.forEach((path, bytes) -> {
+            if (!path.startsWith(prefix)) return;
+            try {
+                String decoded = java.nio.charset.StandardCharsets.UTF_8.newDecoder()
+                        .decode(java.nio.ByteBuffer.wrap(bytes)).toString();
+                if (decoded.indexOf('\0') < 0) text.put(path.substring(prefix.length()), decoded);
+            } catch (java.nio.charset.CharacterCodingException ignored) {
+                // The byte map is canonical; binary attachments never pass through text decoding.
+            }
+        });
+        return text;
     }
 
     /**

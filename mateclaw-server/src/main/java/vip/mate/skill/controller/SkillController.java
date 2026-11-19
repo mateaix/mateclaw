@@ -954,25 +954,23 @@ public class SkillController {
                 .orElse(null);
         if (resolved == null) return R.fail("Skill not found: " + id);
         String body = lessonsService.readLessons(resolved);
-        // entryCount = number of "## " headed sections (RFC-090 §11.4 "💡 N entries" badge).
-        int entryCount = 0;
-        if (body != null && !body.isBlank()) {
-            int from = 0;
-            while (true) {
-                int idx = body.indexOf("\n## ", from);
-                if (idx < 0) break;
-                entryCount++;
-                from = idx + 1;
-            }
-            // Also count a leading "## " (no preceding newline) at start of file.
-            if (body.startsWith("## ")) entryCount++;
+        var entries = SkillLessonsService.entries(body);
+        return R.ok(Map.of("skillId", id, "skillName", resolved.getName(),
+                "raw", body == null ? "" : body, "entryCount", entries.size(), "entries", entries));
+    }
+
+    @Operation(summary = "Withdraw one skill lesson without clearing its siblings")
+    @DeleteMapping("/{id}/lessons/{lessonId}")
+    @RequireWorkspaceRole("admin")
+    public R<Map<String, Object>> deleteLesson(@PathVariable Long id, @PathVariable String lessonId,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyResourceWorkspace(skillService.getSkill(id), workspaceId);
+        ResolvedSkill resolved = skillRuntimeService.resolveAllSkillsStatus().stream()
+                .filter(skill -> skill != null && id.equals(skill.getId())).findFirst().orElse(null);
+        if (resolved == null || !lessonsService.deleteLesson(resolved, lessonId)) {
+            return R.fail(409, "Lesson could not be withdrawn. Refresh and retry; it may have changed or be ambiguous.");
         }
-        return R.ok(Map.of(
-                "skillId", id,
-                "skillName", resolved.getName(),
-                "raw", body == null ? "" : body,
-                "entryCount", entryCount
-        ));
+        return R.ok(Map.of("removed", true));
     }
 
     @Operation(summary = "Clear all lessons for a skill (RFC-090 §11.4)")
@@ -1315,6 +1313,18 @@ public class SkillController {
         out.put("reason", snapshot.getReason());
         out.put("skillCount", snapshot.getSkillCount());
         return R.ok(out);
+    }
+
+    @Operation(summary = "Preview snapshot restore impact without changing the skill library")
+    @GetMapping("/curator/snapshots/{snapshotId}/preview")
+    @RequireWorkspaceRole("member")
+    public R<vip.mate.skill.lifecycle.SkillSnapshotService.SnapshotPreview> previewSnapshot(@PathVariable String snapshotId,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        long id;
+        try { id = Long.parseLong(snapshotId.strip()); }
+        catch (NumberFormatException e) { throw new MateClawException("err.skill.snapshot_not_found", 400, "Invalid snapshot id"); }
+        try { return R.ok(skillSnapshotService.preview(id, workspaceId)); }
+        catch (IllegalArgumentException e) { throw new MateClawException("err.skill.snapshot_not_found", 404, e.getMessage()); }
     }
 
     @Operation(summary = "将技能库回滚到指定还原点")

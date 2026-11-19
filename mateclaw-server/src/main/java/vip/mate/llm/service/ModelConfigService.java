@@ -22,11 +22,6 @@ import org.springframework.context.ApplicationEventPublisher;
 @RequiredArgsConstructor
 public class ModelConfigService {
 
-    /** Below this a "window" is a typo, not a model — even 4k-era models exceed it. */
-    private static final int MIN_CONTEXT_WINDOW = 1024;
-    /** Above this the value is a typo too; the largest published windows are ~10M. */
-    private static final int MAX_CONTEXT_WINDOW = 20_000_000;
-
     private final ModelConfigMapper modelConfigMapper;
     private final ApplicationEventPublisher eventPublisher;
     private final ModelCapabilityService modelCapabilityService;
@@ -318,11 +313,7 @@ public class ModelConfigService {
         if (entity == null) {
             throw new MateClawException("err.llm.model_not_found", "模型不存在: " + modelId);
         }
-        int value = (maxInputTokens == null || maxInputTokens <= 0) ? 0 : maxInputTokens;
-        if (value > 0 && (value < MIN_CONTEXT_WINDOW || value > MAX_CONTEXT_WINDOW)) {
-            throw new MateClawException("err.llm.context_window_out_of_range",
-                    "上下文窗口需要在 " + MIN_CONTEXT_WINDOW + " ~ " + MAX_CONTEXT_WINDOW + " tokens 之间");
-        }
+        int value = ModelParameterValidator.normalizeInputWindow(maxInputTokens);
         entity.setMaxInputTokens(value);
         modelConfigMapper.updateById(entity);
         publishConfigChanged("model-context-window-updated");
@@ -424,6 +415,7 @@ public class ModelConfigService {
         if (!StringUtils.hasText(entity.getModelName())) {
             throw new MateClawException("err.llm.id_required", "模型标识不能为空");
         }
+        ModelParameterValidator.validateModel(entity);
         ModelConfigEntity duplicate = modelConfigMapper.selectOne(new LambdaQueryWrapper<ModelConfigEntity>()
                 .eq(ModelConfigEntity::getProvider, entity.getProvider())
                 .eq(ModelConfigEntity::getModelName, entity.getModelName())

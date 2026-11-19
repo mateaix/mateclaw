@@ -27,6 +27,62 @@ import static org.mockito.Mockito.when;
 class SkillFileToolTest {
 
     @Test
+    void compactOverviewIncludesAll79NamesWithinHardBudget() throws Exception {
+        var runtime=mock(SkillRuntimeService.class);
+        var resolver=mock(AgentWorkspaceResolver.class);
+        when(resolver.resolve(any())).thenReturn(1L);
+        var tool=new SkillFileTool(runtime,mock(SkillFileAccessPolicy.class),mock(SkillUsageService.class),resolver);
+        when(runtime.getActiveSkills(any())).thenReturn(java.util.stream.IntStream.range(0,79)
+            .mapToObj(i->skill("skill-"+i,"database",true)).toList());
+        String output=tool.listAvailableSkills(null,null,null,null,null);
+        var json=new com.fasterxml.jackson.databind.ObjectMapper().readTree(output);
+        assertEquals("skill_catalog",json.path("kind").asText());
+        assertEquals(79,json.path("matchingTotal").asInt());
+        assertEquals(79,json.path("names").size());
+        assertEquals(79,json.path("summaries").size(),"Every name needs a bounded summary, not just the first examples");
+        for(var name:json.path("names")) assertFalse(json.path("summaries").path(name.asText()).asText().isBlank());
+        assertFalse(json.path("hasMore").asBoolean());
+        assertTrue(json.path("nextOffset").isNull());
+        assertTrue(json.path("examples").size()<=20);
+        assertTrue(output.length()<=8000,"The hard output budget must be independent of model behavior");
+        var names=new java.util.HashSet<String>();json.path("names").forEach(n->names.add(n.asText()));
+        for(int i=0;i<79;i++)assertTrue(names.contains("skill-"+i));
+        String filtered=tool.listAvailableSkills("does-not-exist",null,null,null,null);
+        var empty=new com.fasterxml.jackson.databind.ObjectMapper().readTree(filtered);
+        assertEquals(0,empty.path("matchingTotal").asInt());
+        assertEquals("does-not-exist",empty.path("filters").path("keyword").asText());
+    }
+
+    @Test
+    void cursorPagesAreBoundedAndCoverLargeCatalogWithoutAlphabetSearch() throws Exception {
+        var runtime=mock(SkillRuntimeService.class);
+        var resolver=mock(AgentWorkspaceResolver.class);
+        when(resolver.resolve(any())).thenReturn(1L);
+        var tool=new SkillFileTool(runtime,mock(SkillFileAccessPolicy.class),mock(SkillUsageService.class),resolver);
+        var catalog=java.util.stream.IntStream.range(0,450).mapToObj(i->{
+            var entry=skill("long-name-"+i+"-"+"x".repeat(80),"database",true);
+            entry.setDescription("very long description".repeat(1000));return entry;
+        }).toList();
+        when(runtime.getActiveSkills(any())).thenReturn(catalog);
+        var mapper=new com.fasterxml.jackson.databind.ObjectMapper();
+        var names=new java.util.HashSet<String>();int offset=0,pages=0;
+        while(true) {
+            String output=tool.listAvailableSkills(null,null,null,50,offset,null);
+            assertTrue(output.length()<=8000);
+            var page=mapper.readTree(output);
+            assertEquals(450,page.path("matchingTotal").asInt());
+            for(var name:page.path("names"))assertTrue(names.add(name.asText()),"No duplicate names across cursor pages");
+            pages++;assertTrue(pages<=450);
+            if(!page.path("hasMore").asBoolean())break;
+            int next=page.path("nextOffset").asInt();assertTrue(next>offset);offset=next;
+        }
+        assertEquals(450,names.size());
+        assertTrue(pages>1);
+        var beyond=mapper.readTree(tool.listAvailableSkills(null,null,null,20,1000,null));
+        assertTrue(beyond.path("names").isEmpty());assertFalse(beyond.path("hasMore").asBoolean());
+    }
+
+    @Test
     @DisplayName("listAvailableSkills applies keyword, source, status, and limit")
     void listAvailableSkillsFiltersAndLimitsRuntimeCatalog() {
         SkillRuntimeService runtimeService = mock(SkillRuntimeService.class);
@@ -44,7 +100,7 @@ class SkillFileToolTest {
 
         assertTrue(result.contains("claude-code"));
         assertFalse(result.contains("ckjia-shopping"));
-        assertTrue(result.contains("Showing: 1 of 1"));
+        assertTrue(result.contains("\"matchingTotal\":1"));
     }
 
     @Test

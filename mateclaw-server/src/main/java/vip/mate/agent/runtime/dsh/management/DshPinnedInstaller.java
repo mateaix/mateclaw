@@ -21,6 +21,8 @@ public class DshPinnedInstaller {
     public record Release(String version, String channel, String integrity) {}
     public record Installation(String version, String platform, String executablePath, String integrity) {}
     private static final Map<String, Release> CATALOG = Map.of(
+            "0.2.2-rc.1", new Release("0.2.2-rc.1", "candidate",
+                    "sha512-ijR9UEVYkG15Q/Q79JzvzLBzQOQfc63VLr9n6flpwHPhr5IKn2UxthnSoto/P9l7qGd7pPvI1Ra6TW7LH3oKpg=="),
             "0.2.1-rc.2", new Release("0.2.1-rc.2", "candidate",
                     "sha512-tvY+yhfKRifthbqPe/OK0AYxM5ZkvqfYq/jMYgJcEUxiRRL1Vwra3Ti5TB6AXgSWQdiPHYh/Vp6SJa9yHwMNuw=="),
             "0.2.0-rc.1", new Release("0.2.0-rc.1", "next",
@@ -35,7 +37,7 @@ public class DshPinnedInstaller {
         if (release == null) throw new IllegalArgumentException("dsh.unsupported_version: select an exact catalog version");
         return release;
     }
-    public static List<Release> catalog() { return List.of(release("0.2.0-rc.1"), release("0.2.1-rc.2"), release("0.1.7-rc.2")); }
+    public static List<Release> catalog() { return List.of(release("0.2.0-rc.1"), release("0.2.2-rc.1"), release("0.2.1-rc.2"), release("0.1.7-rc.2")); }
 
     public static String platform(String os, String arch) {
         if (os.toLowerCase().contains("linux") && (arch.equals("amd64") || arch.equals("x86_64"))) return "linux-x64";
@@ -50,7 +52,7 @@ public class DshPinnedInstaller {
         Files.createDirectories(prefix);
         Path log = prefix.resolve("install.log");
         String nodeVersion = execute(List.of("node", "--version"), prefix, log, Duration.ofSeconds(10)).trim();
-        if (!nodeVersion.matches("v22\\..*")) throw new IllegalStateException("dsh.node_version_unverified: Node.js 22 is required");
+        requireNodeVersion(version, nodeVersion);
         // npm ci verifies every tarball against the reviewed lock before lifecycle execution.
         try (var input = new ClassPathResource("dsh/locks/" + version + ".json").getInputStream()) {
             Files.copy(input, prefix.resolve("package-lock.json"));
@@ -60,7 +62,8 @@ public class DshPinnedInstaller {
             throw new IllegalStateException("dsh.catalog_integrity_mismatch");
         }
         mapper.writeValue(prefix.resolve("package.json").toFile(), Map.of("name", "mateclaw-dsh-runtime",
-                "version", "1.0.0", "private", true, "dependencies", Map.of("@deepseek-ai/dsh", version)));
+                "version", "1.0.0", "private", true, "dependencies", Map.of("@deepseek-ai/dsh", version),
+                "allowScripts", installScripts(trusted.path("packages"))));
         execute(List.of("npm", "ci", "--prefix", prefix.toString(), "--registry=https://registry.npmjs.org",
                 "--no-audit", "--no-fund"), prefix, log, Duration.ofMinutes(5));
         JsonNode lock = mapper.readTree(prefix.resolve("package-lock.json").toFile());
@@ -72,7 +75,47 @@ public class DshPinnedInstaller {
         if (!Files.isExecutable(executable)) throw new IllegalStateException("dsh.executable_missing");
         JsonNode packageJson = mapper.readTree(prefix.resolve("node_modules/@deepseek-ai/dsh/package.json").toFile());
         if (!version.equals(packageJson.path("version").asText())) throw new IllegalStateException("dsh.package_version_mismatch");
-        return new Installation(version, platform, executable.toString(), release.integrity());
+        return new Installation(version, platform, managedExecutable(prefix, version).toString(), release.integrity());
+    }
+
+    /** npm's script policy is scoped to packages with scripts in the reviewed lock. */
+    static Map<String, Boolean> installScripts(JsonNode packages) {
+        Map<String, Boolean> scripts = new java.util.TreeMap<>();
+        packages.fields().forEachRemaining(entry -> {
+            if (entry.getValue().path("hasInstallScript").asBoolean(false)) {
+                String path = entry.getKey();
+                int index = path.lastIndexOf("node_modules/");
+                if (index >= 0) scripts.put(path.substring(index + "node_modules/".length()), true);
+            }
+        });
+        return scripts;
+    }
+
+    /** Only reviewed LTS majors; newer upstream engines do not certify untested majors. */
+    static void requireNodeVersion(String version, String node) {
+        release(version);
+        var match = java.util.regex.Pattern.compile("v(22|24)\\.([0-9]+)\\.([0-9]+)").matcher(node);
+        boolean valid = match.matches();
+        if (valid && "0.2.2-rc.1".equals(version)) {
+            valid = "24".equals(match.group(1)) && Long.parseLong(match.group(2)) >= 9;
+        }
+        if (!valid) throw new IllegalStateException("dsh.node_version_unverified: " + version
+                + ("0.2.2-rc.1".equals(version) ? " requires Node.js 24.9+ (24.x)" : " requires Node.js 22.x or 24.x"));
+    }
+
+    /** Keep the package untouched; a generation-owned launcher supplies reviewed defaults. */
+    static Path managedExecutable(Path prefix, String version) throws IOException {
+        Path upstream = prefix.resolve("node_modules/.bin/dsh");
+        if (!"0.2.2-rc.1".equals(version)) return upstream;
+        try (var input = new ClassPathResource("dsh/mateclaw-sdk.patch.yml").getInputStream()) {
+            Files.copy(input, prefix.resolve("mateclaw-sdk.patch.yml"));
+        }
+        Path executable = Files.createDirectories(prefix.resolve("bin")).resolve("dsh");
+        try (var input = new ClassPathResource("dsh/mateclaw-sdk-launcher.sh").getInputStream()) {
+            Files.copy(input, executable);
+        }
+        if (!executable.toFile().setExecutable(true, true)) throw new IOException("dsh.executable_unavailable");
+        return executable;
     }
 
     private static String execute(List<String> argv, Path cwd, Path log, Duration timeout) throws Exception {

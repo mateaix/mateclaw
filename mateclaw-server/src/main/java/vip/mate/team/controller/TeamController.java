@@ -13,6 +13,7 @@ import vip.mate.common.result.R;
 import vip.mate.team.model.AgentTeamEntity;
 import vip.mate.team.model.AgentTeamMemberEntity;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import vip.mate.channel.web.Utf8SseEmitter;
 import vip.mate.team.model.TeamTaskCommentEntity;
 import vip.mate.team.model.TeamTaskCreateCommand;
 import vip.mate.team.model.TeamTaskEntity;
@@ -347,7 +348,7 @@ public class TeamController {
     public SseEmitter events(@PathVariable Long id,
                              @RequestHeader(value = "Last-Event-ID", required = false) Long lastEventId) {
         requireTeam(id);
-        SseEmitter emitter = new SseEmitter(0L);
+        SseEmitter emitter = new Utf8SseEmitter(0L);
         // A fresh subscription is an activity ticker, not a transcript: skip
         // the ring-buffer replay (stale events would render as breaking news)
         // and deliver live events only. A reconnect carrying Last-Event-ID

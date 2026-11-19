@@ -39,6 +39,34 @@ describe('useChat stop fallback', () => {
     vi.useRealTimers()
   })
 
+  it('preserves incomplete finish metadata live and reports incomplete to title consumers', async () => {
+    const onStreamEnd = vi.fn()
+    const chat = useChat({ baseUrl: '', onStreamEnd })
+    await chat.sendMessage('explain', { conversationId: 'conv-limited', agentId: 'agent-1' })
+    streamMock.handlers.get('content_delta')?.forEach(handler => handler({ delta: 'partial answer' }))
+    streamMock.handlers.get('finish_reason')?.forEach(handler => handler({ reason: 'incomplete' }))
+    streamMock.handlers.get('done')?.forEach(handler => handler({ status: 'completed', conversationId: 'conv-limited' }))
+    expect(chat.messages.value.at(-1)?.metadata?.finishReason).toBe('incomplete')
+    expect(onStreamEnd).toHaveBeenCalledWith(expect.objectContaining({ reason: 'incomplete' }))
+  })
+
+  it('recovers incomplete metadata from done when the live finish event was missed', async () => {
+    const onStreamEnd = vi.fn()
+    const chat = useChat({ baseUrl: '', onStreamEnd })
+    await chat.sendMessage('explain', { conversationId: 'conv-limited', agentId: 'agent-1' })
+    streamMock.handlers.get('done')?.forEach(handler => handler({ status: 'completed', conversationId: 'conv-limited', finishReason: 'incomplete' }))
+    expect(chat.messages.value.at(-1)?.metadata?.finishReason).toBe('incomplete')
+    expect(onStreamEnd).toHaveBeenCalledWith(expect.objectContaining({ reason: 'incomplete' }))
+  })
+
+  it('keeps explicit stop ahead of incomplete metadata', async () => {
+    const onStreamEnd = vi.fn()
+    const chat = useChat({ baseUrl: '', onStreamEnd })
+    await chat.sendMessage('explain', { conversationId: 'conv-limited', agentId: 'agent-1' })
+    streamMock.handlers.get('done')?.forEach(handler => handler({ status: 'stopped', conversationId: 'conv-limited', finishReason: 'incomplete' }))
+    expect(onStreamEnd).toHaveBeenCalledWith(expect.objectContaining({ reason: 'stopped' }))
+  })
+
   it('leaves interrupting and freezes running segments when done never arrives', async () => {
     const onStreamEnd = vi.fn()
     const chat = useChat({ baseUrl: '', onStreamEnd })

@@ -232,7 +232,11 @@ public class ConversationService {
                         .isNull(ConversationEntity::getConversationKind)
                         .or()
                         .ne(ConversationEntity::getConversationKind, "team_worker"))
-                .notLikeRight(ConversationEntity::getConversationId, "team-task-");
+                .notLikeRight(ConversationEntity::getConversationId, "team-task-")
+                // A deleted parent can leave an empty delegated placeholder behind.
+                // Preserve independent access to detached children with actual messages.
+                .and(child -> child.notLikeRight(ConversationEntity::getConversationId, "child-")
+                        .or().gt(ConversationEntity::getMessageCount, 0));
     }
 
     /**

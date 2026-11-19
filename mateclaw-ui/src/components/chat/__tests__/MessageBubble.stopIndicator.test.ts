@@ -1,4 +1,4 @@
-import { createApp, defineComponent, h } from 'vue'
+import { computed, createApp, defineComponent, h } from 'vue'
 import { createI18n } from 'vue-i18n'
 import { createPinia } from 'pinia'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -7,8 +7,8 @@ import zhCN from '@/i18n/locales/zh-CN'
 import enUS from '@/i18n/locales/en-US'
 
 vi.mock('@/composables/useStreamingMarkdown', () => ({
-  useStreamingMarkdown: (content: unknown) => ({
-    renderedContent: content,
+  useStreamingMarkdown: (content: () => string) => ({
+    html: computed(content),
     copyCode: vi.fn(),
   }),
 }))
@@ -78,6 +78,8 @@ function mountMessage(message: Message, locale = 'zh-CN') {
         chat: {
           incompleteTitle: zhCN.chat.incompleteTitle,
           incompleteDescription: zhCN.chat.incompleteDescription,
+          iterationLimitTitle: zhCN.chat.iterationLimitTitle,
+          iterationLimitDescription: zhCN.chat.iterationLimitDescription,
           stopped: '已被用户手动中止',
           interrupted: '已中断并继续处理下一条消息',
         },
@@ -86,6 +88,8 @@ function mountMessage(message: Message, locale = 'zh-CN') {
         chat: {
           incompleteTitle: enUS.chat.incompleteTitle,
           incompleteDescription: enUS.chat.incompleteDescription,
+          iterationLimitTitle: enUS.chat.iterationLimitTitle,
+          iterationLimitDescription: enUS.chat.iterationLimitDescription,
           stopped: 'Stopped manually by user',
           interrupted: 'Interrupted and continued with the next message',
         },
@@ -218,5 +222,48 @@ describe('MessageBubble incomplete answer (#660)', () => {
     expect(title).not.toMatch(/重复|repeated|repetition/i)
     expect(host.textContent).toContain('token')
     expect(host.querySelector('.incomplete-card__retry')).not.toBeNull()
+  })
+})
+
+describe('MessageBubble iteration limit (#674)', () => {
+  it.each(['zh-CN', 'en'])('explains the incomplete task and recovery options (%s)', locale => {
+    const host = mountMessage({ id: 'limit', conversationId: 'conv', role: 'assistant',
+      content: 'Partial answer', contentParts: [], status: 'completed',
+      metadata: { finishReason: 'max_iterations_reached' } } as Message, locale)
+
+    const card = host.querySelector('.iteration-limit-card')
+    expect(card).not.toBeNull()
+    expect(card!.textContent).toContain(locale === 'zh-CN' ? '任务尚未完成' : 'Task is incomplete')
+    expect(card!.textContent).toContain(locale === 'zh-CN' ? '最大迭代次数' : 'Max Iterations')
+    expect(host.textContent).toContain('Partial answer')
+    expect(host.querySelector('.incomplete-card__retry')).toBeNull()
+  })
+
+  it('renders the limit notice for segmented history with serialized metadata', () => {
+    const host = mountMessage({ id: 'history-limit', conversationId: 'conv', role: 'assistant',
+      content: '', contentParts: [], status: 'completed', metadata: JSON.stringify({
+        finishReason: 'max_iterations_reached',
+        segments: [
+          { id: 'tool', type: 'tool_call', toolName: 'search', status: 'completed', seq: 0 },
+          { id: 'content', type: 'content', text: 'Saved partial answer', status: 'completed', seq: 1 },
+        ],
+      }) } as Message)
+
+    expect(host.querySelector('.segments-view')).not.toBeNull()
+    expect(host.querySelector('.iteration-limit-card')).not.toBeNull()
+    expect(host.textContent).toContain('Saved partial answer')
+  })
+
+  it.each(['normal', 'incomplete', 'evidence_insufficient'])('does not show an iteration warning for %s', finishReason => {
+    const host = mountMessage({ id: 'other', conversationId: 'conv', role: 'assistant',
+      content: 'Answer', contentParts: [], status: 'completed', metadata: { finishReason } } as Message)
+    expect(host.querySelector('.iteration-limit-card')).toBeNull()
+  })
+
+  it('suppresses an intermediate limit notice while the goal is continuing', () => {
+    const host = mountMessage({ id: 'continuing', conversationId: 'conv', role: 'assistant',
+      content: 'Working', contentParts: [], status: 'generating',
+      metadata: { finishReason: 'max_iterations_reached' } } as Message)
+    expect(host.querySelector('.iteration-limit-card')).toBeNull()
   })
 })

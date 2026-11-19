@@ -417,16 +417,31 @@ public class TeamTaskService {
         return released;
     }
 
-    /** Manual retry of a failed/stale task: back to pending, owner and breaker reset. */
+    /** Human-requested retry only: explicitly grants a fresh dispatch budget. */
     public boolean retryTask(Long taskId) {
-        boolean retried = taskMapper.update(null, Wrappers.<TeamTaskEntity>lambdaUpdate()
+        return retryTask(taskId, true);
+    }
+
+    /** Lead retries share the original task's budget and retain failure feedback. */
+    public boolean retryTaskFromLead(Long taskId) {
+        return retryTask(taskId, false);
+    }
+
+    private boolean retryTask(Long taskId, boolean resetBudget) {
+        var update = Wrappers.<TeamTaskEntity>lambdaUpdate()
                 .eq(TeamTaskEntity::getId, taskId)
                 .in(TeamTaskEntity::getStatus, TeamTaskStatus.FAILED, TeamTaskStatus.STALE)
                 .set(TeamTaskEntity::getStatus, TeamTaskStatus.PENDING)
                 .set(TeamTaskEntity::getOwnerAgentId, null)
-                .set(TeamTaskEntity::getLockExpiresAt, null)
-                .set(TeamTaskEntity::getReason, null)
-                .set(TeamTaskEntity::getDispatchCount, 0)) == 1;
+                .set(TeamTaskEntity::getLockExpiresAt, null);
+        if (resetBudget) {
+            update.set(TeamTaskEntity::getReason, null).set(TeamTaskEntity::getDispatchCount, 0);
+        } else {
+            // Keep the cap in the same conditional UPDATE as the state transition;
+            // a read/check/write sequence would allow concurrent retries to race.
+            update.lt(TeamTaskEntity::getDispatchCount, MAX_DISPATCHES);
+        }
+        boolean retried = taskMapper.update(null, update) == 1;
         if (retried) {
             projectTask(taskId);
         }

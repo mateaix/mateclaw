@@ -376,12 +376,27 @@ public final class ActionExecutionLedger {
             }
         }
         for (Receipt receipt : successes.stream().skip(1).toList()) {
-            successful.add(projectedReceipt(receipt, false));
+            var output = projectedReceipt(receipt, false);
+            successful.add(output);
             facts.put("omittedSuccessfulSubstantiveCallCount", successes.size() - successful.size());
             if (vip.mate.agent.context.TokenEstimator.estimateTokens(facts.toString()) > tokenBudget) {
                 successful.remove(successful.size() - 1);
                 facts.put("omittedSuccessfulSubstantiveCallCount", successes.size() - successful.size());
                 break;
+            }
+            // Older successful calls can carry distinct facts (directory totals,
+            // earlier SQL aggregates). Do not discard their available evidence
+            // merely because a later filtered lookup returned a smaller result.
+            String full = retainedResults == null ? null : retainedResults.get(receipt.toolCallId());
+            if (receipt.resultChars() > MAX_RESULT_SUMMARY_CHARS && full != null
+                    && full.length() == receipt.resultChars()
+                    && full.startsWith(receipt.resultSummary().substring(0, MAX_RESULT_SUMMARY_CHARS))) {
+                var preview = output.deepCopy();
+                output.put("resultSummary", full);
+                output.put("resultComplete", true);
+                output.put("omittedResultChars", 0);
+                if (vip.mate.agent.context.TokenEstimator.estimateTokens(facts.toString()) > tokenBudget)
+                    successful.set(successful.size() - 1, preview);
             }
         }
         return new FactsProjection(facts.toString(), true);

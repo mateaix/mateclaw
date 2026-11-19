@@ -15,6 +15,7 @@ import org.springframework.stereotype.Component;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -28,7 +29,8 @@ import java.util.regex.Pattern;
  * <p>Convention: each ATX H1 ({@code # Sheet Name}) starts a new sheet. The
  * pipe-style table that follows becomes the sheet body. The first table row
  * is treated as the header (bold, light-grey fill, frozen). Numeric-looking
- * cells are stored as numbers; everything else is stored as a string.
+ * cells are stored as numbers — except when doing so would change the text the
+ * user sees; see {@link #isStorableNumber(String)}.
  *
  * <p>Markdown without an explicit {@code # heading} produces a single sheet
  * named {@code Sheet1}. Markdown without any {@code | table |} rows produces
@@ -38,15 +40,23 @@ import java.util.regex.Pattern;
 @Component
 public class MarkdownXlsxRenderer {
 
-    /** Detects the markdown table separator row, e.g. {@code | --- | :---: |}. */
+    /** Detects the separator row of a multi-column table. */
     private static final Pattern TABLE_SEPARATOR =
             Pattern.compile("^\\s*\\|?\\s*:?-{3,}:?\\s*(\\|\\s*:?-{3,}:?\\s*)+\\|?\\s*$");
+
+    private static final Pattern SINGLE_COLUMN_SEPARATOR =
+            Pattern.compile("^\\s*\\|?\\s*:?-{3,}:?\\s*\\|?\\s*$");
 
     /** Detects a sheet boundary {@code # Sheet Name}. ## / ### are NOT boundaries. */
     private static final Pattern SHEET_BOUNDARY = Pattern.compile("^#\\s+(.+)$");
 
     /** Cells that look like numbers (optional sign, digits, optional decimal). */
     private static final Pattern NUMERIC = Pattern.compile("^-?\\d+(\\.\\d+)?$");
+
+    /**
+     * Excel keeps at most 15 significant decimal digits.
+     */
+    private static final int MAX_EXCEL_DIGITS = 15;
 
     public byte[] render(String markdown) throws IOException {
         if (markdown == null) markdown = "";
@@ -85,8 +95,9 @@ public class MarkdownXlsxRenderer {
         String currentName = null;
         List<List<String>> currentRows = new ArrayList<>();
 
-        for (String rawLine : markdown.split("\\R", -1)) {
-            String line = rawLine.strip();
+        String[] lines = markdown.split("\\R", -1);
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i].strip();
             if (line.isEmpty()) continue;
 
             var sheetMatch = SHEET_BOUNDARY.matcher(line);
@@ -113,6 +124,12 @@ public class MarkdownXlsxRenderer {
                 List<String> cells = splitTableRow(line);
                 if (!cells.isEmpty()) {
                     currentRows.add(cells);
+                    // Only the line immediately after the single-column header
+                    // can be its separator. Dash-only body cells are data.
+                    if (currentRows.size() == 1 && cells.size() == 1 && i + 1 < lines.length
+                            && SINGLE_COLUMN_SEPARATOR.matcher(lines[i + 1]).matches()) {
+                        i++;
+                    }
                 }
             }
             // Other content (paragraphs, sub-headings) is intentionally ignored —
@@ -125,14 +142,76 @@ public class MarkdownXlsxRenderer {
         return sheets;
     }
 
+    /**
+     * Split a pipe-table row into cells, honouring GFM's pipe escape.
+     *
+     * <p>A pipe that belongs to a cell is written {@code \|} — it is content,
+     * not a column boundary, so a row like {@code | a \| b | x |} has two
+     * cells. Splitting on every pipe produced three: the backslash stayed in
+     * the text and everything after it moved one column to the right, which in
+     * the sheet means the values sat under the wrong header without any error.
+     */
     private List<String> splitTableRow(String line) {
-        String trimmed = line.strip();
-        if (trimmed.startsWith("|")) trimmed = trimmed.substring(1);
-        if (trimmed.endsWith("|")) trimmed = trimmed.substring(0, trimmed.length() - 1);
-        String[] parts = trimmed.split("\\|", -1);
-        List<String> cells = new ArrayList<>(parts.length);
-        for (String p : parts) cells.add(p.strip());
+        List<String> cells = new ArrayList<>();
+        StringBuilder cell = new StringBuilder();
+
+        int end = line.length();
+        while (end > 0 && Character.isWhitespace(line.charAt(end - 1))) end--;
+        // The trailing boundary pipe is not part of the last cell, but an
+        // escaped one (…\|) is content.
+        if (end > 0 && line.charAt(end - 1) == '|'
+                && (end == 1 || line.charAt(end - 2) != '\\')) {
+            end--;
+        }
+
+        int start = 0;
+        while (start < end && Character.isWhitespace(line.charAt(start))) start++;
+        if (start < end && line.charAt(start) == '|') start++;
+
+        for (int i = start; i < end; i++) {
+            char ch = line.charAt(i);
+            if (ch == '\\' && i + 1 < end && line.charAt(i + 1) == '|') {
+                cell.append('|');
+                i++;
+            } else if (ch == '|') {
+                cells.add(cell.toString().strip());
+                cell.setLength(0);
+            } else {
+                cell.append(ch);
+            }
+        }
+        cells.add(cell.toString().strip());
         return cells;
+    }
+
+    /**
+     * Whether the cell text can be written as an Excel number without changing
+     * what the reader sees.
+     *
+     * <p>Excel numbers cannot hold a leading zero ({@code 007} comes back as
+     * {@code 7}) and are IEEE-754 doubles, so an integer wider than 15 digits
+     * loses its tail (a 19-digit order number is displayed as
+     * {@code 1.23457E+20}). Both shapes are identifiers in practice: part
+     * numbers, batch codes, order numbers, phone numbers. So they stay text.
+     * Decimals also stay text if they exceed Excel's significant-digit limit
+     * or fall below its nonzero range.
+     */
+    static boolean isStorableNumber(String value) {
+        if (value == null || !NUMERIC.matcher(value).matches()) {
+            return false;
+        }
+        String digits = value.startsWith("-") ? value.substring(1) : value;
+        int dot = digits.indexOf('.');
+        String integerPart = dot < 0 ? digits : digits.substring(0, dot);
+        if (integerPart.length() > 1 && integerPart.charAt(0) == '0') {
+            return false;
+        }
+        if (integerPart.length() > MAX_EXCEL_DIGITS) {
+            return false;
+        }
+        BigDecimal decimal = new BigDecimal(value).stripTrailingZeros();
+        return decimal.precision() <= MAX_EXCEL_DIGITS
+                && (decimal.signum() == 0 || Math.abs(decimal.doubleValue()) >= Double.MIN_NORMAL);
     }
 
     private void writeSheetBody(Sheet sheet, List<List<String>> rows, CellStyle headerStyle) {
@@ -145,7 +224,7 @@ public class MarkdownXlsxRenderer {
             for (int c = 0; c < rowData.size(); c++) {
                 Cell cell = row.createCell(c);
                 String value = rowData.get(c);
-                if (NUMERIC.matcher(value).matches()) {
+                if (isStorableNumber(value)) {
                     cell.setCellValue(Double.parseDouble(value));
                 } else {
                     cell.setCellValue(value);

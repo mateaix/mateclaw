@@ -9,6 +9,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -52,10 +53,21 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             // RFC-03 Lane I1: prefix-based dispatch — PAT plaintext is observably
             // "mc_*", JWTs always start with "eyJ" (header b64). Cheap O(1) check
             // before the heavier work of parsing the token.
-            if (token.startsWith(PersonalAccessTokenService.PAT_PREFIX)) {
-                authenticateWithPat(token);
-            } else {
-                authenticateWithJwt(token, response);
+            try {
+                if (token.startsWith(PersonalAccessTokenService.PAT_PREFIX)) {
+                    authenticateWithPat(token);
+                } else {
+                    authenticateWithJwt(token, response);
+                }
+            } catch (DataAccessException e) {
+                // A failed identity lookup is not an invalid token. Returning 401
+                // here makes clients discard a valid session during a DB outage.
+                SecurityContextHolder.clearContext();
+                logger.error("Authentication database unavailable", e);
+                response.setStatus(HttpServletResponse.SC_SERVICE_UNAVAILABLE);
+                response.setContentType("application/json;charset=UTF-8");
+                response.getWriter().write("{\"code\":503,\"msg\":\"Authentication service temporarily unavailable. Please try again later.\",\"data\":null}");
+                return;
             }
         }
         filterChain.doFilter(request, response);
@@ -82,6 +94,8 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             auth.setDetails(user.getId());   // immutable user id for on-behalf-of forwarding
             SecurityContextHolder.getContext().setAuthentication(auth);
             patService.recordUse(pat); // debounced inside the service
+        } catch (DataAccessException e) {
+            throw e;
         } catch (Exception ignored) {
             // Anonymous fall-through — same behavior as JWT parse failure.
         }
@@ -116,6 +130,8 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                     response.setHeader("Access-Control-Expose-Headers", "X-New-Token");
                 }
             }
+        } catch (DataAccessException e) {
+            throw e;
         } catch (Exception ignored) {
             // Token 解析失败，继续匿名访问
         }

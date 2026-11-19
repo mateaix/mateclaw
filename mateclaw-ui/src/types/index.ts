@@ -307,6 +307,8 @@ export interface GeneratedFile {
 }
 
 export interface MessageMetadata {
+  /** Canonical graph outcome, preserved in live SSE and persisted history. */
+  finishReason?: string
   /** Internal note discriminator, e.g. 'compression_summary' | 'team_announce' | 'team_announce_reply' */
   type?: string
   /** type=team_announce: number of settled team tasks carried by this note */
@@ -551,6 +553,8 @@ export interface InstallRequest {
 }
 
 export interface InstallTask {
+  /** Cancellation is no longer safe once filesystem/DB writes start. */
+  cancellable?: boolean
   taskId: string
   bundleUrl: string
   status: 'PENDING' | 'INSTALLING' | 'COMPLETED' | 'FAILED' | 'CANCELLED'

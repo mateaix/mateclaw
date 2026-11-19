@@ -115,7 +115,7 @@
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="item in data.byDate" :key="item.date">
+                  <tr v-for="item in sortedDateUsage" :key="item.date">
                     <td>{{ item.date }}</td>
                     <td class="num-col">{{ formatNumber(item.promptTokens) }}</td>
                     <td class="num-col">{{ formatNumber(item.completionTokens) }}</td>
@@ -132,7 +132,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { mcToast } from '@/composables/useMcToast'
 import { tokenUsageApi } from '@/api/index'
@@ -142,6 +142,9 @@ const { t } = useI18n()
 const loading = ref(false)
 const error = ref<string | null>(null)
 const data = ref<TokenUsageSummary | null>(null)
+const sortedDateUsage = computed(() =>
+  [...(data.value?.byDate ?? [])].sort((a, b) => b.date.localeCompare(a.date)),
+)
 
 const today = new Date()
 const thirtyDaysAgo = new Date(today)

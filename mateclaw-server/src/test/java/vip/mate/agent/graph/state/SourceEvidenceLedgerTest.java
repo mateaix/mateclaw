@@ -188,7 +188,7 @@ class SourceEvidenceLedgerTest {
                 Use the package manager [2].
 
                 来源：
-                [2] Install Guide
+                [2] Invented Guide
                 """);
         assertFalse(unsupportedMarker.valid());
         assertTrue(unsupportedMarker.unsupportedReferences().contains("wiki citation [2]"));
@@ -311,4 +311,47 @@ class SourceEvidenceLedgerTest {
         assertFalse(ledger.hasWikiEvidence());
         assertTrue(ledger.validateAnswer("The release is on track.").valid());
     }
+    @Test void separateWikiReadsRetainAllSourcesAndAcceptGroundedAnswerNumbering() {
+        var ledger=SourceEvidenceLedger.fromToolResponses(List.of(
+                new ToolResponseMessage.ToolResponse("a","wiki_read_page","{\"title\":\"Annual leave\"}"),
+                new ToolResponseMessage.ToolResponse("b","wiki_read_page","{\"title\":\"Travel policy\"}")));
+        assertEquals(2,ledger.wikiCitations().size());
+        String answer="Leave is 15 days [2]. Hotel limit is 680 [1].\n\n来源：\n[1] Travel policy\n[2] Annual leave";
+        String rendered=ledger.appendWikiSourceTable(answer);
+        assertTrue(ledger.validateAnswer(rendered).valid());
+        assertTrue(rendered.contains("[1] Travel policy"));
+        assertTrue(rendered.contains("[2] Annual leave"));
+        String table="Leave [2], travel [1].\n\n| 编号 | 来源 |\n|---|---|\n| [1] | Travel policy |\n| [2] | Annual leave |";
+        String renderedTable=ledger.appendWikiSourceTable(table);
+        assertTrue(ledger.validateAnswer(renderedTable).valid());
+        assertTrue(renderedTable.contains("\n[1] Travel policy"));
+        assertTrue(renderedTable.contains("\n[2] Annual leave"));
+        assertFalse(ledger.validateAnswer("Claim [3].\n[3] Invented page").valid());
+        assertFalse(ledger.validateAnswer(ledger.appendWikiSourceTable("Claim [1].\n[1] Invented page")).valid());
+    }
+    @Test void mergingRepeatedWikiSourcesDoesNotOverwriteOrMultiplyThem() {
+        var first=SourceEvidenceLedger.fromToolResponses(List.of(new ToolResponseMessage.ToolResponse("a","wiki_read_page","{\"title\":\"Annual leave\"}")));
+        var second=SourceEvidenceLedger.fromToolResponses(List.of(new ToolResponseMessage.ToolResponse("b","wiki_read_page","{\"title\":\"Travel policy\"}")));
+        var merged=first.merge(second).merge(first);
+        assertEquals(2,merged.wikiCitations().size());
+        assertTrue(merged.validateAnswer(merged.appendWikiSourceTable("Leave [1], travel [2].")).valid());
+    }
+
+    @Test void overlappingWikiTitlesMustNotBeRewrittenToTheShorterTitle() {
+        var ledger=SourceEvidenceLedger.fromToolResponses(List.of(
+                new ToolResponseMessage.ToolResponse("a","wiki_read_page","{\"title\":\"Leave\"}"),
+                new ToolResponseMessage.ToolResponse("b","wiki_read_page","{\"title\":\"Leave policy\"}")));
+        String answer=ledger.appendWikiSourceTable("Policy [2].\n\n来源：\n[2] Leave policy");
+        assertTrue(answer.contains("[2] Leave policy"));
+        assertFalse(answer.contains("[2] Leave\n"));
+    }
+    @Test void samePageTitleDoesNotInventASectionForAnAmbiguousCitation() {
+        var ledger=SourceEvidenceLedger.fromToolResponses(List.of(
+                new ToolResponseMessage.ToolResponse("a","wiki_semantic_search","{\"chunks\":[{\"index\":1,\"chunkId\":101,\"title\":\"Handbook\",\"section\":\"Leave\"},{\"index\":2,\"chunkId\":102,\"title\":\"Handbook\",\"section\":\"Travel\"}]}")));
+        String answer=ledger.appendWikiSourceTable("Policy [1].\n\n来源：\n[1] Handbook");
+        assertFalse(answer.contains("Handbook - Leave"));
+        assertFalse(answer.contains("Handbook - Travel"));
+        assertTrue(ledger.validateAnswer(answer).valid());
+    }
+
 }

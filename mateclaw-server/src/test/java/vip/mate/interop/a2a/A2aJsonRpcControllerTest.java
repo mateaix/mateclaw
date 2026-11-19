@@ -48,6 +48,27 @@ class A2aJsonRpcControllerTest {
     }
 
     @Test
+    void streamingResponsesDisableProxyBufferingAndKeepUtf8Events() throws Exception {
+        when(bridge.executeBlocking(any())).thenReturn(new A2aExecutionBridge.ExecutionResult("你好", true));
+        String body = """
+                {"jsonrpc":"2.0","id":"stream-headers","method":"message/stream","params":{
+                  "message":{"messageId":"msg-stream","taskId":"task-stream","parts":[{"kind":"text","text":"hi"}],
+                  "metadata":{"skillId":"1"}}
+                }}
+                """;
+        var result = mvc.perform(post("/api/a2a").contentType("application/json").principal(auth()).content(body))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.request().asyncStarted()).andReturn();
+        result.getAsyncResult(2000);
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch(result))
+                .andExpect(status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header().string("X-Accel-Buffering", "no"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header().string("Cache-Control", "no-store, no-transform"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.content().contentType("text/event-stream;charset=UTF-8"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.content().string(org.hamcrest.Matchers.containsString("你好")))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.content().string(org.hamcrest.Matchers.containsString("event:status-update")));
+    }
+
+    @Test
     void rejectsBooleanJsonRpcId() throws Exception {
         mvc.perform(post("/api/a2a")
                         .contentType("application/json")

@@ -53,7 +53,7 @@ class DatasourceToolIdPrecisionTest {
         when(service.listEnabled()).thenReturn(List.of(ds));
         DatasourceTool tool = new DatasourceTool(service, mock(DatasourceConnectionManager.class), idSafeMapper());
 
-        String out = tool.query_datasource("list_datasources", null, null);
+        String out = tool.query_datasource("list_datasources", null, null, null);
 
         assertTrue(out.contains("\"" + bigId + "\""),
                 "id must appear as a quoted string so its 19 digits survive the round-trip; got: " + out);

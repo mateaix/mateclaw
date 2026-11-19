@@ -19,13 +19,13 @@ hero:
       text: GitHub
       link: https://github.com/mateaix/mateclaw
     - theme: alt
-      text: 3.0.0 正式版更新说明
-      link: /zh/releases/3.0.0
+      text: 3.1.0 更新说明
+      link: /zh/releases/3.1.0
 
 features:
   - icon: ⚙️
-    title: 3.0.0 — 执行架构升级
-    details: 3.0.0 升级到 Java 21、Spring Boot 4 和 Spring AI 2，AgentScope 2 驱动 ReAct 与计划单步执行循环。工具审批、权限、Goal、SSE 与持久化继续由 MateClaw 统一治理。 正式版发布日期为 2026-10-26，安装包以 Releases 为准。
+    title: 3.1.0 — 技能治理与执行可靠性
+    details: 逐条撤回技能经验、恢复前预览影响、精确编辑记忆并引用回答追问。上下文、媒体请求、工具结果、Wiki 引用与渠道投递更可靠。当前依赖为 Boot 4.1.2、Spring AI 2.0.2 与 AgentScope 2.0.5。
   - icon: ✅
     title: 2.3.0 — 托管 JSON 验收
     details: 用户指定顶层必需字段，服务端把检查绑定到当前要求与不可变 JSON 版本。默认观察模式的执行证据用于追踪；普通产物诊断不代替验收绑定。

@@ -67,6 +67,11 @@ class DshImageSmokeTest {
                 Files.copy(input, lock);
             }
         }
+        for (String resource : List.of("mateclaw-sdk.patch.yml", "mateclaw-sdk-launcher.sh")) {
+            try (var input = getClass().getResourceAsStream("/dsh/" + resource)) {
+                assertNotNull(input); Files.copy(input, classes.resolve("dsh/" + resource));
+            }
+        }
         try (var input = getClass().getResourceAsStream("/dsh/image-bash-smoke.mjs")) {
             assertNotNull(input);
             Files.copy(input, temp.resolve("bash-smoke.mjs"));
@@ -76,7 +81,7 @@ class DshImageSmokeTest {
                 "--env", "CHECK_DSH_BASH=" + checkBash,
                 "--volume", temp.toAbsolutePath() + ":/checks:ro", "--entrypoint", "bash",
                 System.getenv("MATECLAW_DSH_IMAGE_SMOKE"), "-ec", """
-                node -e 'if (process.versions.node.split(".")[0] !== "22") throw Error("Node 22 required")'
+                node -e 'if (process.versions.node.split(".")[0] !== "24") throw Error("Node 24 required")'
                 npm --version
                 command -v bwrap
                 # Docker may deny user namespaces. Require a working dsh sandbox below.
@@ -86,7 +91,7 @@ class DshImageSmokeTest {
                 else
                   echo 'DSH_BWRAP_RESTRICTED: host namespace permissions required for bwrap'
                 fi
-                for version in 0.2.0-rc.1 0.2.1-rc.2; do
+                for version in 0.2.0-rc.1 0.2.1-rc.2 0.2.2-rc.1; do
                 java -cp '/checks/classes:/checks/libs/*' \
                   'vip.mate.agent.runtime.dsh.management.DshImageSmokeTest$InstallerMain' "$version"
                 if [ "$CHECK_DSH_BASH" = true ]; then

@@ -10,6 +10,7 @@ import org.springframework.ai.chat.messages.UserMessage;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import vip.mate.agent.AgentService;
+import vip.mate.agent.StreamUsageSnapshot;
 import vip.mate.agent.AgentState;
 import vip.mate.agent.BaseAgent;
 import vip.mate.agent.delegation.DelegatedUsageAccumulator;
@@ -240,6 +241,7 @@ public class StateGraphPlanExecuteAgent extends BaseAgent implements StructuredS
                     finalReasoningTokens.set(output.state().value(MateClawStateKeys.REASONING_TOKENS, 0));
                     finalModelName.set(output.state().value(MateClawStateKeys.RUNTIME_MODEL_NAME, ""));
                     finalProviderId.set(output.state().value(MateClawStateKeys.RUNTIME_PROVIDER_ID, ""));
+                    deltas.add(0, StreamUsageSnapshot.from(output.state()));
 
                     return deltas;
                 })

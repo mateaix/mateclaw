@@ -25,7 +25,9 @@ import java.util.List;
  * runs {@code npm install docx} on first use (3-5 minutes). For "create new
  * document" intents that subprocess is wholly unnecessary; this tool produces
  * the bytes in the JVM, stashes them in {@link GeneratedFileCache}, and
- * returns a Markdown link the user can click to download.
+ * returns a Markdown link the user can click to download. The result stays
+ * in the tool loop so the model can summarize the document and any remaining
+ * work before replying to the user, as with the other document render tools.
  *
  * <p>The skill workflow is still authoritative for editing existing .docx,
  * tracked changes, and other XML-level operations.
@@ -41,7 +43,7 @@ public class DocxRenderTool {
     private final MarkdownDocxRenderer renderer;
     private final GeneratedFileCache cache;
 
-    @Tool(returnDirect = true, description = """
+    @Tool(description = """
         Render a new .docx (Microsoft Word) file from Markdown text and return a
         one-time download URL. Use for creating EDITABLE Word documents the user
         will continue to revise — reports, memos, contracts, letters, resumes.
@@ -108,7 +110,7 @@ public class DocxRenderTool {
      * the markdown locally → calls this tool with the file path → docx is
      * rendered from disk in one IO call. Token cost ≈ 50 (just the path).
      */
-    @Tool(returnDirect = true, description = """
+    @Tool(description = """
         Render a .docx (Microsoft Word) file from a markdown FILE on disk and return
         a one-time download URL. Use this for EDITABLE Word documents only.
 
@@ -175,7 +177,7 @@ public class DocxRenderTool {
      * Empty / missing files abort the render with a clear error so the agent
      * can fix its file list before retrying.
      */
-    @Tool(returnDirect = true, description = """
+    @Tool(description = """
         Render a .docx by concatenating MULTIPLE markdown files in order and return a
         download URL. Use when a report is split into chapters / sections, or when the
         agent assembled the document piece by piece (cover, table of contents, body,

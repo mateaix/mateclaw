@@ -224,6 +224,38 @@ class WikiEntityExtractionServiceTest {
         verify(entityMapper, times(0)).insert(any(WikiEntityEntity.class));
     }
 
+    @Test
+    @DisplayName("extractForRaw(force): re-extracts processed chunks and prunes orphans")
+    void extractForRaw_forceReextractsAndPrunes() {
+        when(chunkService.listByRawId(RAW_ID)).thenReturn(List.of(chunk(1L, "Alice works at Acme.")));
+        when(mentionMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+        when(mentionMapper.selectList(any())).thenReturn(Collections.emptyList());
+
+        int touched = service.extractForRaw(KB_ID, RAW_ID, true);
+
+        assertEquals(2, touched);
+        verify(mentionMapper, times(1)).delete(any());
+        verify(mentionMapper, times(2)).insert(any(WikiEntityMentionEntity.class));
+        // Orphan sweep runs after a successful forced rebuild.
+        verify(entityMapper, times(2)).selectList(any());
+    }
+
+    @Test
+    @DisplayName("extractForRaw(force): model failure keeps the existing graph")
+    void extractForRaw_forceWithoutResultKeepsGraph() {
+        when(chunkService.listByRawId(RAW_ID)).thenReturn(List.of(chunk(1L, "Alice works at Acme.")));
+        when(mentionMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+        ChatModel failing = failingModel();
+        when(routingService.buildChatModel(7L)).thenReturn(failing);
+
+        int touched = service.extractForRaw(KB_ID, RAW_ID, true);
+
+        assertEquals(0, touched);
+        verify(mentionMapper, times(0)).delete(any());
+        verify(relationMapper, times(0)).delete(any());
+        verify(entityMapper, times(0)).delete(any());
+    }
+
     private WikiChunkEntity chunk(Long id, String content) {
         WikiChunkEntity c = new WikiChunkEntity();
         c.setId(id);
@@ -231,6 +263,12 @@ class WikiEntityExtractionServiceTest {
         c.setRawId(RAW_ID);
         c.setContent(content);
         return c;
+    }
+
+    private ChatModel failingModel() {
+        ChatModel model = mock(ChatModel.class);
+        when(model.call(any(Prompt.class))).thenThrow(new IllegalStateException("model unavailable"));
+        return model;
     }
 
     private ChatModel cannedModel(String body) {

@@ -1,6 +1,10 @@
 package vip.mate.workspace.conversation;
 
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -42,6 +46,12 @@ class ConversationServiceRewindAndRegenerateTest {
     @Spy private ObjectMapper objectMapper = new ObjectMapper();
 
     @InjectMocks private ConversationService service;
+
+    @BeforeAll
+    static void initMessageTableMetadata() {
+        TableInfoHelper.initTableInfo(new MapperBuilderAssistant(new MybatisConfiguration(), ""),
+                MessageEntity.class);
+    }
 
     private static MessageEntity msg(long id, String role, String content) {
         MessageEntity m = new MessageEntity();

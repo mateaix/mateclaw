@@ -56,6 +56,17 @@ class DshDockerSupervisorTest {
                 .allMatch(r->r.path("argv").get(0).asText().equals("--host")&&r.path("argv").get(1).asText().equals("unix:///test/pinned.sock")));
         assertTrue(records.stream().anyMatch(r->r.path("argv").toString().contains("\"rm\"")&&r.path("argv").toString().contains(id)));
     }
+    @Test void managedCandidateLauncherResolvesItsExactPackageBeforeCheckingImage() throws Exception {
+        Path pkg=Files.createDirectories(root.resolve("sdk/node_modules/@deepseek-ai/dsh"));
+        Files.writeString(pkg.resolve("package.json"), "{\"name\":\"@deepseek-ai/dsh\",\"version\":\"0.2.2-rc.1\"}");
+        Files.writeString(root.resolve("sdk/package.json"), "{\"name\":\"mateclaw-dsh-runtime\",\"dependencies\":{\"@deepseek-ai/dsh\":\"0.2.2-rc.1\"}}");
+        Path bin=Files.createDirectories(root.resolve("sdk/bin"));
+        Path launcher=Files.writeString(bin.resolve("dsh"), "#!/bin/sh\nexit 99\n"); launcher.toFile().setExecutable(true);
+        var launch=new DshLaunchSpec(List.of(launcher.toString(),"--profile","sdk"),root.resolve("homes/w/a"),root);
+        var error=assertThrows(Exception.class,()->new DshProcessSupervisor("docker","/missing/docker","{\"0.2.2-rc.1\":\"runtime:latest\"}",new ObjectMapper()).start(launch,Map.of()));
+        assertEquals("DSH_DOCKER_IMMUTABLE_IMAGE_REQUIRED", error.getMessage());
+    }
+
     @Test void mutableImageTagIsRejectedBeforeDockerOrSdkStarts() throws Exception {
         Path pkg=Files.createDirectories(root.resolve("sdk"));
         Files.writeString(pkg.resolve("package.json"),"{\"name\":\"@deepseek-ai/dsh\",\"version\":\"0.2.1-rc.2\"}");

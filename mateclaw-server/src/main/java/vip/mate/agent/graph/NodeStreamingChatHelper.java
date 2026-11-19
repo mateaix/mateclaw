@@ -217,27 +217,6 @@ public class NodeStreamingChatHelper {
     }
 
     /**
-     * Record a single primary-model outcome to the health tracker. No-op when
-     * either the tracker bean isn't wired or the primary's providerId is
-     * unknown (e.g., tests, legacy callers built without the full constructor).
-     */
-    private void recordPrimary(boolean success) {
-        if (healthTracker == null || primaryProviderId == null) return;
-        if (success) healthTracker.recordSuccess(primaryProviderId);
-        else healthTracker.recordFailure(primaryProviderId);
-    }
-
-    /**
-     * Record a primary failure carrying a provider-stated retry window so the
-     * health tracker can start a cooldown of exactly that length. No-op under
-     * the same conditions as {@link #recordPrimary}.
-     */
-    private void recordPrimaryFailure(long cooldownOverrideMs) {
-        if (healthTracker == null || primaryProviderId == null) return;
-        healthTracker.recordFailure(primaryProviderId, cooldownOverrideMs);
-    }
-
-    /**
      * Map an {@link ErrorType} to the matching pool
      * {@link vip.mate.llm.failover.AvailableProviderPool.RemovalSource} for
      * provider-wide HARD failures (AUTH / BILLING). Returns {@code null} for
@@ -886,8 +865,8 @@ public class NodeStreamingChatHelper {
                     phase, primaryProviderId, reason);
             if (broadcast) {
                 broadcastDelta(conversationId, "warning",
-                        buildDeltaJson("主模型暂时不可用（" + (primaryOutOfPool ? "已下线" : "冷却中")
-                                + "），直接尝试备选模型..."));
+                        "主模型暂时不可用（" + (primaryOutOfPool ? "已下线" : "冷却中")
+                                + "），将尝试可用备选模型；如无可用模型请稍后重试。");
             }
         }
 
@@ -923,14 +902,12 @@ public class NodeStreamingChatHelper {
             }
             llmCallCount++;
             if (attempt > 0) retryCount++;
-            lastResult = doStreamCall(chatModel, prompt, conversationId, phase, publicationMode, attempt, true, retryType, retryHint);
+            lastResult = doStreamCall(chatModel, prompt, conversationId, phase, publicationMode, attempt, true, retryType, retryHint, primaryProviderId);
             if (lastResult == null || !lastResult.stopped()) throwIfCancelled(conversationId);
             if (lastResult != null) {
                 ErrorType errType = lastResult.errorType();
                 // Success — reaffirm health / pool membership and return.
                 if (lastResult.errorMessage() == null || errType == ErrorType.NONE) {
-                    recordPrimary(true);
-                    addToPool(primaryProviderId);
                     logPerfSummary(phase, conversationId, callStartMs, llmCallCount, retryCount, failoverCount);
                     return lastResult;
                 }
@@ -973,22 +950,9 @@ public class NodeStreamingChatHelper {
                     // surface to the caller instead of burning the chain.
                     return lastResult;
                 }
-                if (errType.countsHealth()) {
-                    // A rate-limit response carrying an explicit retry window
-                    // becomes a health-cooldown override: later turns skip the
-                    // provider until the stated instant instead of re-probing
-                    // it every ~5 minutes and re-collecting the same 429.
-                    Long hintMs = retryHint.get();
-                    if (errType == ErrorType.RATE_LIMIT && hintMs != null && hintMs > 0) {
-                        recordPrimaryFailure(hintMs);
-                    } else {
-                        recordPrimary(false);
-                    }
-                    healthRecorded = true;
-                }
-                if (errType.evictsProvider()) {
-                    removeFromPool(primaryProviderId, errType, lastResult.errorMessage());
-                }
+                // Outcome / pool state is published under the admission permit,
+                // before queued requests can pass their cooldown check.
+                healthRecorded = errType.countsHealth();
                 log.warn("[{}] Primary failed (type={}) — handing off to fallback chain", phase, errType);
                 break;
             }
@@ -1001,7 +965,7 @@ public class NodeStreamingChatHelper {
         // errors (MODEL_NOT_FOUND et al.) never dent provider health.
         if (!primarySkipped && !healthRecorded && lastResult != null
                 && isProviderLevelFailure(lastResult.errorType())) {
-            recordPrimary(false);
+            if (healthTracker != null) healthTracker.recordFailure(primaryProviderId);
         }
 
         // Primary exhausted retries — walk the fallback chain in priority order.
@@ -1034,13 +998,13 @@ public class NodeStreamingChatHelper {
                     fallback.getClass().getSimpleName(), conversationId);
             if (broadcast) {
                 broadcastDelta(conversationId, "warning",
-                        buildDeltaJson("主模型不可用，正在切换到备选模型 (" + (i + 1) + "/" + fallbackChain.size() + ")..."));
+                        "主模型不可用，正在切换到备选模型 (" + (i + 1) + "/" + fallbackChain.size() + ")...");
             }
             failoverCount++;
             llmCallCount++;
-            StreamResult fallbackResult = doStreamCall(fallback, prompt, conversationId,
+            StreamResult fallbackResult = doStreamCall(fallback, promptForFallback(prompt, fallback), conversationId,
                     phase + "_fallback_" + (i + 1), publicationMode, 0, false,
-                    new AtomicReference<>(), new AtomicReference<>(0L));
+                    new AtomicReference<>(), new AtomicReference<>(0L), entry.providerId());
             if (fallbackResult == null || !fallbackResult.stopped()) throwIfCancelled(conversationId);
             if (fallbackResult != null && fallbackResult.isPayloadTooLarge()) return fallbackResult;
             // Accept only fully successful fallbacks. Non-successful results (auth
@@ -1049,30 +1013,28 @@ public class NodeStreamingChatHelper {
             if (fallbackResult != null
                     && fallbackResult.errorType() == ErrorType.NONE
                     && fallbackResult.errorMessage() == null) {
-                if (healthTracker != null) healthTracker.recordSuccess(entry.providerId());
-                addToPool(entry.providerId());
                 logPerfSummary(phase, conversationId, callStartMs, llmCallCount, retryCount, failoverCount);
                 return fallbackResult;
             }
-            // Only provider-level failures count toward the cooldown tracker. A
-            // null result is a retryable soft failure; a MODEL_NOT_FOUND result is
-            // model-scoped and must not penalise an otherwise-healthy provider.
-            if (healthTracker != null
-                    && (fallbackResult == null || isProviderLevelFailure(fallbackResult.errorType()))) {
-                healthTracker.recordFailure(entry.providerId());
-            }
             if (fallbackResult != null) {
-                // HARD errors (auth / billing) evict the provider from the pool so
-                // later walks skip it outright. SOFT and model-scoped errors keep it
-                // in-pool — absorbed by the tracker's cooldown or simply retried.
-                removeFromPool(entry.providerId(), fallbackResult.errorType(), fallbackResult.errorMessage());
                 lastResult = fallbackResult; // remember most recent to report if the whole chain fails
             }
         }
 
         logPerfSummary(phase, conversationId, callStartMs, llmCallCount, retryCount, failoverCount);
+        if (lastResult == null && primaryInCooldown && !primaryOutOfPool)
+            return buildErrorResultWithType("供应商冷却中，且没有可用备选模型，请稍后重试", conversationId,
+                    phase, ErrorType.PROVIDER_BUSY, publicationMode);
         return lastResult != null ? lastResult
-                : buildErrorResult("LLM 调用失败，已达最大重试次数", conversationId, phase, publicationMode);
+                : buildErrorResult("当前没有可用模型，请检查供应商状态或稍后重试", conversationId, phase, publicationMode);
+    }
+
+    /** Rebase only model identity; preserve per-call budgets, tool restrictions and other controls. */
+    private static Prompt promptForFallback(Prompt prompt, ChatModel fallback) {
+        if (prompt.getOptions() == null) return prompt;
+        var defaults = ChatModelDefaults.optionsFor(fallback);
+        String model = defaults == null ? null : defaults.getModel();
+        return new Prompt(prompt.getInstructions(), prompt.getOptions().mutate().model(model).build());
     }
 
     /** D-6: log a structured performance summary for the LLM call phase. */
@@ -1095,7 +1057,7 @@ public class NodeStreamingChatHelper {
                                        String conversationId, String phase,
                                        PublicationMode publicationMode, int attempt, boolean primaryCall,
                                        AtomicReference<ErrorType> retryTypeRef,
-                                       AtomicReference<Long> retryHintRef) {
+                                       AtomicReference<Long> retryHintRef, String providerId) {
         // Collapse every SystemMessage in the prompt into a single SystemMessage
         // at index 0. Some OpenAI-compatible providers (LM Studio's built-in
         // server, certain strict vLLM / SGLang deployments) reject 400
@@ -1108,7 +1070,7 @@ public class NodeStreamingChatHelper {
         // system into their top-level system field exactly as before.
         // Preserves the input's options reference so downstream relay logic
         // (options.user = relay token) keeps working.
-        Prompt outbound = MessageNormalizer.normalize(prompt);
+        Prompt outbound = MediaRequestNormalizer.normalize(MessageNormalizer.normalize(prompt));
 
         // PR-2 L4 (RFC-049 §2.4.2): normalize as a pre-egress step (not only on retry).
         // Strip reasoning_content from prior-turn AssistantMessages (i <= lastUserIdx),
@@ -1143,8 +1105,43 @@ public class NodeStreamingChatHelper {
             }
         }
 
-        try {
-            return doStreamCallInner(chatModel, outbound, conversationId, phase, publicationMode, attempt, primaryCall, retryTypeRef, retryHintRef);
+        try (var permit = healthTracker == null ? null : healthTracker.acquireRequest(providerId,
+                () -> streamTracker.isStopRequested(conversationId) || Thread.currentThread().isInterrupted())) {
+            throwIfCancelled(conversationId);
+            if (healthTracker != null && permit == null)
+                return buildErrorResultWithType("供应商请求排队超时，请稍后重试或降低并发", conversationId,
+                        phase, ErrorType.PROVIDER_BUSY, publicationMode);
+            // Another request may have triggered cooldown while this one queued.
+            if (!inPool(providerId))
+                return buildErrorResultWithType("供应商已下线，请检查配置或切换模型", conversationId,
+                        phase, ErrorType.PROVIDER_BUSY, publicationMode);
+            if (healthTracker != null && healthTracker.isInCooldown(providerId))
+                return buildErrorResultWithType("供应商冷却中，请稍后重试", conversationId,
+                        phase, ErrorType.PROVIDER_BUSY, publicationMode);
+            StreamResult result = doStreamCallInner(chatModel, outbound, conversationId, phase,
+                    publicationMode, attempt, primaryCall, retryTypeRef, retryHintRef, providerId);
+            // Publish completion state BEFORE releasing capacity. Otherwise a queued
+            // request can slip between permit release and a newly established cooldown.
+            if (result != null) {
+                ErrorType type = result.errorType();
+                if (result.errorMessage() == null || type == ErrorType.NONE) {
+                    if (healthTracker != null) healthTracker.recordSuccess(providerId);
+                    addToPool(providerId);
+                } else {
+                    boolean emptyRetryPending = primaryCall && type == ErrorType.EMPTY_RESPONSE
+                            && attempt < type.retryBudget();
+                    if (healthTracker != null && type.countsHealth() && !emptyRetryPending) {
+                        Long hint = retryHintRef.get();
+                        healthTracker.recordFailure(providerId,
+                                type == ErrorType.RATE_LIMIT && hint != null ? hint : 0);
+                    }
+                    removeFromPool(providerId, type, result.errorMessage());
+                }
+            }
+            return result;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw cancellation(interrupted);
         } finally {
             // Idempotent: if consumer already took the entry, discard is a no-op.
             if (relayToken != null) {
@@ -1175,7 +1172,7 @@ public class NodeStreamingChatHelper {
                                             String conversationId, String phase,
                                             PublicationMode publicationMode, int attempt, boolean primaryCall,
                                             AtomicReference<ErrorType> retryTypeRef,
-                                            AtomicReference<Long> retryHintRef) {
+                                            AtomicReference<Long> retryHintRef, String providerId) {
         boolean broadcast = publicationMode != PublicationMode.SILENT;
         throwIfCancelled(conversationId);
         if (attempt > 0) {
@@ -1213,7 +1210,7 @@ public class NodeStreamingChatHelper {
             if (broadcast && !emptyResponse) {
                 String cause = overloaded ? "模型服务繁忙" : "请求频率受限";
                 broadcastDelta(conversationId, "warning",
-                        buildDeltaJson("⏱️ " + cause + "，等待 " + (delay / 1000) + " 秒后重试（第 " + attempt + "/" + MAX_RETRIES + " 次）..."));
+                        "⏱️ " + cause + "，等待 " + (delay / 1000) + " 秒后重试（第 " + attempt + "/" + MAX_RETRIES + " 次）...");
             }
             // Poll stop flag every 100ms so user Stop is honored mid-backoff.
             long remaining = delay;
@@ -1292,9 +1289,9 @@ public class NodeStreamingChatHelper {
                     "timestamp", System.currentTimeMillis()
             ));
             String modelId = identifyModel(chatModel);
-            String providerId = primaryProviderId != null ? primaryProviderId : "";
+            String actualProviderId = providerId != null ? providerId : "";
             streamTracker.broadcastObject(conversationId, "llm_request_sent", Map.of(
-                    "provider", providerId,
+                    "provider", actualProviderId,
                     "model", modelId != null ? modelId : "",
                     "phase", phase != null ? phase : "",
                     "timestamp", System.currentTimeMillis()
@@ -1360,7 +1357,25 @@ public class NodeStreamingChatHelper {
 
         Disposable subscription = streamWithIdleGuard
                 .doOnNext(chatResponse -> {
-                    if (chatResponse == null || chatResponse.getResults() == null || chatResponse.getResults().isEmpty()) {
+                    if (chatResponse == null) return;
+                    // Usage-only terminal frames have no generations. Read reported counters
+                    // before the content guard so completed calls do not silently become zero.
+                    if (chatResponse.getMetadata() != null && chatResponse.getMetadata().getUsage() != null) {
+                        var usage = chatResponse.getMetadata().getUsage();
+                        if (usage.getPromptTokens() != null && usage.getPromptTokens() > 0) {
+                            promptTokens.set(usage.getPromptTokens().intValue());
+                        }
+                        if (usage.getCompletionTokens() != null && usage.getCompletionTokens() > 0) {
+                            completionTokens.set(usage.getCompletionTokens().intValue());
+                        }
+                        // Reflective extraction of provider-native cache / reasoning
+                        // counters (Anthropic / OpenAI-compatible / DashScope).
+                        var cache = vip.mate.llm.cache.CacheUsageExtractor.extract(usage);
+                        if (cache.cacheReadTokens() > 0)  cacheReadTokens.set(cache.cacheReadTokens());
+                        if (cache.cacheWriteTokens() > 0) cacheWriteTokens.set(cache.cacheWriteTokens());
+                        if (cache.reasoningTokens() > 0)  reasoningTokens.set(cache.reasoningTokens());
+                    }
+                    if (chatResponse.getResults() == null || chatResponse.getResults().isEmpty()) {
                         return;
                     }
                     var generation = chatResponse.getResult();
@@ -1503,23 +1518,6 @@ public class NodeStreamingChatHelper {
                             return;
                         }
                     }
-
-                    // 8. 提取 token usage（通常最后一个 chunk 携带完整 usage）
-                    if (chatResponse.getMetadata() != null && chatResponse.getMetadata().getUsage() != null) {
-                        var usage = chatResponse.getMetadata().getUsage();
-                        if (usage.getPromptTokens() != null && usage.getPromptTokens() > 0) {
-                            promptTokens.set(usage.getPromptTokens().intValue());
-                        }
-                        if (usage.getCompletionTokens() != null && usage.getCompletionTokens() > 0) {
-                            completionTokens.set(usage.getCompletionTokens().intValue());
-                        }
-                        // Reflective extraction of provider-native cache / reasoning
-                        // counters (Anthropic / OpenAI-compatible / DashScope).
-                        var cache = vip.mate.llm.cache.CacheUsageExtractor.extract(usage);
-                        if (cache.cacheReadTokens() > 0)  cacheReadTokens.set(cache.cacheReadTokens());
-                        if (cache.cacheWriteTokens() > 0) cacheWriteTokens.set(cache.cacheWriteTokens());
-                        if (cache.reasoningTokens() > 0)  reasoningTokens.set(cache.reasoningTokens());
-                    }
                 })
                 .subscribe(
                         chunk -> { /* 处理逻辑已在 doOnNext 中完成 */ },
@@ -1538,7 +1536,7 @@ public class NodeStreamingChatHelper {
                     subscription.dispose();
                     if (broadcast) {
                         broadcastDelta(conversationId, "warning",
-                                buildDeltaJson("模型在思考阶段停留过久，已自动截断"));
+                                "模型在思考阶段停留过久，已自动截断");
                     }
                     // dispose 后 latch 可能不会 countDown，直接跳出
                     break;
@@ -1553,7 +1551,7 @@ public class NodeStreamingChatHelper {
                     subscription.dispose();
                     if (broadcast) {
                         broadcastDelta(conversationId, "warning",
-                                buildDeltaJson("检测到回答内容反复重复，已自动截断"));
+                                "检测到回答内容反复重复，已自动截断");
                     }
                     break;
                 }
@@ -1606,7 +1604,7 @@ public class NodeStreamingChatHelper {
                         phase, contentAccum.length(), toolCallAccumulators.size(), error.getMessage());
                 if (broadcast) {
                     broadcastDelta(conversationId, "warning",
-                            buildDeltaJson("LLM 响应中断，使用已生成的部分内容继续"));
+                            "LLM 响应中断，使用已生成的部分内容继续");
                 }
                 return assembleResult(contentAccum, thinkingAccum, toolCallAccumulators,
                         promptTokens.get(), completionTokens.get(),
@@ -1675,7 +1673,7 @@ public class NodeStreamingChatHelper {
         // ===== 成功（检查是否因 thinking-only 软上限或内容重复被截断） =====
         boolean truncatedByThinkingCap = thinkingOnlyCapTriggered.get();
         boolean truncatedByContentRepeat = contentRepeatCapTriggered.get();
-        boolean thinkingTokenLimit = "length".equalsIgnoreCase(finishReason.get())
+        boolean thinkingTokenLimit = isOutputLimitFinishReason(finishReason.get())
                 && thinkingAccum.length() > 0 && contentAccum.toString().isBlank()
                 && toolCallAccumulators.isEmpty();
         boolean truncated = truncatedByThinkingCap || truncatedByContentRepeat || thinkingTokenLimit;
@@ -2033,7 +2031,7 @@ public class NodeStreamingChatHelper {
         log.error("[{}] Building error result for conversation {}: {}", phase, conversationId, errorMsg);
         if (publicationMode != PublicationMode.SILENT && streamTracker != null && conversationId != null) {
             broadcastDelta(conversationId, "warning",
-                    buildDeltaJson(errorMsg));
+                    errorMsg);
         }
         AssistantMessage errorMessage = new AssistantMessage("[错误] " + errorMsg);
         return new StreamResult("[错误] " + errorMsg, "", errorMessage,
@@ -2046,7 +2044,7 @@ public class NodeStreamingChatHelper {
         log.error("[{}] Building typed error result for conversation {}: {} (type={})",
                 phase, conversationId, errorMsg, errorType);
         if (publicationMode != PublicationMode.SILENT && streamTracker != null && conversationId != null) {
-            broadcastDelta(conversationId, "warning", buildDeltaJson(errorMsg));
+            broadcastDelta(conversationId, "warning", errorMsg);
             // 广播结构化 error 事件，供前端展示错误卡片
             String errorJson = buildErrorEventJson(errorMsg, conversationId, errorType);
             streamTracker.broadcast(conversationId, "error", errorJson);
@@ -2236,6 +2234,8 @@ public class NodeStreamingChatHelper {
          * staying on a rate-limited provider wastes time — then fail over.
          */
         RATE_LIMIT           (MAX_RETRIES_RATE_LIMIT,     true,      false,  true),
+        /** Local admission/cooldown; no provider request failed and health must not be penalized. */
+        PROVIDER_BUSY        (0,                          true,      false,  false),
         /**
          * The provider's serving capacity is saturated (HTTP 529,
          * "engine_overloaded", "model is overloaded"). The caller's key is
@@ -2318,6 +2318,10 @@ public class NodeStreamingChatHelper {
         public boolean countsHealth() { return countsHealth; }
     }
 
+    private static boolean isOutputLimitFinishReason(String reason) {
+        return "length".equalsIgnoreCase(reason) || "max_tokens".equalsIgnoreCase(reason);
+    }
+
     /**
      * 流式调用结果
      */
@@ -2397,7 +2401,7 @@ public class NodeStreamingChatHelper {
             if (stopped || hasToolCalls || errorType != ErrorType.NONE) return false;
             if ("thinking_token_limit".equals(errorMessage)) return true;
             return errorMessage == null && assistantMessage != null
-                    && "length".equalsIgnoreCase(String.valueOf(assistantMessage.getMetadata().get("generationFinishReason")));
+                    && isOutputLimitFinishReason(String.valueOf(assistantMessage.getMetadata().get("generationFinishReason")));
         }
 
         /** 是否有任何可保存的内容（text/thinking/toolCalls） */

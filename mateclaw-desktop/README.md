@@ -202,6 +202,18 @@ bash scripts/build-all-platforms.sh --mac-only --publish=always
 
 `electron-builder` 会自动完成签名 → 公证 → 装订（staple）→ 上传。
 
+本地完整版的 `afterPack` 会先裁剪 Playwright，再递归签署 `app.jar` 内的 macOS
+原生二进制（包括依赖 JAR 中的 Intel/ARM 动态库和 Playwright Node）。该步骤复用
+electron-builder 发现的 Developer ID Application 证书及钥匙串，并启用可信时间戳。
+修改后的依赖 JAR 会去掉失效的上游 JAR 签名文件，Spring Boot 嵌套依赖保持
+`STORED` 格式；外层 App 签名在这些修改完成后执行。远程轻量版跳过 JAR 处理。
+
+若公证日志出现 `app.jar/BOOT-INF/lib/...` 下的 `The binary is not signed`、
+`not signed with a valid Developer ID certificate` 或缺少 secure timestamp，
+请确认打包日志包含 `[sign-jar-natives] Signed and verified ...` 并重新打包。
+仅重签外层 App 无法补签嵌套 JAR 中的二进制。日志显示
+`skipped macOS notarization` 时仅表示未执行公证，不能视为公证通过。
+
 > **注意**：不要设置 `CSC_LINK` 环境变量，否则 electron-builder 会创建临时钥匙串，可能导致签名卡死。详见 [CODESIGNING.md](./CODESIGNING.md) 故障排查章节。
 
 ### CI/CD 签名构建

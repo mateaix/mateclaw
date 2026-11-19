@@ -220,11 +220,11 @@ class ZipSkillFetcherTest {
     }
 
     @Test
-    @DisplayName("Binary entry under scripts/ is skipped, not stored corrupted (#273)")
-    void binaryEntryInScriptsIsSkipped() throws IOException {
+    @DisplayName("Binary entries are retained as bytes and excluded from legacy text views (#273)")
+    void binaryEntriesArePreservedAsBytes() throws IOException {
         // A PNG header carries a NUL byte; decoding it as UTF-8 would replace
         // bytes with U+FFFD and persist a corrupted "text" file. The fetcher
-        // must drop it (with a WARN) while keeping the legitimate text script.
+        // must retain its bytes without putting binary content into the legacy text view.
         byte[] pngBytes = new byte[]{(byte) 0x89, 'P', 'N', 'G', 0x00, 0x1A, 0x0A, 'x'};
         byte[] zip = zipOfRaw(List.of(
                 new RawEntry("pkg/SKILL.md", SKILL_MD.getBytes(StandardCharsets.UTF_8)),
@@ -235,12 +235,14 @@ class ZipSkillFetcherTest {
 
         ZipSkillFetcher.ExtractedSkill ex = ZipSkillFetcher.extract(new ByteArrayInputStream(zip));
 
-        // Text script survives; both binaries are dropped (no corrupted entry).
+        // Text script survives; binaries are carried separately without text corruption.
         assertEquals(Map.of("run.py", "print('ok')\n"), ex.scripts(),
-                "Binary logo.png must not be stored; the text script stays");
+                "Binary logo.png must not be decoded as text; the text script stays");
         assertTrue(ex.references().isEmpty(),
                 "Binary font.woff must not be stored as corrupted text");
         assertFalse(ex.scripts().containsKey("logo.png"));
+        assertArrayEquals(pngBytes, ex.files().get("scripts/logo.png"));
+        assertArrayEquals(new byte[]{'w', 'O', 'F', 'F', 0, 1}, ex.files().get("references/font.woff"));
     }
 
     @Test

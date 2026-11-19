@@ -1,6 +1,6 @@
 # Roadmap
 
-3.0.0 stable release · 2026-10-26: Boot 4, Spring AI 2 and AgentScope 2 execution, with long-task continuation, team synthesis and tool governance. See Releases for installers. [Architecture changelog](./changelog)
+3.1.0 stable release · **2026-11-19**: lesson withdrawal and restore previews, precise memory editing, chat status, and execution/channel reliability. See [Releases](https://github.com/mateaix/mateclaw/releases) for packages and read the [upgrade guidance](./changelog#upgrade-and-validation).
 
 
 > "People don't know what they want until you show it to them."
@@ -184,6 +184,16 @@ Full story: [v2.2.0 release notes](./releases/2.2.0.md); guides: [DeepSeek Harne
 
 ---
 
+### v3.0 — Native execution architecture ✅ Released (2026-10-26)
+
+Java 21, Spring Boot 4, Spring AI 2 and native AgentScope loops form the execution foundation. MateClaw retains approvals, permissions, Goals, SSE and persistence. [3.0.0 notes](./releases/3.0.0)
+
+### v3.1 — Reviewable lessons and more reliable execution · Released (2026-11-19)
+
+Withdraw individual lessons, preview snapshot restores, edit memory precisely and quote answers into follow-ups. Harden model context/media recovery, visible tool failures, Wiki citations and channel delivery. [3.1.0 notes](./releases/3.1.0)
+
+---
+
 ## Next: Resident runtimes & Team follow-through
 
 > "Great things in business are never done by one person. They're done by a team of people."
@@ -266,6 +276,9 @@ A leader on a loop, members summoned on demand — that's a **self-running digit
 | **v2.0** | **It leads a team** | **Agent Teams + a shared task board — the lead decomposes and dispatches, members run in parallel, deliverables and full observability** | ✅ Released |
 | **v2.1** | **It turns collaboration into a run** | **Unified Team Runs + closed skill evolution + replayable reasoning trajectories + proactive channel delivery** | ✅ Released |
 | **v2.2** | **It reshapes the runtime** | **Pluggable runtimes + DeepSeek Harness + durable Goal recovery + A2A interoperability** | ✅ Released |
+| **v2.3** | Managed JSON acceptance | User-configured fields, immutable artifact versions and controlled team intervention | ✅ Released |
+| **v3.0** | Native execution architecture | Java 21, Boot 4, Spring AI 2 and native AgentScope loops | ✅ Released |
+| **v3.1** | Reviewable lessons and reliable execution | Lesson withdrawal, restore previews, precise memory, chat feedback, context and channel recovery | Released |
 | **Next** | **It's on duty** | **Resident runtime (heartbeat / inbox / journal / circuit breakers) + team follow-through = a department that runs itself** | 📋 Planned |
 
 ---

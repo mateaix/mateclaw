@@ -236,6 +236,11 @@ export const conversationApi = {
 }
 
 // ==================== Skill ====================
+export interface SkillSnapshotPreviewEntry { skillId: string; name: string; action: 'restore'|'unchanged'|'missing'|'archive'; changedFields: string[] }
+export interface SkillSnapshotPreviewData { snapshotId: string; restoreCount: number; unchangedCount: number; missingCount: number; archiveCount: number; entries: SkillSnapshotPreviewEntry[] }
+
+export interface SkillLessonEntry { id: string; heading: string; content: string; deletable: boolean }
+
 export const skillApi = {
   /** Paginated skill listing with search, source, status, and sort filters. */
   page: (params: {
@@ -293,6 +298,7 @@ export const skillApi = {
   // RFC-090 §7 + §11.4 — pre-flight requirements + LESSONS.md + reverse lookup
   requirements: (id: string | number) => http.get(`/skills/${id}/requirements`),
   getLessons: (id: string | number) => http.get(`/skills/${id}/lessons`),
+  deleteLesson: (id: string | number, lessonId: string) => http.delete(`/skills/${id}/lessons/${encodeURIComponent(lessonId)}`),
   clearLessons: (id: string | number) => http.post(`/skills/${id}/lessons/clear`),
   employees: (id: string | number) => http.get(`/skills/${id}/employees`),
   /**
@@ -351,6 +357,7 @@ export const skillApi = {
   curatorAdopt: (skillIds: string[]) => http.post('/skills/curator/adopt', skillIds),
   /** Take skills back from autonomous curation. */
   curatorRelease: (skillIds: string[]) => http.post('/skills/curator/release', skillIds),
+  curatorSnapshotPreview: (id: string) => http.get(`/skills/curator/snapshots/${encodeURIComponent(id)}/preview`),
   curatorSnapshots: () => http.get('/skills/curator/snapshots'),
   /** Capture a restore point on demand. */
   curatorSnapshotCapture: (reason?: string) =>
@@ -1304,6 +1311,9 @@ export const wikiApi = {
     http.get(`/wiki/kb/${kbId}/entities/${entityId}/graph`, { params: { limit } }),
   extractEntities: (kbId: number | string, force = false) =>
     http.post(`/wiki/kb/${kbId}/entities/extract`, null, { params: { force } }),
+  // Entity extraction for a single processed document.
+  extractRawEntities: (kbId: number | string, rawId: number | string, force = false) =>
+    http.post(`/wiki/kb/${kbId}/raw/${rawId}/entities/extract`, null, { params: { force } }),
 
   // RFC-030: Jobs
   getWikiJobs: (kbId: number, rawId: number) =>

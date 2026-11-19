@@ -81,7 +81,23 @@ public class WikiEntityExtractionService {
 
     /** Extract entities from every not-yet-processed chunk of one raw material. */
     public int extractForRaw(Long kbId, Long rawId) {
-        return extract(kbId, chunkService.listByRawId(rawId), false);
+        return extractForRaw(kbId, rawId, false);
+    }
+
+    /**
+     * Extract entities from one raw material's chunks.
+     *
+     * @param force when {@code true}, re-extract chunks that already have
+     *              mentions (manual per-document rebuild); otherwise skip them
+     */
+    public int extractForRaw(Long kbId, Long rawId, boolean force) {
+        int touched = extract(kbId, chunkService.listByRawId(rawId), force);
+        if (force && touched > 0) {
+            // Re-extraction may drop entities that only this document mentioned.
+            // Skip pruning when nothing resolved so a model failure keeps the graph.
+            pruneOrphanEntities(kbId);
+        }
+        return touched;
     }
 
     /**

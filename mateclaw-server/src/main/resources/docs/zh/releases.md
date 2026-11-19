@@ -10,6 +10,7 @@
 
 | 版本 | 日期 | 亮点 |
 |------|------|------|
+| [v3.1.0](./releases/3.1.0) | 2026-11-19 | 技能经验撤回与快照恢复预览 · 精确记忆编辑 · 聊天引用与状态 · 模型/媒体/上下文恢复 · Wiki 引用与渠道投递 · AgentScope 2.0.5 |
 | [v3.0.0](./releases/3.0.0) | 2026-10-26 | Java 21 · Boot 4 · Spring AI 2 · AgentScope 2 执行循环 · 结构化决策 · 成员文件隔离 · DSH SDK · 朗读音色 · MCP 展示与恢复 |
 | [v2.3.0](./releases/2.3.0) | 2026-09-20 | 用户配置的托管 JSON 字段验收与不可变产物版本 · 观察模式执行证据与受控团队干预 · 审批/排队输入恢复与身份隔离 · 技能文档/文件夹上传 · DSH、推理模型与 SSE 加固 |
 | [v2.2.0](./releases/2.2.0) | 2026-08-29 | **Runtime 主线**——员工运行时 contract + provider registry + session 生命周期，把员工与内置推理循环解耦；**DeepSeek Harness** 以认证 JSON-RPC 子进程接入，工具继续经过宿主工作空间策略与 Tool Guard，并提供安装/配置/校验/启停管理；**持久目标跨有界片段和后端重启恢复**（数据库队列 · supervisor · lease · attempt · 输入排队 · provider 退避 · checklist 证据完成门）；**A2A 双向互联**（Agent Card · message/send/stream · task 查询/取消 · `call_a2a_agent` · SSRF/超时/响应上限）；Team checkpoint / 任务板恢复 / 交付物完成门 / worker 附件与长回答加固；可选 OfficeCLI 引擎 + ACP prompt timeout + 工作空间边界收口 |

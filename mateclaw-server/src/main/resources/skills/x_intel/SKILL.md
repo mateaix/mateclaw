@@ -59,15 +59,14 @@ App registration and the OAuth 2.0 PKCE flow must be performed by the user **out
 
 The agent should verify, not install. Direct the user to install if missing.
 
+Use the pinned [upstream v1.3.4 release](https://github.com/xdevplatform/xurl/releases/tag/v1.3.4). The Go option requires Go 1.24.2 or newer (see the release's [go.mod](https://github.com/xdevplatform/xurl/blob/v1.3.4/go.mod)); ensure `$(go env GOPATH)/bin` is on `PATH`, or `GOBIN` if explicitly configured. Do not download and execute remote shell installers.
+
 ```bash
-# Shell script (Linux + macOS, installs to ~/.local/bin, no sudo)
-curl -fsSL https://raw.githubusercontent.com/xdevplatform/xurl/main/install.sh | bash
+# Go (Linux + macOS, exact release)
+go install github.com/xdevplatform/xurl@v1.3.4
 
-# Homebrew (macOS)
+# Alternative: Homebrew (macOS, version managed by the upstream tap)
 brew install --cask xdevplatform/tap/xurl
-
-# Go (cross-platform)
-go install github.com/xdevplatform/xurl@latest
 ```
 
 Verify:

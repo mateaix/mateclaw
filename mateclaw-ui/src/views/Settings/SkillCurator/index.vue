@@ -229,7 +229,7 @@
 
         <p v-if="snapshots.length === 0" class="empty-note">{{ t('skillCurator.noSnapshots') }}</p>
         <ul v-else class="routine-list">
-          <li v-for="s in snapshots" :key="s.id" class="routine-item">
+          <li v-for="s in snapshots" :key="s.id" class="routine-item snapshot-item">
             <div class="routine-main">
               <p class="routine-text">{{ s.reason }}</p>
               <div class="routine-meta">
@@ -238,10 +238,13 @@
               </div>
             </div>
             <div class="routine-actions">
-              <button class="btn-secondary" :disabled="busy" @click="restoreSnapshot(s)">
+              <button class="btn-secondary" :disabled="busy" @click="previewSnapshot(s)">{{ t('skillCurator.snapshotPreviewTitle') }}</button>
+              <button class="btn-secondary" :disabled="busy || previewSnapshotId !== s.id || !previewSummary" @click="restoreSnapshot(s)">
                 {{ t('skillCurator.snapshotRestore') }}
               </button>
             </div>
+            <SkillSnapshotPreview v-if="previewSnapshotId === s.id" :snapshot-id="s.id"
+              @loading="onPreviewLoading(s.id)" @loaded="onPreviewLoaded(s.id,$event)" />
           </li>
         </ul>
       </div>
@@ -295,7 +298,9 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import SkillSnapshotPreview from '@/components/skill/SkillSnapshotPreview.vue'
+import type { SkillSnapshotPreviewData } from '@/api'
+import { nextTick, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessageBox } from 'element-plus'
 import { Loading, WarningFilled } from '@element-plus/icons-vue'
@@ -378,6 +383,12 @@ const routines = ref<RoutineCandidate[]>([])
 const gates = ref<RoutineGates>({ minOccurrences: 3, minDistinctDays: 3, enabled: true })
 const routineFilter = ref<string>('observing')
 const snapshots = ref<SkillSnapshot[]>([])
+const previewSnapshotId = ref<string | null>(null)
+const previewSummary = ref<SkillSnapshotPreviewData | null>(null)
+function previewSnapshot(s: SkillSnapshot) { previewSummary.value = null; previewSnapshotId.value = null; void nextTick(() => { previewSnapshotId.value = s.id }) }
+function onPreviewLoading(id: string) { if (previewSnapshotId.value === id) previewSummary.value = null }
+function onPreviewLoaded(id: string, data: SkillSnapshotPreviewData) { if (previewSnapshotId.value === id && data.snapshotId === id) previewSummary.value = data }
+
 const unmanaged = ref<UnmanagedSkill[]>([])
 const managed = ref<UnmanagedSkill[]>([])
 
@@ -637,6 +648,7 @@ async function adopt(u: UnmanagedSkill) {
 // ==================== Restore points ====================
 
 async function loadSnapshots() {
+  previewSnapshotId.value = null; previewSummary.value = null
   try {
     const res: any = await skillApi.curatorSnapshots()
     snapshots.value = Array.isArray(res.data) ? res.data : []
@@ -659,17 +671,20 @@ async function captureSnapshot() {
 }
 
 async function restoreSnapshot(s: SkillSnapshot) {
+  if (previewSnapshotId.value !== s.id || !previewSummary.value || previewSummary.value.snapshotId !== s.id) return
+  const summary = previewSummary.value
   // Overwrites every current skill body and lifecycle state, so never fire
   // this from a single click.
   try {
     await ElMessageBox.confirm(
-      t('skillCurator.snapshotRestoreConfirm', { time: s.createdAt ?? '', n: s.skillCount }),
+      t('skillCurator.snapshotRestoreConfirm', { time: s.createdAt ?? '', n: s.skillCount }) + '\n' + t('skillCurator.snapshotPreviewSummary', summary),
       t('skillCurator.snapshotRestore'),
       { type: 'warning' },
     )
   } catch {
     return
   }
+  if (previewSnapshotId.value !== s.id || previewSummary.value !== summary) return
   busy.value = true
   try {
     const res: any = await skillApi.curatorSnapshotRestore(s.id)
@@ -760,6 +775,8 @@ onMounted(load)
 
 .routine-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .routine-item { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--mc-border-light); }
+.snapshot-item { flex-wrap: wrap; }
+.snapshot-item > .snapshot-preview { flex-basis: 100%; width: 100%; box-sizing: border-box; margin-top: 0; }
 .routine-item:last-child { border-bottom: none; }
 .routine-main { min-width: 0; flex: 1; }
 .routine-text { margin: 0 0 6px; font-size: 14px; font-weight: 600; color: var(--mc-text-primary); overflow-wrap: anywhere; }

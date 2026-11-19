@@ -59,8 +59,27 @@ final class OpenAiCompatibleHttpInterceptor implements Interceptor {
                 rewritten.path("messages").size(),
                 rewritten.path("tools").size(),
                 rewritten.path("stream").asBoolean());
-        HttpUrl.Builder url = HttpUrl.get(endpoint).newBuilder();
-        if (original.url().encodedQuery() != null) url.encodedQuery(original.url().encodedQuery());
+        // Only Azure's unified v1 surface rejects the legacy SDK api-version.
+        // Keep explicit endpoint query values authoritative and avoid duplicating
+        // parameters already present there when copying SDK query parameters.
+        HttpUrl parsedEndpoint = HttpUrl.get(endpoint);
+        String host = parsedEndpoint.host();
+        boolean azureUnifiedEndpoint =
+                (host.endsWith(".openai.azure.com") || host.endsWith(".cognitiveservices.azure.com"))
+                        && parsedEndpoint.encodedPath().startsWith("/openai/v1/");
+        HttpUrl.Builder url = parsedEndpoint.newBuilder();
+        if (azureUnifiedEndpoint) {
+            for (String name : parsedEndpoint.queryParameterNames()) {
+                if ("api-version".equalsIgnoreCase(name)) url.removeAllQueryParameters(name);
+            }
+        }
+        for (String name : original.url().queryParameterNames()) {
+            if (azureUnifiedEndpoint && "api-version".equalsIgnoreCase(name)) continue;
+            if (parsedEndpoint.queryParameterNames().contains(name)) continue;
+            for (String value : original.url().queryParameterValues(name)) {
+                url.addQueryParameter(name, value);
+            }
+        }
         Request.Builder updated =
                 original.newBuilder()
                         .url(url.build())

@@ -75,10 +75,21 @@ public class OpenAiCompatibleChatModelBuilder implements ChatModelBuilder {
                 chain.request().newBuilder().removeHeader("Authorization").build()));
         observed.interceptor(interceptor);
         PinnedOpenAiHttpClient transport = new PinnedOpenAiHttpClient(observed.build());
-        ClientOptions clientOptions = ClientOptions.builder().httpClient(transport).baseUrl(baseUrl)
-                .apiKey(authenticated ? options.getApiKey() : "mateclaw-keyless-placeholder")
-                .timeout(options.getTimeout()).maxRetries(0).build();
-        OpenAIClientImpl sdk = new OpenAIClientImpl(clientOptions);
+        ClientOptions.Builder clientOptions = ClientOptions.builder().httpClient(transport).baseUrl(baseUrl)
+           .apiKey(authenticated ? options.getApiKey() : "mateclaw-keyless-placeholder")
+           .timeout(options.getTimeout()).maxRetries(0);
+        /*
+        * fix：https://github.com/mateaix/mateclaw/issues/640
+        * Azure unified (/openai/v1) base URLs must not be downgraded by the SDK:
+        * with the default AUTO mode openai-java classifies *.openai.azure.com hosts
+        * as AZURE_LEGACY (our /v1-stripped baseUrl never ends in /openai/v1), rewrites
+        * request paths to /openai/deployments/{model} and appends a default
+        * api-version query — both wrong for the v1 surface the operator configured.
+        */
+        if (isAzureUnifiedBaseUrl(provider.getBaseUrl())) {
+            clientOptions.azureUrlPathMode(com.openai.azure.AzureUrlPathMode.UNIFIED);
+        }
+        OpenAIClientImpl sdk = new OpenAIClientImpl(clientOptions.build());
         ChatModel raw = OpenAiChatModel.builder().options(options).openAiClient(sdk).openAiClientAsync(sdk.async())
                 .observationRegistry(observations).build();
         raw = new OpenAiWirePolicyChatModel(raw, retry, transport);
@@ -261,6 +272,24 @@ public class OpenAiCompatibleChatModelBuilder implements ChatModelBuilder {
             path = path.substring(3);
         }
         return path;
+    }
+
+    /**
+     * fix：https://github.com/mateaix/mateclaw/issues/640
+     * Whether the operator configured an Azure OpenAI resource through the unified
+     * {@code /openai/v1} surface (per Microsoft's "switching endpoints" guidance).
+     * On that surface no {@code api-version} query parameter may be sent, and the
+     * SDK must not rewrite paths into the legacy {@code /openai/deployments/{name}}
+     * form — see {@link #build(ModelConfigEntity, ModelProviderEntity, RetryTemplate)}.
+     */
+    private static boolean isAzureUnifiedBaseUrl(String rawBaseUrl) {
+        if (rawBaseUrl == null) return false;
+        String url = rawBaseUrl.trim();
+        while (url.endsWith("/") || url.endsWith("?")) {
+            url = url.substring(0, url.length() - 1);
+        }
+        return url.endsWith("/openai/v1")
+           && (url.contains("openai.azure.com") || url.contains("cognitiveservices.azure.com"));
     }
 
     /** Defensive scrub for provider error bodies, which may echo request data. */

@@ -69,8 +69,9 @@ class DshUpgradeServiceTest {
         assertThrows(Exception.class, () -> DshUpgradeService.copyHome(source, root.resolve("candidate")));
         assertEquals("private-content", Files.readString(outside));
     }
-    @Test
-    void candidateChecksEveryCopiedProfileBeforeActivation() throws Exception {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"0.2.0-rc.1", "0.2.2-rc.1"})
+    void candidateChecksEveryCopiedProfileBeforeActivation(String targetVersion) throws Exception {
         ObjectMapper mapper = new ObjectMapper();
         DshGenerationStore store = new DshGenerationStore(root.toString(), mapper, new SettingCrypto("test"));
         Path home = Files.createDirectories(root.resolve("old-home"));
@@ -88,9 +89,9 @@ class DshUpgradeServiceTest {
             return Map.of("success", true);
         });
         DshPinnedInstaller installer = mock(DshPinnedInstaller.class);
-        when(installer.install(eq("0.2.0-rc.1"), any())).thenReturn(new DshPinnedInstaller.Installation("0.2.0-rc.1", "darwin-arm64", "/bin/dsh", "hash"));
+        when(installer.install(eq(targetVersion), any())).thenReturn(new DshPinnedInstaller.Installation(targetVersion, "darwin-arm64", "/bin/dsh", "hash"));
         DshUpgradeService service = new DshUpgradeService(store, config, runtime, installer, mapper, Runnable::run);
-        Map<String, String> op = service.upgrade("0.2.0-rc.1", store.revision(), "request-2");
+        Map<String, String> op = service.upgrade(targetVersion, store.revision(), "request-2");
         assertEquals("COMPLETED", op.get("state"));
         assertEquals("2", op.get("homesChecked"));
         assertEquals("PASSED", op.get("taskStatus"));

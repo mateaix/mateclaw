@@ -126,11 +126,13 @@ mateclaw/
 
 ## 原生 ReAct 与显式计划阶段
 
-后端使用 Java 21、Spring Boot 4.1.1、Spring AI 2.0.1 和 AgentScope Java 2.0.4。`NativePolicyDriver` 为每次调用创建独立的原生 `ReActAgent`，由 SDK 管理推理/行动循环。应用策略继续管理提示词、审批、观察、总结与目标预算。
+后端使用 Java 21、Spring Boot 4.1.2、Spring AI 2.0.2 和 AgentScope Java 2.0.5。`NativePolicyDriver` 为每次调用创建独立的原生 `ReActAgent`，由 SDK 管理推理/行动循环。应用策略继续管理提示词、审批、观察、总结与目标预算。
 
 ### 请求与预算归属
 
-AgentScope 2.0.4 管理循环编排，Spring AI/provider 适配器负责实际模型请求准备。`PromptBudget` 在推理预检与压缩模型调用之间共享生效选项的预算估算，不替代供应商请求序列化。工具审批、工作空间保护、Goal 预算和完成验收门仍由应用负责。[预算说明](./models#上下文预算与请求准备-3-0-0)
+AgentScope 2.0.5 管理循环编排，Spring AI/provider 适配器负责实际模型请求准备。`PromptBudget` 在推理预检与压缩模型调用之间共享生效选项的预算估算，不替代供应商请求序列化。工具审批、工作空间保护、Goal 预算和完成验收门仍由应用负责。[预算说明](./models#上下文预算与请求准备-3-0-0)
+
+AgentScope Java 2.0.5 已纳入原生循环和 JSON 解码修复，包括拒绝尾随 JSON；应用仍使用手写工具 schema 与自身的模型、审批、记忆及压缩实现。未引入 Harness、SDK 模型提供商或 SDK JDBC/Redis 存储，因此上游默认模型、记忆命名空间和队列格式变化无需在本项目迁移。
 
 ### 关键文件
 

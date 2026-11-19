@@ -208,7 +208,8 @@ public class TeamDispatchService {
         Long memberId = task.getAssigneeAgentId();
         if (!runningMembers.add(memberId)) {
             // Same member picked up concurrently in this JVM; put the task back.
-            taskService.retryTask(task.getId());
+            taskService.requeueUnusableResult(task.getId(),
+                    "Member is already executing another task; waiting for availability.");
             return;
         }
         String childConvId = "team-task-" + IdUtil.fastSimpleUUID();

@@ -355,6 +355,7 @@ class TeamTasksToolTest {
         assertTrue(invoke("retry", "5").contains("only the team lead"));
         verify(taskService, never()).cancelTask(any(), any());
         verify(taskService, never()).retryTask(any());
+        verify(taskService, never()).retryTaskFromLead(any());
     }
 
     @Test

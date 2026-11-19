@@ -2,6 +2,9 @@ package vip.mate.agent.graph.plan.node;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.openai.OpenAiChatOptions;
+import vip.mate.llm.chatmodel.ThinkingLevelHolder;
 import vip.mate.agent.GraphEventPublisher;
 import vip.mate.agent.graph.NodeStreamingChatHelper;
 import vip.mate.agent.graph.guard.TaskFinalizationCoordinator;
@@ -89,6 +92,8 @@ class PlanSummaryFinalizationTest {
   when(helper.streamCallBufferedContent(any(),any(),any(),anyString())).thenAnswer(call->{
     String prompt=((org.springframework.ai.chat.prompt.Prompt)call.getArgument(1)).getContents();
     assertTrue(prompt.contains("Respond in French and retain exact table format"));
+    assertTrue(prompt.contains("语言一致性"));
+    assertTrue(prompt.contains("明确指定"));
     return new NodeStreamingChatHelper.StreamResult("","",null,List.of(),false,10,5,false,"413",NodeStreamingChatHelper.ErrorType.PAYLOAD_TOO_LARGE);
   });
   var state=new RunState(Map.of(PlanStateKeys.PLAN_ID,42L,PlanStateKeys.GOAL,"all stages",
@@ -152,6 +157,39 @@ class PlanSummaryFinalizationTest {
   assertTrue(String.valueOf(out.get(MateClawStateKeys.PENDING_EVENTS)).contains("incomplete"));
   verify(helper,never()).streamCallSilent(any(),any(),any(),anyString());verify(service,never()).completePlan(anyLong(),anyString());
  }
+ private static NodeStreamingChatHelper.StreamResult thinkingExhausted() {
+  return new NodeStreamingChatHelper.StreamResult("","long reasoning",null,List.of(),false,10,5,true,"thinking_token_limit",NodeStreamingChatHelper.ErrorType.NONE);
+ }
+ @Test void thinkingExhaustedSummaryRetriesOnceWithThinkingOffAndLargerBudget() throws Exception {
+  var helper=mock(NodeStreamingChatHelper.class);var service=mock(PlanningService.class);var model=mock(ChatModel.class);
+  when(model.getDefaultOptions()).thenReturn(OpenAiChatOptions.builder().model("test").maxTokens(4096).build());
+  var node=new PlanSummaryNode(model,service,helper);node.setFinalizationCoordinator(new TaskFinalizationCoordinator(helper,null));
+  List<Integer> budgets=new ArrayList<>();List<String> thinking=new ArrayList<>();
+  when(helper.streamCallBufferedContent(any(),any(),any(),anyString())).thenAnswer(call->{
+    budgets.add(((Prompt)call.getArgument(1)).getOptions().getMaxTokens());
+    thinking.add(ThinkingLevelHolder.get());
+    return budgets.size()==1?thinkingExhausted()
+      :new NodeStreamingChatHelper.StreamResult("today total 42","",new AssistantMessage("today total 42"),List.of(),false,10,5);
+  });
+  when(helper.streamCallSilent(any(),any(),any(),anyString())).thenReturn(new NodeStreamingChatHelper.StreamResult(
+    "{\"decision\":\"ACCEPT\",\"taskComplete\":true,\"remainingWork\":false,\"failedCallCount\":0,\"recoveryClaims\":[],\"reason\":\"checked\"}","",null,List.of(),false,7,3));
+  var out=node.apply(new RunState(Map.of(PlanStateKeys.PLAN_ID,42L,PlanStateKeys.GOAL,"daily stats",PlanStateKeys.COMPLETED_RESULTS,List.of("42"))));
+  assertEquals("today total 42",out.get(PlanStateKeys.FINAL_SUMMARY));
+  assertEquals(List.of(4096,8192),budgets);assertEquals("off",thinking.get(1));
+  assertEquals(3,out.get(MateClawStateKeys.LLM_CALL_COUNT));verify(service).completePlan(42L,"today total 42");
+ }
+ @Test void repeatedOutputLimitReportsBudgetGuidanceWithoutCheckerCall() throws Exception {
+  var helper=mock(NodeStreamingChatHelper.class);var service=mock(PlanningService.class);
+  var node=new PlanSummaryNode(mock(ChatModel.class),service,helper);node.setFinalizationCoordinator(new TaskFinalizationCoordinator(helper,null));
+  when(helper.streamCallBufferedContent(any(),any(),any(),anyString())).thenReturn(thinkingExhausted(),thinkingExhausted());
+  var out=node.apply(new RunState(Map.of(PlanStateKeys.PLAN_ID,42L,PlanStateKeys.GOAL,"daily stats",PlanStateKeys.COMPLETED_RESULTS,List.of("42"))));
+  assertEquals("incomplete",out.get(MateClawStateKeys.FINISH_REASON));
+  String summary=String.valueOf(out.get(PlanStateKeys.FINAL_SUMMARY));
+  assertTrue(summary.contains("max_tokens"));assertFalse(summary.contains("调用失败"));
+  assertEquals(2,out.get(MateClawStateKeys.LLM_CALL_COUNT));
+  verify(helper,times(2)).streamCallBufferedContent(any(),any(),any(),anyString());
+  verify(helper,never()).streamCallSilent(any(),any(),any(),anyString());verify(service,never()).completePlan(anyLong(),anyString());
+ }
  @Test void planReviewerUsesCurrentGoalWithoutRecalledMemoryEnvelope() throws Exception {
   var helper=mock(NodeStreamingChatHelper.class);var service=mock(PlanningService.class);
   var node=new PlanSummaryNode(mock(ChatModel.class),service,helper);node.setFinalizationCoordinator(new TaskFinalizationCoordinator(helper,null));
@@ -164,5 +202,17 @@ class PlanSummaryFinalizationTest {
   });
   var out=node.apply(new RunState(Map.of(PlanStateKeys.PLAN_ID,42L,PlanStateKeys.GOAL,"<memory-context>\n"+old+"\n</memory-context>\n\n"+objective,PlanStateKeys.COMPLETED_RESULTS,List.of("42"))));
   assertEquals("Exact result 42",out.get(PlanStateKeys.FINAL_SUMMARY));
+ }
+ @Test void verifierFailureCompletesPlanWithUnverifiedNotice() throws Exception {
+  var helper=mock(NodeStreamingChatHelper.class);var service=mock(PlanningService.class);
+  var node=new PlanSummaryNode(mock(ChatModel.class),service,helper);node.setFinalizationCoordinator(new TaskFinalizationCoordinator(helper,null));
+  when(helper.streamCallBufferedContent(any(),any(),any(),anyString())).thenReturn(new NodeStreamingChatHelper.StreamResult("today total 42","",new AssistantMessage("today total 42"),List.of(),false,10,5));
+  when(helper.streamCallSilent(any(),any(),any(),anyString())).thenReturn(new NodeStreamingChatHelper.StreamResult("","",null,List.of(),false,0,0,false,
+    "LLM 调用失败: reset",NodeStreamingChatHelper.ErrorType.SERVER_ERROR));
+  var out=node.apply(new RunState(Map.of(PlanStateKeys.PLAN_ID,42L,PlanStateKeys.GOAL,"daily stats",PlanStateKeys.COMPLETED_RESULTS,List.of("42"))));
+  String summary=String.valueOf(out.get(PlanStateKeys.FINAL_SUMMARY));
+  assertTrue(summary.startsWith("today total 42"));assertTrue(summary.contains("诊断码：CHECKER_ERROR"));
+  assertNull(out.get(MateClawStateKeys.FINISH_REASON));
+  verify(service).completePlan(42L,summary);verify(service,never()).markPlanFailed(anyLong(),anyString());
  }
 }

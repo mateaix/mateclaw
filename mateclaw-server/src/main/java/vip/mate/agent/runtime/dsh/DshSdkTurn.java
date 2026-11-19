@@ -38,6 +38,8 @@ public final class DshSdkTurn {
     private String answer = "";
     private long inputTokens;
     private long outputTokens;
+    private long cacheReadTokens;
+    private long cacheWriteTokens;
 
     public DshSdkTurn(String sessionId, String promptId) { this.sessionId = sessionId; this.promptId = promptId; }
 
@@ -97,6 +99,8 @@ public final class DshSdkTurn {
                 if ("text".equals(block.path("type").asText())) text.append(block.path("text").asText(""));
             }
             answer = text.toString();
+            cacheReadTokens += Math.max(0, data.path("usage").path("cacheReadTokens").asLong());
+            cacheWriteTokens += Math.max(0, data.path("usage").path("cacheWriteTokens").asLong());
             inputTokens += Math.max(0, data.path("usage").path("inputTokens").asLong())
                     + Math.max(0, data.path("usage").path("cacheReadTokens").asLong())
                     + Math.max(0, data.path("usage").path("cacheWriteTokens").asLong());
@@ -115,4 +119,6 @@ public final class DshSdkTurn {
     public String answer() { return answer; }
     public long inputTokens() { return inputTokens; }
     public long outputTokens() { return outputTokens; }
+    public long cacheReadTokens() { return cacheReadTokens; }
+    public long cacheWriteTokens() { return cacheWriteTokens; }
 }

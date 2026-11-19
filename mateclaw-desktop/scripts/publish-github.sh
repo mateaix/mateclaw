@@ -123,7 +123,11 @@ echo ""
 echo "  Version:  $VERSION"
 echo "  Tag:      $TAG"
 echo "  Mode:     ${DRAFT:-release}"
-echo "  Proxy:    ${USE_PROXY:+${PROXY_ADDR}}${USE_PROXY:-off}"
+if [ "$USE_PROXY" = true ]; then
+  echo "  Proxy:    $PROXY_ADDR"
+else
+  echo "  Proxy:    off"
+fi
 echo "  Retry:    $RETRY"
 echo ""
 
@@ -275,19 +279,44 @@ if [ -f "$LATEST_YML" ]; then
   echo "🧹 Rewriting latest.yml to drop the merged installer ..."
   (cd "$DESKTOP_DIR" && node -e "
     const fs = require('fs');
+    const path = require('path');
+    const crypto = require('crypto');
     const yaml = require('js-yaml');
     const file = '$LATEST_YML';
+    const releaseDir = '$RELEASE_DIR';
     const merged = '$MERGED_EXE_NAME';
     const x64 = '$X64_EXE_NAME';
     const arm64 = '$ARM64_EXE_NAME';
     const doc = yaml.load(fs.readFileSync(file, 'utf8'));
     const before = (doc.files || []).length;
     doc.files = (doc.files || []).filter(f => f.url !== merged);
-    const x64Entry = doc.files.find(f => f.url === x64);
-    const arm64Entry = doc.files.find(f => f.url === arm64);
+
+    function sha512Base64(filePath) {
+      return crypto.createHash('sha512').update(fs.readFileSync(filePath)).digest('base64');
+    }
+
+    function ensureInstallerEntry(name) {
+      let entry = doc.files.find(f => f.url === name);
+      if (entry) return entry;
+
+      const installerPath = path.join(releaseDir, name);
+      if (!fs.existsSync(installerPath)) return null;
+
+      entry = {
+        url: name,
+        sha512: sha512Base64(installerPath),
+        size: fs.statSync(installerPath).size,
+      };
+      doc.files.push(entry);
+      return entry;
+    }
+
+    const x64Entry = ensureInstallerEntry(x64);
+    const arm64Entry = ensureInstallerEntry(arm64);
     if (!x64Entry || !arm64Entry) {
       console.error('FATAL: per-arch installer entries missing from latest.yml');
       console.error('  files:', doc.files.map(f => f.url));
+      console.error('  expected:', [x64, arm64]);
       process.exit(1);
     }
     doc.path = x64Entry.url;

@@ -3,6 +3,9 @@ package vip.mate.agent.graph.node;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.ToolResponseMessage;
+import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
 import org.springframework.ai.chat.metadata.ChatResponseMetadata;
 import org.springframework.ai.chat.metadata.DefaultUsage;
 import org.springframework.ai.chat.model.*;
@@ -84,6 +87,65 @@ class ReasoningNodeFinalizationTest {
             assertEquals(60,stalled.get(COMPLETION_TOKENS));
         } finally {tracker.onShutdown();}
     }
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"0,answer", "0,tool", "0,exception", "48,tool"})
+    void truncatedPostToolDraftGetsBoundedToolFreeRecovery(int startingCalls, String recoveryOutcome) throws Exception {
+        var tracker = new ChatStreamTracker(new ObjectMapper());
+        try {
+            tracker.register("gate-test");
+            var model = mock(ChatModel.class);
+            var helper = mock(NodeStreamingChatHelper.class);
+            var tools = mock(AgentToolSet.class);
+            when(tools.callbacks()).thenReturn(List.of());
+            var node = new ReasoningNode(model, tools, null, helper, null, tracker);
+            enable(node, helper, tracker);
+            var values = state();
+            values.put(LLM_CALL_COUNT, startingCalls);
+            var call = new AssistantMessage.ToolCall("s", "function", "calculate", "{}");
+            values.put(MESSAGES, List.of(new org.springframework.ai.chat.messages.UserMessage("Calculate all stages and report exact total"),
+                    AssistantMessage.builder().content("").toolCalls(List.of(call)).build(),
+                    org.springframework.ai.chat.messages.ToolResponseMessage.builder().responses(List.of(
+                            new org.springframework.ai.chat.messages.ToolResponseMessage.ToolResponse("s", "calculate", "42"))).build()));
+            var truncated = new NodeStreamingChatHelper.StreamResult("discard this draft", "", null,
+                    List.of(), false, 10, 5, true, "content_repetition", NodeStreamingChatHelper.ErrorType.NONE);
+            when(helper.streamCallBufferedContent(eq(model), any(), eq("gate-test"), anyString())).thenReturn(truncated);
+            when(helper.streamCallSilent(eq(model), any(), eq("gate-test"), eq("reasoning_post_tool_recovery")))
+                    .thenAnswer(inv -> {
+                        Prompt prompt = inv.getArgument(1);
+                        assertTrue(prompt.getInstructions().stream().anyMatch(m -> m instanceof org.springframework.ai.chat.messages.ToolResponseMessage));
+                        assertFalse(prompt.getContents().contains("discard this draft"));
+                        if (prompt.getOptions() instanceof org.springframework.ai.model.tool.ToolCallingChatOptions opts) {
+                            assertTrue(opts.getToolCallbacks().isEmpty());
+                        }
+                        if ("exception".equals(recoveryOutcome)) {
+                            throw new IllegalStateException("model rejected the retry");
+                        }
+                        if ("tool".equals(recoveryOutcome)) {
+                            return new NodeStreamingChatHelper.StreamResult("", "", null, List.of(call), true, 12, 6);
+                        }
+                        var answer = new AssistantMessage("The total is 42.");
+                        return new NodeStreamingChatHelper.StreamResult(answer.getText(), "", answer, List.of(), false, 12, 6);
+                    });
+            String verdict = verdict("ACCEPT", true, false);
+            when(helper.streamCallSilent(eq(model), any(), eq("gate-test"), eq("finalization_check")))
+                    .thenReturn(new NodeStreamingChatHelper.StreamResult(verdict, "", new AssistantMessage(verdict), List.of(), false, 13, 7));
+            var out = node.apply(new RunState(values));
+            if ("answer".equals(recoveryOutcome)) {
+                assertEquals("The total is 42.", out.get(FINAL_ANSWER));
+                assertEquals(3, out.get(LLM_CALL_COUNT));
+                assertEquals(35, out.get(PROMPT_TOKENS));
+            } else {
+                assertEquals("incomplete", out.get(FINISH_REASON));
+                assertTrue(String.valueOf(out.get(FINAL_ANSWER)).contains("DRAFT_REPETITION"));
+                assertNotEquals(true, out.get(NEEDS_TOOL_CALL));
+                assertEquals(startingCalls == 0 ? 2 : 49, out.get(LLM_CALL_COUNT));
+                verify(helper, never()).streamCallSilent(eq(model), any(), eq("gate-test"), eq("finalization_check"));
+            }
+            verify(helper, times(startingCalls == 0 ? 1 : 0)).streamCallSilent(
+                    eq(model), any(), eq("gate-test"), eq("reasoning_post_tool_recovery"));
+        } finally { tracker.onShutdown(); }
+    }
+
     @Test void heldContentRepetitionPublishesOnlyDeterministicIncompleteDiagnosis() throws Exception {
         var tracker=new ChatStreamTracker(new ObjectMapper());
         try {
@@ -96,12 +158,52 @@ class ReasoningNodeFinalizationTest {
             assertEquals("incomplete",out.get(FINISH_REASON));assertEquals(false,out.get(CONTENT_STREAMED));
             String diagnosis=String.valueOf(out.get(FINAL_ANSWER));
             assertFalse(diagnosis.contains("UNVERIFIED_OPERATION_RECOVERED"));assertTrue(diagnosis.contains("任务尚未完成"));
-            assertEquals(1,out.get(LLM_CALL_COUNT));assertEquals(0,out.get(PROMPT_TOKENS));assertEquals(0,out.get(COMPLETION_TOKENS));
+            assertEquals(1,out.get(LLM_CALL_COUNT));assertEquals(10,out.get(PROMPT_TOKENS));assertEquals(5,out.get(COMPLETION_TOKENS));
             tracker.broadcastObject("gate-test","flush",Map.of());
             assertFalse(capture.text().contains("content_delta"));assertFalse(capture.text().contains("UNVERIFIED_OPERATION_RECOVERED"));
             var replay=new Capture();tracker.attach("gate-test",replay);assertFalse(replay.text().contains("UNVERIFIED_OPERATION_RECOVERED"));
             verify(model).stream(any(Prompt.class));
         } finally {tracker.onShutdown();}
+    }
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"length", "max_tokens"})
+    void outputLimitWithVisibleTextRecoversBeforeVerification(String finishReason) throws Exception {
+        var tracker = new ChatStreamTracker(new ObjectMapper());
+        try {
+            tracker.register("gate-test");
+            var model = mock(ChatModel.class);
+            var limit = ChatGenerationMetadata.builder().finishReason(finishReason).build();
+            var truncated = new ChatResponse(List.of(new Generation(new AssistantMessage("unfinished draft"), limit)));
+            when(model.stream(any(Prompt.class))).thenReturn(Flux.just(truncated))
+                    .thenAnswer(invocation -> {
+                        Prompt prompt = invocation.getArgument(0);
+                        assertTrue(prompt.getContents().contains("Write a concise complete replacement"));
+                        return Flux.just(response("The total is 42."));
+                    })
+                    .thenAnswer(invocation -> {
+                        Prompt prompt = invocation.getArgument(0);
+                        assertTrue(prompt.getContents().contains("CANDIDATE:\nThe total is 42."));
+                        return Flux.just(response(verdict("ACCEPT", true, false)));
+                    });
+            var helper = new NodeStreamingChatHelper(tracker);
+            var tools = mock(AgentToolSet.class);
+            when(tools.callbacks()).thenReturn(List.of());
+            var node = new ReasoningNode(model, tools, null, helper, null, tracker);
+            enable(node, helper, tracker);
+            var values = state();
+            var call = new AssistantMessage.ToolCall("s", "function", "calculate", "{}");
+            values.put(MESSAGES, List.of(new UserMessage("Calculate all stages and report exact total"),
+                    AssistantMessage.builder().content("").toolCalls(List.of(call)).build(),
+                    ToolResponseMessage.builder().responses(List.of(
+                            new ToolResponseMessage.ToolResponse("s", "calculate", "42"))).build()));
+
+            var output = node.apply(new RunState(values));
+
+            assertEquals("The total is 42.", output.get(FINAL_ANSWER));
+            assertEquals(3, output.get(LLM_CALL_COUNT));
+        } finally {
+            tracker.onShutdown();
+        }
     }
     @Test void toolBackedLongFormReviewsOnlyCompleteAssembledCandidateWithoutSpendingCorrections() throws Exception {
         var tracker=new ChatStreamTracker(new ObjectMapper());
@@ -478,5 +580,46 @@ class ReasoningNodeFinalizationTest {
         final List<String> chunks=new java.util.concurrent.CopyOnWriteArrayList<>();
         public void send(SseEventBuilder builder) { for(var data:builder.build())chunks.add(String.valueOf(data.getData())); }
         String text(){return String.join("",chunks);}
+    }
+
+    @Test void verifierProviderFailurePublishesCandidateWithUnverifiedNotice() throws Exception {
+        var tracker=new ChatStreamTracker(new ObjectMapper());
+        try {
+            tracker.register("gate-test");
+            var model=mock(ChatModel.class);
+            when(model.stream(any(Prompt.class))).thenAnswer(call -> {
+                String prompt=((Prompt)call.getArgument(0)).getContents();
+                return prompt.contains("You are a tool-free consistency reviewer")
+                    ? Flux.error(new RuntimeException("invalid_request_error: unsupported parameter"))
+                    : Flux.just(response("The first calculation failed; the total is 42."));
+            });
+            var helper=new NodeStreamingChatHelper(tracker);var tools=mock(AgentToolSet.class);
+            when(tools.callbacks()).thenReturn(List.of());
+            var node=new ReasoningNode(model,tools,null,helper,null,tracker);enable(node,helper,tracker);
+            var out=node.apply(new RunState(state()));
+            String answer=String.valueOf(out.get(FINAL_ANSWER));
+            assertTrue(answer.startsWith("The first calculation failed; the total is 42."));
+            assertTrue(answer.contains("未经最终核验"));
+            assertTrue(answer.contains("诊断码：CHECKER_ERROR"));
+            assertNotEquals("incomplete",out.get(FINISH_REASON));
+        } finally {tracker.onShutdown();}
+    }
+    @Test void malformedVerdictStillWithholdsCandidate() throws Exception {
+        var tracker=new ChatStreamTracker(new ObjectMapper());
+        try {
+            tracker.register("gate-test");
+            var model=mock(ChatModel.class);
+            when(model.stream(any(Prompt.class))).thenAnswer(call -> {
+                String prompt=((Prompt)call.getArgument(0)).getContents();
+                return Flux.just(response(prompt.contains("You are a tool-free consistency reviewer")
+                    ? "not json" : "The failed operation was recovered; total 42."));
+            });
+            var helper=new NodeStreamingChatHelper(tracker);var tools=mock(AgentToolSet.class);
+            when(tools.callbacks()).thenReturn(List.of());
+            var node=new ReasoningNode(model,tools,null,helper,null,tracker);enable(node,helper,tracker);
+            var out=node.apply(new RunState(state()));
+            assertEquals("incomplete",out.get(FINISH_REASON));
+            assertFalse(String.valueOf(out.get(FINAL_ANSWER)).contains("recovered"));
+        } finally {tracker.onShutdown();}
     }
 }

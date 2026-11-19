@@ -37,6 +37,19 @@ class ToolLoopGuardTest {
         return eval;
     }
 
+    @Test
+    void skillCatalogRepeatedReadHaltsButDistinctPagesMakeProgress() {
+        String page="{\"matchingTotal\":79,\"names\":[\"pdf\"],\"hasMore\":false}";
+        assertTrue(runRounds(5,"listAvailableSkills","{}",page).shouldHalt());
+        Map<String,Object> stats=Map.of();
+        for(int offset=0;offset<10;offset++) {
+            var eval=ToolLoopGuard.evaluate(stats,
+                List.of(call("c"+offset,"listAvailableSkills","{\"offset\":"+offset+"}")),
+                List.of(result("c"+offset,"listAvailableSkills",page+offset)));
+            assertFalse(eval.shouldHalt());stats=eval.stats();
+        }
+    }
+
     // ==================== failure heuristic ====================
 
     @Test

@@ -204,6 +204,58 @@ class TaskFinalizationCoordinatorTest {
         });
         assertEquals(TaskFinalizationGate.Outcome.REVISE,review(16000,0,0).result().outcome());
     }
+    @Test void olderSkillDirectoryKeepsTotalsAfterLaterFilteredLookup() {
+        String directory="Skill directory\n"+"| documented skill | description |\n".repeat(40)+"Showing: 50 of 52 skill(s).";
+        var old=new GraphEventPublisher.GraphEvent(GraphEventPublisher.EVENT_TOOL_COMPLETE,
+            Map.of("toolCallId","directory","toolName","listAvailableSkills","result",directory,"success",true),1);
+        var latest=new GraphEventPublisher.GraphEvent(GraphEventPublisher.EVENT_TOOL_COMPLETE,
+            Map.of("toolCallId","filtered","toolName","listAvailableSkills","result","No skills are currently available.","success",true),2);
+        var ledger=ActionExecutionLedger.fromEvents(List.of(old,latest));
+        var response=new org.springframework.ai.chat.messages.ToolResponseMessage.ToolResponse("directory","listAvailableSkills",directory);
+        for (String source : List.of(MateClawStateKeys.MESSAGES,MateClawStateKeys.TOOL_RESULTS,MateClawStateKeys.PENDING_EVENTS)) {
+            reset(helper);
+            when(helper.streamCallSilent(any(),any(),anyString(),anyString())).thenAnswer(call->{
+                String prompt=((Prompt)call.getArgument(1)).getContents();
+                assertTrue(prompt.contains("Showing: 50 of 52 skill(s)."),"Earlier complete directory must reach the verifier");
+                assertTrue(prompt.contains("No skills are currently available."),"Keep the later filtered result too");
+                return result(json("ACCEPT","[]").replace("\"failedCallCount\":1","\"failedCallCount\":0"));
+            });
+            Object retained = source.equals(MateClawStateKeys.MESSAGES)
+                ? List.of(org.springframework.ai.chat.messages.ToolResponseMessage.builder().responses(List.of(response)).build())
+                : source.equals(MateClawStateKeys.TOOL_RESULTS) ? List.of(response) : List.of(old);
+            var check=coordinator.review(model,"c","你有哪些技能","目录显示52个技能",ledger,"",16000,0,10,0,true,
+                new RunState(Map.of(source,retained)));
+            assertEquals(TaskFinalizationGate.Outcome.ACCEPT,check.result().outcome(),source);
+        }
+    }
+
+    @Test void olderEvidenceRejectsWrongIdentityLengthAndConflictingCopies() {
+        String output="x".repeat(600)+" total=52";
+        var old=new GraphEventPublisher.GraphEvent(GraphEventPublisher.EVENT_TOOL_COMPLETE,
+            Map.of("toolCallId","old","toolName","listAvailableSkills","result",output,"success",true),1);
+        var latest=new GraphEventPublisher.GraphEvent(GraphEventPublisher.EVENT_TOOL_COMPLETE,
+            Map.of("toolCallId","new","toolName","listAvailableSkills","result","No matching skills.","success",true),2);
+        var ledger=ActionExecutionLedger.fromEvents(List.of(old,latest));
+        var valid=new org.springframework.ai.chat.messages.ToolResponseMessage.ToolResponse("old","listAvailableSkills",output);
+        for (var responses : List.of(
+                List.of(new org.springframework.ai.chat.messages.ToolResponseMessage.ToolResponse(null,"listAvailableSkills",output)),
+                List.of(new org.springframework.ai.chat.messages.ToolResponseMessage.ToolResponse("wrong","listAvailableSkills",output)),
+                List.of(new org.springframework.ai.chat.messages.ToolResponseMessage.ToolResponse("old","wrong",output)),
+                List.of(new org.springframework.ai.chat.messages.ToolResponseMessage.ToolResponse("old","listAvailableSkills",output+"extra")),
+                List.of(valid,new org.springframework.ai.chat.messages.ToolResponseMessage.ToolResponse("old","listAvailableSkills",output.replace("52","99"))))) {
+            reset(helper);
+            when(helper.streamCallSilent(any(),any(),anyString(),anyString())).thenAnswer(call->{
+                String prompt=((Prompt)call.getArgument(1)).getContents();
+                assertFalse(prompt.contains("total=52"));assertFalse(prompt.contains("total=99"));
+                assertTrue(prompt.contains("\"resultComplete\":false"));
+                return result(json("ACCEPT","[]").replace("\"failedCallCount\":1","\"failedCallCount\":0"));
+            });
+            coordinator.review(model,"c","List observed skills","Observed subset",ledger,"",16000,0,10,0,true,
+                new RunState(Map.of(MateClawStateKeys.TOOL_RESULTS,responses)));
+            verify(helper).streamCallSilent(any(),any(),anyString(),anyString());
+        }
+    }
+
     @Test void latestAggregateAfterPreviewIsGroundedFromExactRetainedResponse() {
         String output="x".repeat(600)+" totalSquareSum=2094116873200";
         var receipts=ActionExecutionLedger.fromEvents(List.of(GraphEventPublisher.toolComplete("aggregate","execute_code",output,true)));
@@ -367,5 +419,55 @@ class TaskFinalizationCoordinatorTest {
         verify(tracker,times(2)).broadcastObject(eq("c"),eq("finalization_check"),data.capture());
         assertEquals("FENCED_JSON",data.getAllValues().get(1).get("parseFailureCode"));
         assertFalse(data.getAllValues().toString().contains("```"));
+    }
+
+    @Test void providerErrorIsReportedAsCheckerErrorWithShareableCode() {
+        when(helper.streamCallSilent(any(), any(), anyString(), anyString())).thenReturn(
+                new NodeStreamingChatHelper.StreamResult("", "", null, List.of(), false, 0, 0, false,
+                        "LLM 调用失败: upstream reset", NodeStreamingChatHelper.ErrorType.SERVER_ERROR));
+        var check = review(16000, 0, 0);
+        assertEquals("CHECKER_ERROR", check.result().reason());
+        String answer = TaskFinalizationCoordinator.incompleteAnswer(check.result().reason());
+        assertTrue(answer.contains("模型服务报错"));
+        assertTrue(answer.endsWith("（诊断码：CHECKER_ERROR）"));
+        assertFalse(answer.contains("upstream reset"));
+    }
+    @Test void locallyTruncatedVerdictIsPartialNotProviderError() {
+        when(helper.streamCallSilent(any(), any(), anyString(), anyString())).thenReturn(
+                new NodeStreamingChatHelper.StreamResult("{\"decision\":", "", null, List.of(), false, 7, 3, true,
+                        "content_repetition", NodeStreamingChatHelper.ErrorType.NONE));
+        assertEquals("CHECKER_PARTIAL", review(16000, 0, 0).result().reason());
+    }
+    @Test void nullVerifierResponseAndExceptionHaveDistinctCodes() {
+        when(helper.streamCallSilent(any(), any(), anyString(), anyString())).thenReturn(null);
+        assertEquals("CHECKER_UNAVAILABLE", review(16000, 0, 0).result().reason());
+        reset(helper);
+        when(helper.streamCallSilent(any(), any(), anyString(), anyString())).thenThrow(new IllegalStateException("boom"));
+        var thrown = review(16000, 0, 0).result().reason();
+        assertEquals("CHECKER_EXCEPTION", thrown);
+        assertNotEquals(TaskFinalizationCoordinator.incompleteAnswer("CHECKER_UNAVAILABLE"),
+                TaskFinalizationCoordinator.incompleteAnswer(thrown));
+    }
+    @Test void summaryFailureCodesAreDistinctAndFreeTextGetsNoCode() {
+        assertTrue(TaskFinalizationCoordinator.incompleteAnswer("Summary unavailable").contains("诊断码：SUMMARY_UNAVAILABLE"));
+        assertTrue(TaskFinalizationCoordinator.incompleteAnswer("Summary verification unavailable").contains("诊断码：SUMMARY_EXCEPTION"));
+        assertFalse(TaskFinalizationCoordinator.incompleteAnswer("SECRET_REVIEWER_TEXT").contains("诊断码"));
+    }
+    @Test void onlyVerifierInfrastructureFailuresAllowUnverifiedPublication() {
+        for (String reason : List.of("CHECKER_ERROR","CHECKER_UNAVAILABLE","CHECKER_EXCEPTION","CHECKER_PARTIAL","CHECKER_OUTPUT_LIMIT","CHECKER_TOOL_CALL"))
+            assertTrue(TaskFinalizationCoordinator.checkerUnavailable(reason), reason);
+        for (String reason : List.of("INVALID_VERDICT","FAILED_CALL_COUNT_MISMATCH","UNSUPPORTED_RECOVERY","CONTRADICTORY_OUTCOME",
+                "TASK_UNFINISHED","CORRECTION_LIMIT","Required execution evidence unavailable","SUMMARY_OUTPUT_LIMIT"))
+            assertFalse(TaskFinalizationCoordinator.checkerUnavailable(reason), reason);
+        assertFalse(TaskFinalizationCoordinator.checkerUnavailable(null));
+    }
+    @Test void oversizedVerifierRequestIsContextOverflowNotPublishable() {
+        when(helper.streamCallSilent(any(), any(), anyString(), anyString())).thenReturn(
+                new NodeStreamingChatHelper.StreamResult("", "", null, List.of(), false, 0, 0, false,
+                        "请求体过大（HTTP 413）", NodeStreamingChatHelper.ErrorType.PAYLOAD_TOO_LARGE));
+        String reason = review(16000, 0, 0).result().reason();
+        assertEquals("CHECKER_CONTEXT_EXCEEDED", reason);
+        assertFalse(TaskFinalizationCoordinator.checkerUnavailable(reason));
+        assertTrue(TaskFinalizationCoordinator.incompleteAnswer(reason).contains("超出可用上下文"));
     }
 }

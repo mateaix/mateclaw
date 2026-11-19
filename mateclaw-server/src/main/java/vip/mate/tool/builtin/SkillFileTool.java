@@ -313,21 +313,12 @@ public class SkillFileTool {
         first to read its instructions, then follow what SKILL.md tells you.
         Calling a skill name as a tool will fail with "Tool not found".
 
-        Search strategy when looking for a specific skill:
-        - The default page is 20 of N — if "Showing: 20 of <larger>" appears
-          and you don't see what you're after, retry with `keyword=<name fragment>`
-          (matched against name + description, case-insensitive) or raise `limit`
-          up to 50.
-        - If the user mentions an exact skill name (e.g. "tencent-meeting-mcp"),
-          skip this tool and go straight to
-          `readSkillFile(skillName="<exact-name>", filePath="SKILL.md")` —
-          that bypasses the catalog truncation entirely and either returns
-          the skill's instructions or a clear "skill not found" error.
-
-        Note: this returns Skills (vendor-installable docs), not Agents.
-        For Agents, use `listAvailableAgents`.
-
-        Returns: A formatted list of active skills with name, icon, and description.
+        Returns bounded JSON: matchingTotal, statusCounts, a compact names index with bounded summaries for every name, and
+        optional longer description examples. The names index is independent of the description
+        limit, so normal catalogs fit in one response. hasMore/nextOffset identify real
+        additional pages; keep the same filters when using nextOffset.
+        For a specific skill, keyword matches name and description. An exact known name
+        can be used directly with readSkillFile. This lists Skills, not Agents.
         """)
     public String listAvailableSkills(
         @JsonProperty(required = false)
@@ -343,8 +334,12 @@ public class SkillFileTool {
         String status,
 
         @JsonProperty(required = false)
-        @JsonPropertyDescription("Maximum number of skills to return, default 20, max 50")
+        @JsonPropertyDescription("Maximum description examples to return, default 20, max 50. The compact names index has an independent size budget.")
         Integer limit,
+
+        @JsonProperty(required = false)
+        @JsonPropertyDescription("Zero-based offset into the filtered names index, default 0. Use nextOffset from the previous response with the same filters.")
+        Integer offset,
 
         @Nullable ToolContext ctx
     ) {
@@ -378,47 +373,95 @@ public class SkillFileTool {
                         SkillRuntimeService.isRecentlyInstalled(s, recencyCutoff) ? 0 : 1))
                 .toList();
 
-        if (activeSkills.isEmpty()) {
-            return "No skills are currently available.";
-        }
+        return catalogPage(activeSkills, keyword, source, status, safeLimit, offset);
+    }
 
-        // Issue #46: render as a table with the call pattern stated up front,
-        // instead of a `- **Name** — desc` list that primes the LLM to call
-        // the names directly as tools.
-        StringBuilder sb = new StringBuilder();
-        sb.append("⚠️  These are Skills (documentation packages), NOT directly callable tools.\n");
-        sb.append("To use any of them, call:\n");
-        sb.append("  readSkillFile(skillName=\"<name from below>\", filePath=\"SKILL.md\")\n");
-        sb.append("then follow what SKILL.md tells you (typically `runSkillScript`).\n\n");
-        sb.append("| Skill name | Status | Description |\n");
-        sb.append("|------------|--------|-------------|\n");
-        for (ResolvedSkill skill : activeSkills.stream().limit(safeLimit).toList()) {
-            sb.append("| `").append(skill.getName()).append("`");
-            if (skill.getIcon() != null && !skill.getIcon().isBlank()) {
-                sb.append(" ").append(skill.getIcon());
-            }
-            sb.append(" | ").append(statusToken(skill)).append(" | ");
-            if (skill.getDescription() != null && !skill.getDescription().isBlank()) {
-                String desc = skill.getDescription();
-                if (desc.length() > 120) {
-                    desc = desc.substring(0, 120) + "...";
-                }
-                sb.append(desc.replace("|", "\\|").replace("\n", " "));
-            }
-            sb.append(" |\n");
+    /** Source-compatible entry point; only the cursor-aware overload is exposed as a tool. */
+    public String listAvailableSkills(String keyword, String source, String status, Integer limit, ToolContext ctx) {
+        return listAvailableSkills(keyword, source, status, limit, null, ctx);
+    }
+
+    /** Data reduction before model input, independent of any model instruction or summarization call. */
+    private static String catalogPage(List<ResolvedSkill> skills, String keyword, String source,
+                                      String status, int exampleLimit, Integer requestedOffset) {
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        var page = mapper.createObjectNode();
+        page.put("kind", "skill_catalog");
+        page.put("matchingTotal", skills.size());
+        int offset = Math.min(skills.size(), Math.max(0, requestedOffset == null ? 0 : requestedOffset));
+        page.put("offset", offset);
+        var filters = page.putObject("filters");
+        filters.put("keyword", catalogPreview(keyword, 128));
+        filters.put("source", catalogPreview(source, 32));
+        filters.put("status", catalogPreview(status, 32));
+        var counts = page.putObject("statusCounts");
+        for (var skill : skills) {
+            String token = statusToken(skill);
+            counts.put(token, counts.path(token).asInt() + 1);
         }
-        int shown = Math.min(safeLimit, activeSkills.size());
-        sb.append("\nShowing: ").append(shown)
-                .append(" of ").append(activeSkills.size()).append(" skill(s).");
-        if (shown < activeSkills.size()) {
-            // Surface the truncation hint so the LLM knows how to widen the
-            // search instead of concluding the missing skill doesn't exist.
-            sb.append(" Result truncated — retry with `keyword=<part of name>` ")
-                    .append("to search the full catalog, or `limit=50` to see more rows. ")
-                    .append("If the user gave an exact skill name, prefer ")
-                    .append("`readSkillFile(skillName=\"<name>\", filePath=\"SKILL.md\")` directly.");
+        var names = page.putArray("names");
+        page.put("hasMore", false);
+        page.putNull("nextOffset");
+        var summaries = page.putObject("summaries");
+        page.put("summariesMayBeTruncated", true);
+        var examples = page.putArray("examples");
+        var usage = page.putObject("usage");
+        usage.put("tool", "readSkillFile");
+        usage.put("filePath", "SKILL.md");
+        int next = offset;
+        // The compact index supplies names without loading every description.
+        // Keep room for metadata; pathological names fail explicitly rather than
+        // returning a cursor that cannot make progress.
+        while (next < skills.size() && next - offset < 200) {
+            var indexedSkill = skills.get(next);
+            names.add(indexedSkill.getName());
+            summaries.put(indexedSkill.getName(), catalogPreview(indexedSkill.getDescription(), 32));
+            if (page.toString().length() > MAX_OUTPUT_CHARS - 256) {
+                names.remove(names.size() - 1);
+                summaries.remove(indexedSkill.getName());
+                break;
+            }
+            next++;
         }
-        return sb.toString();
+        if (next == offset && next < skills.size()) {
+            page.put("error", "Skill name exceeds catalog output budget");
+            return page.toString();
+        }
+        page.put("hasMore", next < skills.size());
+        if (next < skills.size()) page.put("nextOffset", next);
+        // Every indexed skill gets a short factual description before any
+        // longer examples consume the remaining budget. Bare names previously
+        // made the model query each unillustrated skill again for an overview.
+        for (int i = offset; i < next; i++) {
+            var skill = skills.get(i);
+            String prior = summaries.path(skill.getName()).asText();
+            String candidate = catalogPreview(skill.getDescription(), 96);
+            int allowance = Math.max(0, MAX_OUTPUT_CHARS - 256 - page.toString().length()) / (next - i);
+            int encodedLimit = mapper.getNodeFactory().textNode(prior).toString().length() + allowance;
+            while (candidate.length() > prior.length()
+                    && mapper.getNodeFactory().textNode(candidate).toString().length() > encodedLimit)
+                candidate = candidate.substring(0, candidate.length() - 1);
+            if (candidate.length() >= prior.length()) summaries.put(skill.getName(), candidate);
+        }
+        for (int i = offset; i < next && examples.size() < exampleLimit; i++) {
+            var skill = skills.get(i);
+            var item = examples.addObject();
+            item.put("name", skill.getName());
+            item.put("status", statusToken(skill));
+            String description = skill.getDescription();
+            item.put("description", catalogPreview(description, 120));
+            item.put("descriptionComplete", description == null || description.length() <= 120);
+            if (page.toString().length() > MAX_OUTPUT_CHARS) {
+                examples.remove(examples.size() - 1);
+                break;
+            }
+        }
+        return page.toString();
+    }
+
+    private static String catalogPreview(String value, int maxChars) {
+        if (value == null) return "";
+        return value.length() <= maxChars ? value : value.substring(0, maxChars);
     }
 
     private static boolean containsIgnoreCase(String value, String lowerCaseNeedle) {

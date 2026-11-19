@@ -310,6 +310,7 @@ public class SkillRuntimeService {
      * skills cache so subsequent reads reflect the new status.
      */
     public ResolvedSkill rescanSingle(SkillEntity skill) {
+        packageResolver.invalidateSecurityScan(skill.getId());
         ResolvedSkill resolved = packageResolver.resolve(skill);
         activeSkillsCache.invalidateAll();
         log.info("Rescanned skill '{}' (id={}): status={}, blocked={}",

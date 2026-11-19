@@ -65,7 +65,7 @@ public final class ToolLoopGuard {
      * content is legitimate (e.g. after an external revert).
      */
     static final Set<String> IDEMPOTENT_TOOLS = Set.of(
-            "read_file", "web_search", "extract_document_text", "extract_pdf_text");
+            "read_file", "web_search", "extract_document_text", "extract_pdf_text", "listAvailableSkills");
 
     /** Counter-key prefixes inside the stats map. */
     private static final String KEY_EXACT_FAILURE = "ef:";

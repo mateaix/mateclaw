@@ -8,6 +8,7 @@ import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
 import vip.mate.wiki.service.WikiEntityExtractionService;
 import vip.mate.wiki.service.WikiEntityGraphService;
 import vip.mate.wiki.service.WikiKnowledgeBaseService;
+import vip.mate.wiki.service.WikiRawMaterialService;
 
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -31,7 +32,8 @@ class WikiEntityControllerIdorTest {
         controller = new WikiEntityController(
                 mock(WikiEntityGraphService.class),
                 mock(WikiEntityExtractionService.class),
-                kbService);
+                kbService,
+                mock(WikiRawMaterialService.class));
     }
 
     @Test
@@ -67,6 +69,15 @@ class WikiEntityControllerIdorTest {
         when(kbService.getById(10L)).thenReturn(kb(10L, 2L));
 
         assertThatThrownBy(() -> controller.extract(10L, false, 1L))
+                .isInstanceOf(MateClawException.class);
+    }
+
+    @Test
+    @DisplayName("extractRaw (member-level write) on another workspace's KB → 403")
+    void extractRawCrossWorkspaceRejected() {
+        when(kbService.getById(10L)).thenReturn(kb(10L, 2L));
+
+        assertThatThrownBy(() -> controller.extractRaw(10L, 5L, false, 1L))
                 .isInstanceOf(MateClawException.class);
     }
 

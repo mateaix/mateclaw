@@ -314,4 +314,48 @@ class SkillSnapshotServiceTest {
 
         verify(skillMapper, never()).update(any(), any());
     }
+    @Test void previewExplainsChangesWithoutMutatingSkillsOrSnapshots() throws Exception {
+        var a = skill(1L,"alpha","# private current", "active");
+        var b = skill(2L,"beta","# B", "active");
+        var extra = skill(3L,"new-skill","# New", "active");
+        var snapshot = new SkillSnapshotEntity(); snapshot.setId(100L); snapshot.setWorkspaceId(1L);
+        snapshot.setPayload("""
+                [{"id":"1","name":"alpha","skillContent":"# private previous","origin":"agent","lifecycleState":"active","enabled":true,"pinned":false,"workspacePresent":false},
+                 {"id":"2","name":"beta","skillContent":"# B","origin":"agent","lifecycleState":"active","enabled":true,"pinned":false,"workspacePresent":false},
+                 {"id":"99","name":"removed","skillContent":"# old"}]
+                """);
+        when(snapshotMapper.selectOne(any())).thenReturn(snapshot);
+        when(skillMapper.selectList(any())).thenReturn(List.of(a,b,extra));
+        var preview = service.preview(100L,1L);
+        assertEquals(2, preview.restoreCount()); assertEquals(1, preview.unchangedCount());
+        assertEquals(1, preview.missingCount()); assertEquals(1, preview.archiveCount());
+        assertTrue(preview.entries().stream().anyMatch(row -> "alpha".equals(row.name()) && row.changedFields().contains("skillContent")));
+        assertTrue(preview.entries().stream().anyMatch(row -> "new-skill".equals(row.name()) && "archive".equals(row.action())));
+        assertTrue(!new ObjectMapper().writeValueAsString(preview).contains("private"));
+        verify(snapshotMapper, never()).insert(any(SkillSnapshotEntity.class));
+        verify(skillMapper, never()).update(isNull(), any());
+        verify(workspaceManager, never()).exportToWorkspace(any(), any(), any());
+        verify(workspaceManager, never()).archiveWorkspace(any(), any());
+        verify(runtimeService, never()).refreshActiveSkills();
+    }
+    @Test void previewRejectsForeignWorkspaceAndMalformedPayload() {
+        var snapshot = new SkillSnapshotEntity();snapshot.setId(100L);snapshot.setWorkspaceId(2L);snapshot.setPayload("[]");
+        when(snapshotMapper.selectOne(any())).thenReturn(snapshot);
+        assertThrows(IllegalArgumentException.class, () -> service.preview(100L,1L));
+        snapshot.setWorkspaceId(1L);snapshot.setPayload("{}");
+        assertThrows(IllegalArgumentException.class, () -> service.preview(100L,1L));
+        snapshot.setPayload("[{\"id\":1},{\"id\":1}]");
+        assertThrows(IllegalArgumentException.class, () -> service.preview(100L,1L));
+    }
+
+    @Test void previewRejectsWrongFieldTypesEvenWhenSkillIdentityIsValid() {
+        var snapshot = new SkillSnapshotEntity();snapshot.setId(100L);snapshot.setWorkspaceId(1L);
+        when(snapshotMapper.selectOne(any())).thenReturn(snapshot);
+        for (String payload : List.of("[{\"id\":1,\"enabled\":{}}]", "[{\"id\":1,\"lifecycleState\":[]}]",
+                "[{\"id\":1,\"archivedAt\":\"not-a-date\"}]", "[{\"id\":1,\"pinned\":\"false\"}]")) {
+            snapshot.setPayload(payload);
+            assertThrows(IllegalArgumentException.class, () -> service.preview(100L,1L), payload);
+        }
+    }
+
 }

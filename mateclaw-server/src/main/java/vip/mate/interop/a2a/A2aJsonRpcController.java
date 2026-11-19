@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import vip.mate.channel.web.Utf8SseEmitter;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -105,7 +106,7 @@ public class A2aJsonRpcController {
     }
 
     private ResponseEntity<Object> stream(Object rpcId, String tenant, JsonNode params, Authentication auth) {
-        SseEmitter emitter = new SseEmitter(0L);
+        SseEmitter emitter = new Utf8SseEmitter(0L);
         AtomicBoolean done = new AtomicBoolean(false);
         streamExecutor.execute(() -> heartbeat(emitter, done));
         streamExecutor.execute(() -> {

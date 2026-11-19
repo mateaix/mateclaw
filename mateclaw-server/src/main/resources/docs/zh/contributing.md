@@ -18,7 +18,13 @@ cd mateclaw
 ### 2. 启动后端
 
 ```bash
-# 从仓库根目录运行，使用根目录下已配置的模型数据库与工作空间
+# 需要 Java 21 与 Maven；在仓库根目录运行。
+mvn -pl mateclaw-plugin-api -am install -DskipTests
+[ -f .env.local ] || (umask 077; printf 'JWT_SECRET=%s\n' "$(openssl rand -hex 48)" > .env.local)
+set -a
+source .env.local
+set +a
+# 使用根目录下已配置的模型数据库与工作空间
 SPRING_DATASOURCE_URL="jdbc:h2:file:$PWD/data/mateclaw;MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE" \
 MATECLAW_WORKSPACE_SANDBOX_ROOT="$PWD/data/workspace" \
 mvn -pl mateclaw-server spring-boot:run
@@ -38,7 +44,7 @@ npm install
 npm run dev -- --host 127.0.0.1
 ```
 
-前端在 5173 端口，把 `/api` proxy 到后端。
+前端在 5173 端口，把 `/api` proxy 到后端。保留 `.env.local` 中的 JWT 密钥，不提交该文件。
 
 ### 4. 验证
 
@@ -53,7 +59,7 @@ npm run dev -- --host 127.0.0.1
 git checkout -b feat/your-feature-name
 
 # 2. 小而有意义的 commit
-git add <具体的文件>
+git add path/to/changed-file
 git commit -m "feat(scope): 你改了什么"
 
 # 3. 和上游保持同步

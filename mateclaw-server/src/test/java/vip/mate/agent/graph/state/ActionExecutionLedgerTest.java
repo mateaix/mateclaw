@@ -149,6 +149,29 @@ class ActionExecutionLedgerTest {
         var output=projection.path("successfulSubstantiveCalls").get(0);
         assertFalse(output.path("resultComplete").asBoolean());assertEquals(-1,output.path("omittedResultChars").asInt());
     }
+    @Test void olderCompleteEvidenceFitsOrFallsBackToHonestPreview() throws Exception {
+        String old="x".repeat(900)+"Showing: 50 of 52 skill(s).";
+        var ledger=ActionExecutionLedger.fromEvents(List.of(
+            new GraphEventPublisher.GraphEvent(GraphEventPublisher.EVENT_TOOL_COMPLETE,java.util.Map.of("toolCallId","old","toolName","listAvailableSkills","result",old,"success",true),1),
+            new GraphEventPublisher.GraphEvent(GraphEventPublisher.EVENT_TOOL_COMPLETE,java.util.Map.of("toolCallId","latest","toolName","listAvailableSkills","result","No matching skills.","success",true),2)));
+        var retained=java.util.Map.of("old",old);
+        var mapper=new com.fasterxml.jackson.databind.ObjectMapper();
+        var full=ledger.projectAnswerFacts(3000,retained);
+        assertTrue(full.coreFactsFit());assertTrue(full.text().contains("Showing: 50 of 52 skill(s)."));
+        var older=mapper.readTree(full.text()).path("successfulSubstantiveCalls").get(1);
+        assertTrue(older.path("resultComplete").asBoolean());
+        assertEquals(0,older.path("omittedResultChars").asInt());
+        var preview=ledger.projectAnswerFacts(3000,java.util.Map.of());
+        int previewBudget=vip.mate.agent.context.TokenEstimator.estimateTokens(preview.text());
+        var constrained=ledger.projectAnswerFacts(previewBudget,retained);
+        assertTrue(constrained.coreFactsFit());
+        older=mapper.readTree(constrained.text()).path("successfulSubstantiveCalls").get(1);
+        assertFalse(older.path("resultComplete").asBoolean());
+        assertFalse(constrained.text().contains("Showing: 50 of 52 skill(s)."));
+        var mismatch=ledger.projectAnswerFacts(3000,java.util.Map.of("old","forged"+old));
+        assertFalse(mismatch.text().contains("Showing: 50 of 52 skill(s)."));
+    }
+
     @Test void guardedProjectionReservesFullLatestOutputBeforeOptionalOlderReceipts() throws Exception {
         String old="old "+"x".repeat(600), latest="y".repeat(600)+" totalSquareSum=2094116873200";
         var ledger=ActionExecutionLedger.fromEvents(List.of(

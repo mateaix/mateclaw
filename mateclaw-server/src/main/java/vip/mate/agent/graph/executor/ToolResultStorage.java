@@ -293,18 +293,19 @@ public class ToolResultStorage {
     }
 
     private String buildPreview(String fullResult, String toolName, Path spillFile) {
-        // Snap the preview to a complete JSON element so the model never sees a value
-        // severed mid-token (which invites it to fabricate the omitted fields).
-        String head = StructuredTruncator.headSlice(fullResult, props.getPreviewHeadChars());
+        int headBudget=Math.max(0,Math.min(props.getPreviewHeadChars(),fullResult.length()/3));
+        int tailBudget=Math.max(0,Math.min(props.getPreviewTailChars(),headBudget));
+        String marker="\n…[middle omitted — preview is INCOMPLETE]…\n";
+        String preview=StructuredTruncator.truncate(fullResult,headBudget,tailBudget,marker);
         return SPILL_MARKER_PREFIX
                 + " tool=" + toolName
                 + " full_chars=" + fullResult.length()
                 + " path=" + spillFile.toAbsolutePath()
-                + "\n[Preview — first " + head.length() + " of " + fullResult.length()
-                + " chars. The preview is INCOMPLETE: use read_file with the path above to "
-                + "retrieve the full result. Do NOT infer or fabricate the omitted content.]\n"
-                + head
-                + "\n…[truncated]";
+                + "\n[INCOMPLETE head/tail preview, up to " + headBudget + "/" + tailBudget
+                + " chars. Use read_file with the path above for missing evidence. "
+                + "Do NOT infer or fabricate omitted content.]\n"
+                + preview;
+
     }
 
     /**

@@ -155,9 +155,9 @@ class ConversationServiceWebchatVisibilityTest {
 
         String sql = captor.getValue().getTargetSql().toLowerCase();
         assertThat(sql).contains("conversation_kind is null");
-        assertThat(sql).contains("conversation_kind <>");
+        assertThat(sql).contains("conversation_kind <>", "message_count >", "parent_conversation_id is null");
         assertThat(captor.getValue().getParamNameValuePairs().values())
-                .contains("team_worker", "team-task-%");
+                .contains("team_worker", "team-task-%", "child-%");
     }
 
     @Test
@@ -172,9 +172,9 @@ class ConversationServiceWebchatVisibilityTest {
 
         String sql = captor.getValue().getTargetSql().toLowerCase();
         assertThat(sql).contains("conversation_kind is null");
-        assertThat(sql).contains("conversation_kind <>");
+        assertThat(sql).contains("conversation_kind <>", "message_count >", "parent_conversation_id is null");
         assertThat(captor.getValue().getParamNameValuePairs().values())
-                .contains("team_worker", "team-task-%");
+                .contains("team_worker", "team-task-%", "child-%");
     }
 
     // ------------------------------------------------------------------

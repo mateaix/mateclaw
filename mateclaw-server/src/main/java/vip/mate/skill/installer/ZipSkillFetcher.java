@@ -96,10 +96,14 @@ public class ZipSkillFetcher {
      */
     public record ExtractedSkill(String skillMdContent,
                                  Map<String, String> references,
-                                 Map<String, String> scripts) {}
+                                 Map<String, String> scripts, Map<String, byte[]> files) {
+        public ExtractedSkill(String content, Map<String, String> references, Map<String, String> scripts) {
+            this(content, references, scripts, Map.of());
+        }
+    }
 
     /** Buffered raw zip entry, awaiting classification once SKILL.md prefix is known. */
-    private record RawEntry(String name, String content) {}
+    private record RawEntry(String name, String content, byte[] bytes) {}
 
     /**
      * Parse an uploaded ZIP file into a SkillBundle. Source type is "zip"
@@ -153,7 +157,8 @@ public class ZipSkillFetcher {
                 fm != null ? String.valueOf(fm.getOrDefault("version", "1.0.0")) : "1.0.0",
                 parsed.getDescription(),
                 fm != null ? String.valueOf(fm.getOrDefault("author", "")) : "",
-                fm != null ? String.valueOf(fm.getOrDefault("icon", "📦")) : "📦"
+                fm != null ? String.valueOf(fm.getOrDefault("icon", "📦")) : "📦",
+                extracted.files()
         );
     }
 
@@ -253,35 +258,19 @@ public class ZipSkillFetcher {
                             + "MB limit (adjust mateclaw.skill.upload.max-total-size-mb)");
                 }
 
-                // Skill bundles persist file contents as text (mate_skill_file
-                // is a TEXT column; SkillBundle carries Map<String,String>).
-                // Decoding a binary entry (.png/.woff/.zip/compiled helper, …)
-                // as text replaces every invalid byte with U+FFFD, so the file
-                // would be stored permanently corrupted and "restored" broken
-                // on every sync. Binary resources are not supported in a bundle
-                // today, so skip them with a clear WARN instead of silently
-                // mangling them — matches how unknown root-level files are
-                // already handled below. (Root-level binaries were already
-                // dropped; this also covers binaries nested in scripts/ and
-                // references/, which previously slipped through corrupted.)
-                if (isLikelyBinary(bytes)) {
-                    log.warn("[ZipSkillFetcher] Skipping binary entry (not supported in skill bundles): {}", entryName);
-                    zis.closeEntry();
-                    continue;
-                }
-
-                String content = decodeBytes(bytes);
+                String content = isLikelyBinary(bytes) ? null : decodeBytes(bytes);
                 String normalizedName = entryPath.toString().replace('\\', '/');
                 String fileName = entryPath.getFileName().toString();
 
                 // First match wins for SKILL.md so we lock onto the shallowest one.
                 if (skillMdContent == null && (SKILL_MD.equals(fileName) || SKILL_MD_LOWER.equals(fileName))) {
+                    if (content == null) throw new IOException("SKILL.md must contain text");
                     skillMdContent = content;
                     int slashIdx = normalizedName.lastIndexOf('/');
                     skillMdPrefix = slashIdx > 0 ? normalizedName.substring(0, slashIdx + 1) : "";
                     log.info("[ZipSkillFetcher] Found SKILL.md at: {}", normalizedName);
                 } else {
-                    raws.add(new RawEntry(normalizedName, content));
+                    raws.add(new RawEntry(normalizedName, content, bytes));
                 }
 
                 zis.closeEntry();
@@ -294,6 +283,7 @@ public class ZipSkillFetcher {
 
         Map<String, String> references = new HashMap<>();
         Map<String, String> scripts = new HashMap<>();
+        Map<String, byte[]> files = new HashMap<>();
 
         for (RawEntry raw : raws) {
             String relative = raw.name();
@@ -301,6 +291,12 @@ public class ZipSkillFetcher {
                 relative = relative.substring(skillMdPrefix.length());
             }
 
+            if (vip.mate.skill.workspace.bundle.SkillBundleFiles.isDbEligible(relative)) {
+                files.put(relative, raw.bytes());
+                if (raw.content() == null || relative.startsWith("templates/")) continue;
+            } else if (raw.content() == null) {
+                continue;
+            }
             if (relative.startsWith("references/")) {
                 references.put(relative.substring("references/".length()), raw.content());
             } else if (relative.startsWith("scripts/")) {
@@ -314,9 +310,11 @@ public class ZipSkillFetcher {
                 String classified = classifyRootFile(relative);
                 if ("scripts".equals(classified)) {
                     scripts.put(relative, raw.content());
+                    files.put("scripts/" + relative, raw.bytes());
                     log.info("[ZipSkillFetcher] Classified root-level entry '{}' as script by extension", relative);
                 } else if ("references".equals(classified)) {
                     references.put(relative, raw.content());
+                    files.put("references/" + relative, raw.bytes());
                     log.info("[ZipSkillFetcher] Classified root-level entry '{}' as reference by extension", relative);
                 } else {
                     log.warn("[ZipSkillFetcher] Ignoring root-level entry with unknown extension: {}", raw.name());
@@ -327,7 +325,7 @@ public class ZipSkillFetcher {
             }
         }
 
-        return new ExtractedSkill(skillMdContent, references, scripts);
+        return new ExtractedSkill(skillMdContent, references, scripts, files);
     }
 
     /**

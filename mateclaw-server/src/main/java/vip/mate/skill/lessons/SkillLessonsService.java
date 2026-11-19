@@ -9,263 +9,166 @@ import vip.mate.skill.runtime.model.ResolvedSkill;
 import vip.mate.skill.workspace.SkillWorkspaceManager;
 
 import java.io.IOException;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
+import java.nio.file.*;
+import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.Locale;
-import java.util.UUID;
+import java.util.*;
+import java.util.regex.Pattern;
 
-/**
- * RFC-090 §11.4 / §14.3 — per-skill {@code LESSONS.md} read & write.
- *
- * <p>SKILL.md is a deployment artifact and must remain read-only at
- * runtime. Lessons captured by the skill itself land in a sibling file
- * {@code LESSONS.md} so the system prompt enhancement layer can append
- * recent experience without rewriting the manifest.
- *
- * <p>Why a dedicated file rather than {@code MEMORY.md}:
- * <ul>
- *   <li>Lessons are scoped to <i>this</i> skill — the agent must not
- *       leak skill-specific tactics into another skill's context.</li>
- *   <li>Agents share canonical memory, but a single skill may belong
- *       to multiple agents; each agent's MEMORY.md is global.</li>
- *   <li>Per §14.3, mixing lessons into {@code MemoryWriteEvent} would
- *       inflate the SOUL summarizer's recompute counter.</li>
- * </ul>
- *
- * <p>Storage format (markdown, append-only, FIFO truncated):
- * <pre>
- * # Lessons learned for {skill-id}
- *
- * ## 2026-04-30 14:23  (conversation: 7a3b...)
- * Lesson body
- * Source: {skill-id} turn #N
- *
- * ## 2026-04-29 09:12  (conversation: 9c4d...)
- * ...
- * </pre>
- */
+/** Skill-local learning stays separate from canonical memory and can be withdrawn precisely. */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class SkillLessonsService {
-
-    /** Cap entries to keep LESSONS.md from ballooning (§10.1 risk 3). */
     private static final int DEFAULT_MAX_ENTRIES = 50;
-
-    private static final DateTimeFormatter HEADING_TS = DateTimeFormatter
-            .ofPattern("yyyy-MM-dd HH:mm")
-            .withLocale(Locale.ROOT);
-
+    private static final DateTimeFormatter HEADING_TS = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm", Locale.ROOT);
+    private static final Pattern HEADING = Pattern.compile("(?m)^## (\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}[^\\r\\n]*)(?:\\r?\\n|$)");
+    private static final Pattern ID_MARKER = Pattern.compile("(?m)^<!-- lesson-id: ([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}) -->\\r?\\n?");
     private final SkillWorkspaceManager workspaceManager;
     private final ApplicationEventPublisher eventPublisher;
+    // Bounded JVM locks serialize append, cap, withdrawal and clear for the same file.
+    private final Object[] locks = java.util.stream.IntStream.range(0, 64).mapToObj(i -> new Object()).toArray();
 
-    /**
-     * Append a lesson to {@code LESSONS.md}.
-     *
-     * <p>Side effects:
-     * <ol>
-     *   <li>Creates the file if it doesn't exist (with the canonical
-     *       header).</li>
-     *   <li>Appends a new {@code ## yyyy-MM-dd HH:mm (conversation: id)}
-     *       section with the lesson body.</li>
-     *   <li>If total entries exceed {@code maxEntries}, drops the oldest
-     *       sections (FIFO truncation).</li>
-     *   <li>Publishes {@link SkillLessonWrittenEvent} on success.</li>
-     * </ol>
-     *
-     * @param resolved      the resolved skill (must have a workspace
-     *                      directory for the write to succeed; database-
-     *                      only skills are returned as a no-op)
-     * @param agentId       agent that produced the lesson, may be null
-     * @param conversationId conversation context, may be null
-     * @param content       lesson text — caller's responsibility to
-     *                      sanitize / truncate
-     * @param maxEntries    upper bound on entries; non-positive falls
-     *                      back to {@link #DEFAULT_MAX_ENTRIES}
-     * @return new lesson id (UUID) when persisted, null on no-op
-     */
-    public String recordLesson(ResolvedSkill resolved, Long agentId,
-                                String conversationId, String content,
-                                int maxEntries) {
-        if (resolved == null || resolved.getName() == null) {
-            log.debug("recordLesson: missing skill identity, skipping");
-            return null;
-        }
-        if (content == null || content.isBlank()) {
-            log.debug("recordLesson: empty content for skill '{}', skipping", resolved.getName());
-            return null;
-        }
-        Path workspace = resolveWorkspace(resolved);
-        if (workspace == null) {
-            log.debug("recordLesson: no workspace directory for skill '{}', skipping",
-                    resolved.getName());
-            return null;
-        }
+    public record LessonEntry(String id, String heading, String content, boolean deletable) {}
+    private record Section(int start, int end, String id, String heading, String content) {}
 
-        Path lessonsFile = workspace.resolve("LESSONS.md");
-        int cap = maxEntries > 0 ? maxEntries : DEFAULT_MAX_ENTRIES;
-        String lessonId = UUID.randomUUID().toString();
-
-        try {
-            ensureFileWithHeader(lessonsFile, resolved.getName());
-            String section = buildSection(conversationId, content);
-            Files.writeString(lessonsFile, section,
-                    StandardCharsets.UTF_8, StandardOpenOption.APPEND);
-            enforceCap(lessonsFile, resolved.getName(), cap);
-        } catch (IOException e) {
-            log.warn("Failed to write LESSONS.md for skill '{}': {}",
-                    resolved.getName(), e.getMessage());
-            return null;
-        }
-
-        eventPublisher.publishEvent(new SkillLessonWrittenEvent(
-                agentId,
-                resolved.getId(),
-                resolved.getName(),
-                conversationId,
-                content));
-        return lessonId;
-    }
-
-    /**
-     * Read raw {@code LESSONS.md} contents. Returns null when the file
-     * is missing — callers should treat as "no lessons yet" without
-     * branching on exception.
-     */
-    public String readLessons(ResolvedSkill resolved) {
+    public String recordLesson(ResolvedSkill resolved, Long agentId, String conversationId, String content, int maxEntries) {
+        if (resolved == null || resolved.getName() == null || content == null || content.isBlank()) return null;
+        // Reserved record headings in a body would make its storage boundaries ambiguous.
+        if (HEADING.matcher(content).find()) return null;
         Path workspace = resolveWorkspace(resolved);
         if (workspace == null) return null;
         Path file = workspace.resolve("LESSONS.md");
-        if (!Files.exists(file)) return null;
-        try {
-            return Files.readString(file, StandardCharsets.UTF_8);
-        } catch (IOException e) {
-            log.warn("Failed to read LESSONS.md for skill '{}': {}",
-                    resolved.getName(), e.getMessage());
-            return null;
+        String id = UUID.randomUUID().toString();
+        synchronized (lock(file)) {
+            try {
+                String existing = readExisting(file);
+                if (existing == null) existing = "# Lessons learned for " + resolved.getName() + "\n\n";
+                String conversation = conversationId == null ? "" : conversationId.replaceAll("[\\r\\n]", " ").trim();
+                String section = "\n## " + LocalDateTime.now().format(HEADING_TS)
+                        + (conversation.isEmpty() ? "" : "  (conversation: " + conversation + ")")
+                        + "\n<!-- lesson-id: " + id + " -->\n" + content.trim() + "\n";
+                String updated = existing + (existing.endsWith("\n") ? "" : "\n") + section;
+                List<Section> all = parse(updated);
+                int cap = maxEntries > 0 ? maxEntries : DEFAULT_MAX_ENTRIES;
+                if (all.size() > cap) updated = updated.substring(0, all.getFirst().start())
+                        + updated.substring(all.get(all.size() - cap).start());
+                atomicWrite(file, updated);
+            } catch (IOException e) {
+                log.warn("Failed to write lessons for '{}': {}", resolved.getName(), e.getMessage());
+                return null;
+            }
         }
+        eventPublisher.publishEvent(new SkillLessonWrittenEvent(agentId, resolved.getId(), resolved.getName(), conversationId, content));
+        return id;
     }
 
-    /**
-     * Convenience for the prompt enhancement layer: returns the body
-     * (everything after the canonical title) so it can be appended to
-     * a skill's SKILL.md body without duplicating the title.
-     */
+    public String readLessons(ResolvedSkill resolved) {
+        Path workspace = resolveWorkspace(resolved);
+        if (workspace == null) return null;
+        try { return readExisting(workspace.resolve("LESSONS.md")); }
+        catch (IOException e) { log.warn("Failed to read lessons for '{}': {}", resolved.getName(), e.getMessage()); return null; }
+    }
+
     public String readLessonsBody(ResolvedSkill resolved) {
         String full = readLessons(resolved);
         if (full == null || full.isBlank()) return null;
-        // Strip the leading "# Lessons learned for {name}\n\n" header.
-        int firstSection = full.indexOf("\n## ");
-        if (firstSection < 0) return full.trim();
-        return full.substring(firstSection + 1).trim();
+        var matcher = HEADING.matcher(full);
+        boolean found = matcher.find();
+        if (!found && full.trim().equals("# Lessons learned for " + resolved.getName())) return null;
+        String body = found ? full.substring(matcher.start()) : full;
+        return ID_MARKER.matcher(body).replaceAll("").trim();
     }
 
-    /**
-     * Delete a single lesson by id by rewriting the file without the
-     * matching section. Returns {@code true} when an entry was actually
-     * removed.
-     */
+    /** Build the UI projection from the same raw snapshot returned by the read endpoint. */
+    public static List<LessonEntry> entries(String raw) {
+        if (raw == null || raw.isBlank()) return List.of();
+        List<Section> sections = parse(raw);
+        Map<String, Integer> counts = new HashMap<>();
+        sections.forEach(s -> counts.merge(s.id(), 1, Integer::sum));
+        return sections.stream().map(s -> new LessonEntry(s.id(), s.heading(), s.content(), counts.get(s.id()) == 1)).toList();
+    }
+
     public boolean deleteLesson(ResolvedSkill resolved, String lessonId) {
-        // Lessons today have no per-section id — id is generated on
-        // write but not persisted. This is a placeholder for the API
-        // wiring; callers that need precise revert should use
-        // clearLessons or rebuild via re-recording. Returning false
-        // signals "no-op".
-        return false;
+        Path workspace = resolveWorkspace(resolved);
+        if (workspace == null || lessonId == null || lessonId.isBlank()) return false;
+        Path file = workspace.resolve("LESSONS.md");
+        synchronized (lock(file)) {
+            try {
+                String full = readExisting(file);
+                if (full == null) return false;
+                List<Section> matches = parse(full).stream().filter(s -> s.id().equals(lessonId)).toList();
+                if (matches.size() != 1) return false;
+                Section target = matches.getFirst();
+                atomicWrite(file, full.substring(0, target.start()) + full.substring(target.end()));
+                return true;
+            } catch (IOException e) { log.warn("Failed to withdraw lesson for '{}': {}", resolved.getName(), e.getMessage()); return false; }
+        }
     }
 
-    /**
-     * Wipe the LESSONS.md file entirely (called by the
-     * {@code DELETE /skills/{id}/lessons/clear} admin endpoint).
-     */
     public boolean clearLessons(ResolvedSkill resolved) {
         Path workspace = resolveWorkspace(resolved);
         if (workspace == null) return false;
         Path file = workspace.resolve("LESSONS.md");
-        if (!Files.exists(file)) return false;
-        try {
-            Files.delete(file);
-            return true;
-        } catch (IOException e) {
-            log.warn("Failed to clear LESSONS.md for skill '{}': {}",
-                    resolved.getName(), e.getMessage());
-            return false;
+        synchronized (lock(file)) {
+            try {
+                if (Files.isSymbolicLink(file)) return false;
+                return Files.deleteIfExists(file);
+            } catch (IOException e) { log.warn("Failed to clear lessons for '{}': {}", resolved.getName(), e.getMessage()); return false; }
         }
     }
 
-    // ==================== internals ====================
+    private Object lock(Path file) { return locks[Math.floorMod(file.toAbsolutePath().normalize().hashCode(), locks.length)]; }
 
     private Path resolveWorkspace(ResolvedSkill resolved) {
         if (resolved == null || resolved.getName() == null) return null;
         if (resolved.getSkillDir() != null) return resolved.getSkillDir();
-        Path convention = workspaceManager.resolveConventionPath(resolved.getName(), resolved.getWorkspaceId());
-        return Files.exists(convention) && Files.isDirectory(convention) ? convention : null;
+        Path path = workspaceManager.resolveConventionPath(resolved.getName(), resolved.getWorkspaceId());
+        return Files.isDirectory(path) ? path : null;
     }
 
-    private void ensureFileWithHeader(Path file, String skillName) throws IOException {
-        if (Files.exists(file)) return;
-        String header = "# Lessons learned for " + skillName + "\n\n";
-        Files.writeString(file, header, StandardCharsets.UTF_8,
-                StandardOpenOption.CREATE_NEW);
+    private static String readExisting(Path file) throws IOException {
+        if (Files.isSymbolicLink(file)) throw new IOException("Lessons file must not be a symbolic link");
+        try { return Files.readString(file, StandardCharsets.UTF_8); }
+        catch (NoSuchFileException e) { return null; }
     }
 
-    private String buildSection(String conversationId, String content) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("\n## ").append(LocalDateTime.now().format(HEADING_TS));
-        if (conversationId != null && !conversationId.isBlank()) {
-            sb.append("  (conversation: ").append(conversationId).append(")");
+    private static void atomicWrite(Path file, String content) throws IOException {
+        Path temporary = Files.createTempFile(file.getParent(), ".lessons-", ".tmp");
+        try {
+            Files.writeString(temporary, content, StandardCharsets.UTF_8);
+            try (var channel = FileChannel.open(temporary, StandardOpenOption.WRITE)) { channel.force(true); }
+            Files.move(temporary, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } finally { Files.deleteIfExists(temporary); }
+    }
+
+    private static List<Section> parse(String full) {
+        var matcher = HEADING.matcher(full);
+        List<int[]> positions = new ArrayList<>();
+        List<String> headings = new ArrayList<>();
+        while (matcher.find()) { positions.add(new int[]{matcher.start(), matcher.end()}); headings.add(matcher.group(1)); }
+        List<Section> sections = new ArrayList<>();
+        for (int i=0;i<positions.size();i++) {
+            int start = positions.get(i)[0], bodyStart = positions.get(i)[1];
+            int end = i + 1 < positions.size() ? positions.get(i+1)[0] : full.length();
+            String body = full.substring(bodyStart, end);
+            var marker = ID_MARKER.matcher(body);
+            String id = marker.find() && marker.start() == 0 ? marker.group(1) : legacyId(full.substring(start, end).strip());
+            sections.add(new Section(start, end, id, headings.get(i), ID_MARKER.matcher(body).replaceAll("").trim()));
         }
-        sb.append("\n").append(content.trim()).append("\n");
-        return sb.toString();
+        return sections;
     }
 
-    /**
-     * FIFO truncation. Reads the file once, splits on {@code "\n## "},
-     * keeps the title + last {@code maxEntries} sections, and rewrites.
-     * Cheap enough for the typical N=50 cap.
-     */
-    private void enforceCap(Path file, String skillName, int maxEntries) throws IOException {
-        if (maxEntries <= 0) return;
-        String full = Files.readString(file, StandardCharsets.UTF_8);
-        if (full.isBlank()) return;
-
-        String header = "# Lessons learned for " + skillName + "\n";
-        int firstSectionIdx = full.indexOf("\n## ");
-        if (firstSectionIdx < 0) return; // no sections yet
-
-        String preface = full.substring(0, firstSectionIdx);
-        String sectionsBlob = full.substring(firstSectionIdx + 1); // strip the leading newline
-
-        String[] sections = sectionsBlob.split("\n## ");
-        if (sections.length <= maxEntries) return;
-
-        List<String> kept = new ArrayList<>(maxEntries);
-        for (int i = sections.length - maxEntries; i < sections.length; i++) {
-            kept.add(sections[i]);
-        }
-        StringBuilder rebuilt = new StringBuilder();
-        if (!preface.isBlank()) rebuilt.append(preface).append("\n");
-        else rebuilt.append(header).append("\n");
-        for (int i = 0; i < kept.size(); i++) {
-            rebuilt.append("## ").append(kept.get(i));
-            if (i < kept.size() - 1 && !kept.get(i).endsWith("\n")) rebuilt.append("\n");
-        }
-        Files.writeString(file, rebuilt.toString(), StandardCharsets.UTF_8);
+    private static String legacyId(String section) {
+        try { return "legacy-" + HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(section.getBytes(StandardCharsets.UTF_8))); }
+        catch (java.security.NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
     }
 
-    /** Test hook (package-private) — exposes the parsing rule used by readLessonsBody. */
     static List<String> splitSections(String full) {
-        if (full == null || full.isBlank()) return Collections.emptyList();
-        int firstSectionIdx = full.indexOf("\n## ");
-        if (firstSectionIdx < 0) return Collections.emptyList();
-        String body = full.substring(firstSectionIdx + 1);
-        return java.util.Arrays.asList(body.split("\n## "));
+        if (full == null) return List.of();
+        return parse(full).stream().map(s -> full.substring(s.start(), s.end())).toList();
     }
 }

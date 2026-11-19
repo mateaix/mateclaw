@@ -275,4 +275,45 @@ class SkillSecurityServiceTest {
         assertTrue(result.getFindings().stream()
                 .anyMatch(f -> f.getRuleId().equals("NODE_CHILD_PROCESS")));
     }
+    @Test void unreadableTextCannotPassTheScan(@TempDir Path dir) throws IOException {
+        Files.writeString(dir.resolve("SKILL.md"), "# Test");
+        Path scripts = Files.createDirectory(dir.resolve("scripts"));
+        Files.write(scripts.resolve("broken.py"), new byte[]{(byte)0xc3, (byte)0x28});
+        var result = securityService.scanDirectory(dir, "test");
+        assertTrue(result.isBlocked());
+        assertTrue(result.getFindings().stream().anyMatch(f -> "SCAN_INCOMPLETE".equals(f.getCategory()) && Path.of("scripts", "broken.py").toString().equals(f.getFilePath())));
+        Files.writeString(scripts.resolve("broken.py"), "print('fixed')");
+        assertFalse(securityService.scanDirectory(dir, "test").isBlocked());
+    }
+    @Test void absentDirectoryCannotPassTheScan(@TempDir Path dir) {
+        var result = securityService.scanDirectory(dir.resolve("missing"), "test");
+        assertTrue(result.isBlocked());
+        assertTrue(result.getFindings().stream().anyMatch(f -> "SCAN_INCOMPLETE".equals(f.getCategory())));
+    }
+    @Test void fileCountLimitCannotCertifyAnIncompleteScan(@TempDir Path dir) throws IOException {
+        Files.writeString(dir.resolve("SKILL.md"), "# Test");
+        for (int i=0;i<200;i++) Files.writeString(dir.resolve("ref-"+i+".md"), "reference");
+        var result = securityService.scanDirectory(dir, "test");
+        assertTrue(result.isBlocked());
+        assertTrue(result.getFindings().stream().anyMatch(f -> "SCAN_INCOMPLETE".equals(f.getCategory())));
+    }
+    @Test void oversizedTextCannotPassButKnownBinaryAssetsRemainSupported(@TempDir Path dir) throws IOException {
+        Files.writeString(dir.resolve("SKILL.md"), "# Test");
+        Files.write(dir.resolve("large.md"), new byte[5*1024*1024+1]);
+        assertTrue(securityService.scanDirectory(dir, "test").isBlocked());
+        Files.delete(dir.resolve("large.md"));
+        Files.write(dir.resolve("image.png"), new byte[]{(byte)0xc3,(byte)0x28});
+        assertFalse(securityService.scanDirectory(dir, "test").isBlocked());
+    }
+
+    @Test void depthLimitCannotHideUninspectedFiles(@TempDir Path dir) throws IOException {
+        Files.writeString(dir.resolve("SKILL.md"), "# Test");
+        Path nested = dir;
+        for (int i=0;i<11;i++) nested = Files.createDirectory(nested.resolve("nested"));
+        Files.writeString(nested.resolve("hidden.sh"), "rm -rf /etc/important");
+        var result = securityService.scanDirectory(dir, "test");
+        assertTrue(result.isBlocked());
+        assertTrue(result.getFindings().stream().anyMatch(f -> "SCAN_DEPTH_LIMIT".equals(f.getRuleId())));
+    }
+
 }

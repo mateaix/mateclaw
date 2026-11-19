@@ -13,6 +13,10 @@ import vip.mate.agent.graph.state.ActionExecutionLedger;
 import vip.mate.agent.graph.plan.state.PlanStateAccessor;
 import vip.mate.agent.graph.plan.state.PlanStateKeys;
 import vip.mate.agent.graph.state.MateClawStateKeys;
+import vip.mate.agent.context.TokenEstimator;
+import vip.mate.agent.graph.guard.TaskFinalizationCoordinator;
+import vip.mate.agent.graph.guard.TaskFinalizationGate;
+import vip.mate.agent.runtime.state.RuntimeExecutionScope;
 import vip.mate.planning.service.PlanningService;
 
 import java.util.List;
@@ -98,6 +102,7 @@ public class PlanSummaryNode implements NodeAction {
                             + "若执行结果中包含交付物下载链接，请在回答中原样列出这些链接。"
                             + "若某些步骤未完成，如实说明未完成的部分及原因。"
                             + "计划步骤完成不等于持久目标通过验收；只有目标工具返回或 getGoalStatus 确认的状态才可宣称。"
+                            + vip.mate.agent.prompt.ResponseLanguageGuidance.PROMPT
                             + vip.mate.goal.service.GoalLifecycleHints.current(goalService, conversationId)
                             + "\n" + executionFacts),
                     new UserMessage(userContent.toString())
@@ -181,6 +186,7 @@ public class PlanSummaryNode implements NodeAction {
                 List<org.springframework.ai.chat.messages.Message> messages=List.of(
                     new SystemMessage("Summarize the completed plan using canonical execution facts. Do not invent recovery or numeric results. "
                         +"State unfinished portions honestly. Preserve deliverable links. Never restart the completed plan.\n"
+                        +vip.mate.agent.prompt.ResponseLanguageGuidance.PROMPT
                         +vip.mate.goal.service.GoalLifecycleHints.current(goalService,accessor.conversationId())
                         +vip.mate.agent.graph.guard.TaskFinalizationCoordinator.groundedFacts(facts.text())),
                     new UserMessage(content));
@@ -192,6 +198,27 @@ public class PlanSummaryNode implements NodeAction {
                 var result=streamingHelper.streamCallBufferedContent(chatModel,new Prompt(messages,
                         summaryOptions),accessor.conversationId(),"plan_summary");
                 total=total==null?result:vip.mate.agent.graph.guard.TaskFinalizationCoordinator.addUsage(total,result);
+                if(result!=null && result.isOutputTokenLimit()) {
+                    // Reasoning models can spend the whole output allowance on thinking before
+                    // any summary text. Regenerate once with thinking disabled and a larger
+                    // allowance; tools are never replayed and the step results stay unchanged.
+                    int promptTokens=TokenEstimator.estimateTokens(messages);
+                    int retryTokens=TaskFinalizationCoordinator.expandedOutputTokens(chatModel,window,promptTokens);
+                    if(retryTokens<MIN_SUMMARY_RETRY_OUTPUT_TOKENS
+                            || !TaskFinalizationCoordinator.callAvailable(run.maxIterations(),calls))
+                        return guardedIncomplete(state,accessor,total,calls,attempts,SUMMARY_OUTPUT_LIMIT,false);
+                    log.warn("[PlanSummary] Summary for plan {} hit the output token limit; retrying once with thinking off and {} output tokens",
+                            accessor.planId(),retryTokens);
+                    var retryState=new RunState(state.data());
+                    retryState.replace(MateClawStateKeys.REQUESTED_THINKING_LEVEL,"off");
+                    var retryPrompt=new Prompt(messages,TaskFinalizationCoordinator.summaryRetryOptions(chatModel,retryTokens));
+                    calls++;
+                    result=RuntimeExecutionScope.call(retryState,()->streamingHelper.streamCallBufferedContent(
+                            chatModel,retryPrompt,accessor.conversationId(),"plan_summary"));
+                    total=TaskFinalizationCoordinator.addUsage(total,result);
+                    if(result!=null && result.isOutputTokenLimit())
+                        return guardedIncomplete(state,accessor,total,calls,attempts,SUMMARY_OUTPUT_LIMIT,false);
+                }
                 if(result!=null && result.isPayloadTooLarge()) {
                     String diagnosis="汇总阶段未完成：请求体过大（HTTP 413）。已保留步骤原始结果，请拆分任务或缩短必需上下文后重试。";
                     planningService.markPlanFailed(accessor.planId(),diagnosis);
@@ -201,10 +228,15 @@ public class PlanSummaryNode implements NodeAction {
                         .put(MateClawStateKeys.FINISH_REASON,"incomplete")
                         .events(List.of(GraphEventPublisher.finishReason("incomplete"))).build();
                 }
-                if(result==null || result.stopped() || result.partial() || result.errorMessage()!=null || result.hasToolCalls())
+                if(result==null || result.stopped() || result.partial() || result.errorMessage()!=null || result.hasToolCalls()) {
+                    if(result==null || !result.stopped())
+                        log.warn("[PlanSummary] Summary call for plan {} unusable: null={} partial={} toolCalls={} errorType={} error={}",
+                                accessor.planId(),result==null,result!=null && result.partial(),result!=null && result.hasToolCalls(),
+                                result==null?null:result.errorType(),result==null?null:truncate(result.errorMessage(),300));
                     return guardedIncomplete(state,accessor,total,calls,attempts,result!=null && result.isPayloadTooLarge()
                         ? "Summary request too large (HTTP 413); original step results retained" : "Summary unavailable",
                         result!=null && result.stopped());
+                }
                 String summary=result.text();
                 if(summary==null || summary.isBlank()) {
                     // Step results may themselves contain model-authored claims. Preserve the useful
@@ -222,13 +254,27 @@ public class PlanSummaryNode implements NodeAction {
                     return guardedOutput(state,total,calls,attempts).finalSummary(summary).finalSummaryThinking(result.thinking())
                         .contentStreamed(false).thinkingStreamed(result.thinking()!=null&&!result.thinking().isEmpty()).build();
                 }
+                if(review.result().outcome()!=TaskFinalizationGate.Outcome.REVISE
+                        && TaskFinalizationCoordinator.checkerUnavailable(review.result().reason())) {
+                    // Verification could not run; publish the summary with an explicit notice
+                    // instead of discarding a completed plan's answer.
+                    log.warn("[PlanSummary] Verification unavailable for plan {} ({}); publishing summary as unverified",
+                            accessor.planId(),review.result().reason());
+                    String unverified=TaskFinalizationCoordinator.unverifiedAnswer(summary,review.result().reason());
+                    planningService.completePlan(accessor.planId(),unverified);
+                    return guardedOutput(state,total,calls,attempts).finalSummary(unverified).finalSummaryThinking(result.thinking())
+                        .contentStreamed(false).thinkingStreamed(result.thinking()!=null&&!result.thinking().isEmpty()).build();
+                }
                 if(review.result().outcome()!=vip.mate.agent.graph.guard.TaskFinalizationGate.Outcome.REVISE)
                     return guardedIncomplete(state,accessor,total,calls,attempts,review.result().reason(),false);
                 attempts++;correction="Regenerate summary with this precise receipt correction: "+review.result().reason();
             }
         } catch(java.util.concurrent.CancellationException cancelled) {
             return guardedIncomplete(state,accessor,total,calls,attempts,"Cancelled",true);
-        } catch(Exception unavailable) {return guardedIncomplete(state,accessor,total,calls,attempts,"Summary verification unavailable",false);}
+        } catch(Exception unavailable) {
+            log.warn("[PlanSummary] Guarded summary for plan {} threw",accessor.planId(),unavailable);
+            return guardedIncomplete(state,accessor,total,calls,attempts,"Summary verification unavailable",false);
+        }
     }
     private vip.mate.agent.graph.plan.state.PlanStateAccessor.OutputBuilder guardedOutput(RunState state,
             NodeStreamingChatHelper.StreamResult total,int calls,int attempts) {
@@ -244,6 +290,11 @@ public class PlanSummaryNode implements NodeAction {
             .put(MateClawStateKeys.FINISH_REASON,stopped?"stopped":"incomplete")
             .events(List.of(GraphEventPublisher.finishReason(stopped?"stopped":"incomplete"))).build();
     }
+
+    /** Incomplete reason when the summary still stops on the output limit after its single retry. */
+    static final String SUMMARY_OUTPUT_LIMIT = "SUMMARY_OUTPUT_LIMIT";
+    /** Below this allowance a retry cannot fit a useful summary. */
+    private static final int MIN_SUMMARY_RETRY_OUTPUT_TOKENS = 1024;
 
     /** Reason line for the summary call throwing. */
     private static final String SUMMARY_FAILED_NOTE = "LLM 汇总失败，以下为步骤原始结果";

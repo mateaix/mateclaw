@@ -23,7 +23,7 @@
 
     <properties>
         <!-- MateClaw release version shared by all Maven modules. -->
-        <revision>3.0.0</revision>
+        <revision>3.1.0</revision>
 
         <!-- Java -->
         <java.version>21</java.version>
@@ -31,18 +31,18 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
         <!-- Spring ecosystem -->
-        <spring-boot.version>4.1.1</spring-boot.version>
-        <spring-ai.version>2.0.1</spring-ai.version>
+        <spring-boot.version>4.1.2</spring-boot.version>
+        <spring-ai.version>2.0.2</spring-ai.version>
 
         <jsonschema-generator.version>5.0.0</jsonschema-generator.version>
         <springdoc.version>3.1.1</springdoc.version>
-        <agentscope.version>2.0.4</agentscope.version>
+        <agentscope.version>2.0.5</agentscope.version>
         <networknt-schema.version>3.0.1</networknt-schema.version>
         <mcp-sdk.version>0.18.3</mcp-sdk.version>
         <okhttp.version>4.12.0</okhttp.version>
 
         <!-- Persistence and core utilities -->
-        <mybatis-plus.version>3.5.17</mybatis-plus.version>
+        <mybatis-plus.version>3.5.18.1</mybatis-plus.version>
         <hutool.version>5.8.26</hutool.version>
         <jjwt.version>0.12.6</jjwt.version>
         <slf4j.version>2.0.16</slf4j.version>

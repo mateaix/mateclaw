@@ -138,6 +138,7 @@
         :team-runs-has-more="Boolean(teamRunsNextCursor)"
         :team-runs-loading-more="teamRunsLoadingMore"
         :readonly="workerConversationReadOnly"
+        @quote="handleAnswerQuote"
         @regenerate="handleRegenerate"
         @rewind="handleRewind"
         @suggestion-click="sendSuggestion"
@@ -304,6 +305,8 @@ let cachedAgents: import('@/types').Agent[] = []
 <script setup lang="ts">
 import { ElMessage } from 'element-plus/es/components/message/index'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index'
+import { quoteIntoDraft, type AnswerQuote } from '@/utils/answerQuote'
+import { useChatDocumentTitle } from '@/composables/useChatDocumentTitle'
 import { defineAsyncComponent, ref, computed, onMounted, onBeforeUnmount, onActivated, onDeactivated, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -759,11 +762,20 @@ async function collectFilesFromEntries(dirEntries: FileSystemDirectoryEntry[]): 
 
 const messageListRef = ref<InstanceType<typeof MessageList> | null>(null)
 const chatInputRef = ref<InstanceType<typeof ChatInput> | null>(null)
+async function handleAnswerQuote(quote: AnswerQuote) {
+  if (workerConversationReadOnly.value || quote.conversationId !== currentConversationId.value) return
+  if (!messages.value.some(message => String(message.id) === quote.messageId
+      && message.conversationId === quote.conversationId && message.role === 'assistant' && message.status !== 'generating')) return
+  inputText.value = quoteIntoDraft(quote.text,inputText.value)
+  await nextTick()
+  chatInputRef.value?.focus()
+}
+
 
 // Post-render augmentations (ECharts, KaTeX, Mermaid) all watch the same
 // MessageList container — placeholders emitted by useMarkdownRenderer get
 // upgraded in place after Vue paints the rendered Markdown HTML.
-const echartsContainerRef = computed(() => messageListRef.value?.$el as HTMLElement | null)
+const echartsContainerRef = computed(() => messageListRef.value?.contentElement ?? null)
 const { startObserving: startECharts, dispose: disposeECharts } = useEChartsRenderer(echartsContainerRef)
 const { startObserving: startKatex, dispose: disposeKatex } = useKatexRenderer(echartsContainerRef)
 const { startObserving: startMermaid, dispose: disposeMermaid } = useMermaidRenderer(echartsContainerRef)
@@ -795,6 +807,7 @@ const {
   baseUrl: '',
   thinkingLevel,
   onStreamEnd: async (meta) => {
+    chatTitle.finish(meta)
     // Restore the input/attachments if the turn ended in an error and the
     // user hasn't typed something else in the meantime.
     if (meta.reason === 'error' && pendingSendDraft.value) {
@@ -850,6 +863,17 @@ const {
   },
   onQueuedInputSkipped: (reason) => mcToast.warning(t(reason === 'managed_goal_selection_stale'
     ? 'chat.queuedSelectionStaleResend' : 'chat.queuedLegacyResend')),
+})
+
+const currentTitleConversation = computed(() => conversations.value
+  .find(conversation => conversation.conversationId === currentConversationId.value))
+const chatTitle = useChatDocumentTitle({
+  conversationId: currentConversationId,
+  name: computed(() => currentTitleConversation.value?.title || ''),
+  generating: isGenerating,
+  phase: streamPhase,
+  messages,
+  serverRunning: computed(() => currentTitleConversation.value?.streamStatus === 'running'),
 })
 
 const teamRunRouteQuery = computed(() => readTeamRunRouteQuery(route.query))

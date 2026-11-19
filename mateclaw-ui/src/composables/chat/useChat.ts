@@ -104,7 +104,7 @@ export interface UseChatOptions {
 /** Metadata emitted when a stream ends */
 export interface StreamEndMeta {
   conversationId: string
-  reason: 'completed' | 'stopped' | 'interrupted' | 'failed' | 'error' | 'awaiting_approval'
+  reason: 'completed' | 'incomplete' | 'stopped' | 'interrupted' | 'failed' | 'error' | 'awaiting_approval'
   /** Backend-persisted assistant message ID, if available */
   assistantMessageId?: number
   /** Whether the backend has already persisted the message */
@@ -653,6 +653,16 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     }
   })
 
+  stream.on('finish_reason', (data) => {
+    if (isStaleEvent(data) || !currentAssistantId.value || typeof data.reason !== 'string') return
+    const message = getMessage(currentAssistantId.value)
+    if (!message) return
+    updateMessage(currentAssistantId.value, {
+      ...message,
+      metadata: { ...parseMetadata(message.metadata), finishReason: data.reason },
+    })
+  })
+
   stream.on('message_complete', (data) => {
     if (isStaleEvent(data)) return
     if (currentAssistantId.value) {
@@ -736,6 +746,9 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     // server-annotation merge below reads metadata.segments.
     if (!streamEnabled.value) revealBufferedTurn()
 
+    const finishReason = typeof data.finishReason === 'string' ? data.finishReason
+      : currentAssistantId.value ? parseMetadata(getMessage(currentAssistantId.value)?.metadata)?.finishReason : undefined
+
     if (currentAssistantId.value) {
       const existingMsg = getMessage(currentAssistantId.value)
       if (existingMsg?.status !== 'failed') {
@@ -753,6 +766,9 @@ export function useChat(options: UseChatOptions): UseChatReturn {
         if (data.reasoningTokens !== undefined) msg.reasoningTokens = data.reasoningTokens
         if (data.runtimeModel) msg.runtimeModel = data.runtimeModel
         if (data.runtimeProvider) msg.runtimeProvider = data.runtimeProvider
+        if (typeof finishReason === 'string') {
+          msg.metadata = { ...parseMetadata(msg.metadata), finishReason }
+        }
         // Replace the local temp ID with the backend-persisted ID so reconcile can match by ID
         if (data.assistantMessageId) {
           msg.id = data.assistantMessageId
@@ -852,6 +868,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     const reason = data.status === 'stopped' ? 'stopped'
       : data.status === 'interrupted' ? 'interrupted'
       : data.status === 'awaiting_approval' ? 'awaiting_approval'
+      : finishReason === 'incomplete' ? 'incomplete'
       : 'completed'
     if (!errorFired) {
       onStreamEnd?.({

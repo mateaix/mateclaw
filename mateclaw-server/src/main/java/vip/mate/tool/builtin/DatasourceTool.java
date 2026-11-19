@@ -5,12 +5,14 @@ import cn.hutool.json.JSONUtil;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
 import vip.mate.datasource.model.DatasourceEntity;
 import vip.mate.datasource.service.DatasourceConnectionManager;
 import vip.mate.datasource.service.DatasourceService;
+import vip.mate.tool.mcp.runtime.McpToolResultCapture;
 
 import java.sql.*;
 import java.util.ArrayList;
@@ -62,19 +64,28 @@ public class DatasourceTool {
     public String query_datasource(
             @ToolParam(description = "动作：list_datasources / list_tables / describe_table") String action,
             @ToolParam(description = "数据源 ID（list_tables 和 describe_table 时必填）。必须作为字符串传入，避免大整数精度丢失", required = false) String datasourceId,
-            @ToolParam(description = "表名（describe_table 时必填）", required = false) String tableName) {
+            @ToolParam(description = "表名（describe_table 时必填）", required = false) String tableName,
+            ToolContext toolContext) {
 
         try {
             return switch (action) {
                 case "list_datasources" -> listDatasources();
                 case "list_tables" -> listTables(datasourceId);
                 case "describe_table" -> describeTable(datasourceId, tableName);
-                default -> error("未知动作: " + action + "，支持: list_datasources / list_tables / describe_table");
+                default -> failure(toolContext, error("未知动作: " + action + "，支持: list_datasources / list_tables / describe_table"),
+                        "Unknown datasource action: " + action);
             };
         } catch (Exception e) {
             log.error("数据源查询失败: {}", e.getMessage(), e);
-            return error(e.getMessage());
+            return failure(toolContext, error(e.getMessage()), "Datasource query failed: " + e.getMessage());
         }
+    }
+
+    /** Mark the call failed for the executor while keeping the readable error text for the model. */
+    private static String failure(ToolContext context, String errorJson, String message) {
+        McpToolResultCapture capture = McpToolResultCapture.from(context);
+        if (capture != null) capture.recordFailure(message);
+        return errorJson;
     }
 
     private String listDatasources() throws Exception {

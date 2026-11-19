@@ -1,5 +1,18 @@
 # Changelog
 
+## 3.1.0 — 2026-11-19
+
+Changes after v3.0.0:
+
+- Skills: withdraw individual lessons with durable identities, preview snapshot restoration, refresh reviews and fail closed on incomplete scans; cancellable installation and intact binary attachments.
+- Memory/chat: preserve exact sections and isolate asynchronous edits, quote selected answers, show browser run status, render command intent and real shell failures, and retain stopped-run usage.
+- Runtime/models: recover context overflow and oversized media, validate generation parameters, bound provider concurrency and team retries, preserve timeout overrides, plan summaries and H2 authentication state.
+- Wiki/documents/channels: per-document entity extraction, consistent citations, continued reasoning after DOCX generation, correct table/newline handling, DingTalk delivery acknowledgements, Feishu filenames and unbuffered Team/A2A streams.
+- DSH: optional 0.2.2-rc.1 on Node.js 24.9+ (24.x); default remains 0.2.0-rc.1. Desktop packaging/signing hardened.
+- Dependencies: Spring Boot 4.1.2, Spring AI 2.0.2, AgentScope Java 2.0.5 and MyBatis Plus 3.5.18.1. Fix synchronous Anthropic final-answer/tool-call selection.
+
+[English release and upgrade notes](mateclaw-server/src/main/resources/docs/en/changelog.md) · [中文更新与升级说明](mateclaw-server/src/main/resources/docs/zh/changelog.md)
+
 ## 3.0.0 — 2026-10-26
 
 3.0.0 upgrades to Java 21, Spring Boot 4 and Spring AI 2. AgentScope 2 drives ReAct and plan-step execution loops; MateClaw retains approvals, permissions, Goals, SSE and persistence.

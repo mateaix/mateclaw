@@ -644,31 +644,32 @@ public class DingTalkChannelAdapter extends AbstractChannelAdapter implements St
     private void sendMarkdownViaWebhook(String webhookUrl, String content) {
         String messageType = getConfigString("message_type", "markdown");
         try {
-            String jsonBody;
-            if ("markdown".equals(messageType) || "card".equals(messageType)) {
-                jsonBody = objectMapper.writeValueAsString(Map.of(
-                        "msgtype", "markdown",
-                        "markdown", Map.of("title", "MateClaw", "text", content)
-                ));
-            } else {
-                jsonBody = objectMapper.writeValueAsString(Map.of(
-                        "msgtype", "text",
-                        "text", Map.of("content", content)
-                ));
-            }
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(webhookUrl))
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
-                    .build();
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() != 200) {
-                log.warn("[dingtalk] Send message failed: status={}, body={}", response.statusCode(), response.body());
-            } else {
+            for (String chunk : ("markdown".equals(messageType) || "card".equals(messageType))
+                    ? DingTalkDelivery.chunks(content) : List.of(content)) {
+                String jsonBody;
+                if ("markdown".equals(messageType) || "card".equals(messageType)) {
+                    jsonBody = objectMapper.writeValueAsString(Map.of(
+                            "msgtype", "markdown",
+                            "markdown", Map.of("title", "MateClaw", "text", chunk)
+                    ));
+                } else {
+                    jsonBody = objectMapper.writeValueAsString(Map.of(
+                            "msgtype", "text",
+                            "text", Map.of("content", chunk)
+                    ));
+                }
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(webhookUrl))
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
+                        .build();
+                HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+                DingTalkDelivery.validateWebhook(response.statusCode(), response.body());
                 log.debug("[dingtalk] Message sent successfully via sessionWebhook");
             }
         } catch (Exception e) {
-            log.error("[dingtalk] Failed to send message: {}", e.getMessage(), e);
+            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+            throw new IllegalStateException("DingTalk webhook delivery failed", e);
         }
     }
 
@@ -1108,38 +1109,39 @@ public class DingTalkChannelAdapter extends AbstractChannelAdapter implements St
             }
 
             String messageType = getConfigString("message_type", "markdown");
-            Map<String, Object> msgParam;
-            String msgKey;
-            if ("markdown".equals(messageType) || "card".equals(messageType)) {
-                msgKey = "sampleMarkdown";
-                msgParam = Map.of("title", "MateClaw", "text", content);
-            } else {
-                msgKey = "sampleText";
-                msgParam = Map.of("content", content);
-            }
+            for (String chunk : ("markdown".equals(messageType) || "card".equals(messageType))
+                    ? DingTalkDelivery.chunks(content) : List.of(content)) {
+                Map<String, Object> msgParam;
+                String msgKey;
+                if ("markdown".equals(messageType) || "card".equals(messageType)) {
+                    msgKey = "sampleMarkdown";
+                    msgParam = Map.of("title", "MateClaw", "text", chunk);
+                } else {
+                    msgKey = "sampleText";
+                    msgParam = Map.of("content", chunk);
+                }
 
-            String jsonBody = objectMapper.writeValueAsString(Map.of(
-                    "robotCode", robotCode,
-                    "userIds", List.of(resolvedUserId),
-                    "msgKey", msgKey,
-                    "msgParam", objectMapper.writeValueAsString(msgParam)
-            ));
+                String jsonBody = objectMapper.writeValueAsString(Map.of(
+                        "robotCode", robotCode,
+                        "userIds", List.of(resolvedUserId),
+                        "msgKey", msgKey,
+                        "msgParam", objectMapper.writeValueAsString(msgParam)
+                ));
 
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create("https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend"))
-                    .header("Content-Type", "application/json")
-                    .header("x-acs-dingtalk-access-token", accessToken)
-                    .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
-                    .build();
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create("https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend"))
+                        .header("Content-Type", "application/json")
+                        .header("x-acs-dingtalk-access-token", accessToken)
+                        .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
+                        .build();
 
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() != 200) {
-                log.warn("[dingtalk] Proactive send failed: status={}, body={}", response.statusCode(), response.body());
-            } else {
+                HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+                DingTalkDelivery.validate(response.statusCode(), response.body());
                 log.debug("[dingtalk] Proactive message sent to {}", targetId);
             }
         } catch (Exception e) {
-            log.error("[dingtalk] Failed to proactive send: {}", e.getMessage(), e);
+            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+            throw new IllegalStateException("DingTalk proactive delivery failed", e);
         }
     }
 

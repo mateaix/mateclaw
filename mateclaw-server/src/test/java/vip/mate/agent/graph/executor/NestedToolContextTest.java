@@ -103,14 +103,14 @@ class NestedToolContextTest {
         var failures = new AtomicInteger();
         doAnswer(
                         i -> {
-                            if (i.getArgument(1, String.class)
+                            if (i.getArgument(1, GraphEventPublisher.GraphEvent.class).type()
                                             .equals(GraphEventPublisher.EVENT_TOOL_COMPLETE)
                                     && failures.getAndIncrement() == 0)
                                 throw new IllegalStateException("lost result publication");
                             return null;
                         })
                 .when(tracker)
-                .broadcastObject(anyString(), anyString(), any());
+                .broadcastLiveToolEvent(anyString(), any(GraphEventPublisher.GraphEvent.class));
         var executor =
                 new ToolExecutionExecutor(
                         AgentToolSet.fromCallbacks(List.of(), List.of(callback)),

@@ -1,6 +1,6 @@
 # 快速开始
 
-3.0.0 正式版发布日期为 **2026-10-26**；源码与发行包版本统一为 `3.0.0`，发行包请从 [GitHub Releases](https://github.com/mateaix/mateclaw/releases) 下载。升级前请阅读[升级说明](./changelog#升级与验证)。
+3.1.0 正式版 · **2026-11-19**：技能经验撤回与恢复预览、精确记忆编辑、聊天状态，以及执行与渠道可靠性改进。发行包请查看 [Releases](https://github.com/mateaix/mateclaw/releases)，升级前阅读[更新与升级说明](./changelog#升级与验证)。
 
 
 60 秒到第一条消息。**只有一条路：桌面端。**
@@ -11,11 +11,11 @@ Docker 和源码启动在 [配置说明](./config) 和 [贡献指南](./contribu
 
 ## 1. 下载
 
-去 [GitHub Releases](https://github.com/mateaix/mateclaw/releases) 拿最新安装包。
+从 [GitHub Releases](https://github.com/mateaix/mateclaw/releases) 下载已发布的安装包，支持的平台与文件名以该版本实际附件为准。
 
 - **Windows**——`MateClaw-Setup-x.y.z.exe`
 - **macOS**——`MateClaw-x.y.z.dmg`
-- **Linux**——`MateClaw-x.y.z.AppImage`
+- **Linux**——`MateClaw-x.y.z.AppImage`（以该版本实际产物为准）
 
 不用装 Java。不用装 Node。不用装 Maven。桌面端已经把 JRE 21 和后端 JAR 打包好了。
 

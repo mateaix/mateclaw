@@ -4,6 +4,7 @@ import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONObject;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
@@ -12,6 +13,7 @@ import vip.mate.datasource.service.DatasourceConnectionManager;
 import vip.mate.datasource.service.DatasourceService;
 import vip.mate.datasource.service.EChartsOptionBuilder;
 import vip.mate.datasource.service.SqlValidationService;
+import vip.mate.tool.mcp.runtime.McpToolResultCapture;
 
 import java.sql.*;
 import java.util.ArrayList;
@@ -48,7 +50,8 @@ public class SqlQueryTool {
             """)
     public String execute_sql(
             @ToolParam(description = "目标数据源 ID。必须作为字符串传入，避免大整数精度丢失") String datasourceId,
-            @ToolParam(description = "要执行的 SQL 查询（仅允许 SELECT）") String sql) {
+            @ToolParam(description = "要执行的 SQL 查询（仅允许 SELECT）") String sql,
+            ToolContext toolContext) {
 
         try {
             Long parsedDatasourceId = parseDatasourceId(datasourceId);
@@ -76,8 +79,15 @@ public class SqlQueryTool {
             JSONObject result = new JSONObject();
             result.set("error", e.getMessage());
             result.set("sql", sql);
-            return result.toStringPretty();
+            return failure(toolContext, result.toStringPretty(), "SQL query failed: " + e.getMessage());
         }
+    }
+
+    /** Mark the call failed for the executor while keeping the readable error text for the model. */
+    private static String failure(ToolContext context, String errorJson, String message) {
+        McpToolResultCapture capture = McpToolResultCapture.from(context);
+        if (capture != null) capture.recordFailure(message);
+        return errorJson;
     }
 
     private Long parseDatasourceId(String datasourceId) {

@@ -178,7 +178,8 @@ public class SkillHubClient {
                     resolvedVer,
                     description,
                     author,
-                    icon
+                    icon,
+                    extracted.files()
             );
         } catch (Exception e) {
             log.warn("Failed to parse hub bundle ZIP for '{}': {}", slug, e.getMessage());

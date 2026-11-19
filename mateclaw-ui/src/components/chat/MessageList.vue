@@ -2,6 +2,7 @@
   <div
     ref="scrollRef"
     class="message-list"
+    @scroll="clearAnswerQuote"
     :class="{ 'is-scrolling': !isAtBottom }"
   >
     <div ref="contentRef" class="message-list-content">
@@ -131,9 +132,16 @@
       </div>
     </Transition>
   </div>
+  <Teleport to="body">
+    <button v-if="answerQuote" class="answer-quote-action" type="button"
+      :style="{ left: quotePosition.left + 'px', top: quotePosition.top + 'px' }"
+      @mousedown.prevent @click="applyAnswerQuote">{{ t('chat.quoteSelection') }}</button>
+  </Teleport>
 </template>
 
 <script setup lang="ts">
+import { useAnswerQuote } from '@/composables/useAnswerQuote'
+import type { AnswerQuote } from '@/utils/answerQuote'
 import { computed, ref, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ArrowDown, ChatDotRound, DataLine, EditPen, Monitor, Right } from '@element-plus/icons-vue'
@@ -196,6 +204,7 @@ const props = withDefaults(defineProps<Props>(), {
 })
 
 const emit = defineEmits<{
+  quote: [quote: AnswerQuote]
   regenerate: [message: Message]
   rewind: [message: Message]
   'toggle-thinking': [message: Message, expanded: boolean]
@@ -344,7 +353,11 @@ function handleGlobalKeydown(e: KeyboardEvent) {
 }
 
 onMounted(() => document.addEventListener('keydown', handleGlobalKeydown))
-defineExpose({ resetScrollLock: resetLock })
+const { quote: answerQuote, position: quotePosition, apply: applyAnswerQuote, clear: clearAnswerQuote } =
+  useAnswerQuote(scrollRef, computed(() => Boolean(props.readonly)), quote => emit('quote',quote))
+
+// The quote Teleport makes this a fragment; $el is not a usable DOM container.
+defineExpose({ resetScrollLock: resetLock, contentElement: contentRef })
 
 onUnmounted(() => {
   clearDockTimer()
@@ -712,5 +725,13 @@ onUnmounted(() => {
   white-space: nowrap;
   font-weight: 500;
   letter-spacing: 0.2px;
+}
+</style>
+
+<style scoped>
+.answer-quote-action {
+  position: fixed; z-index: 3000; padding: 8px 12px; border-radius: 8px;
+  border: 1px solid var(--mc-border, #e2e8f0); background: var(--mc-bg-surface, #fff);
+  color: var(--mc-text-primary, #1e293b); box-shadow: 0 4px 16px #0002; cursor: pointer;
 }
 </style>

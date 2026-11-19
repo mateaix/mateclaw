@@ -10,6 +10,7 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.Disposable;
+import vip.mate.agent.GraphEventPublisher.GraphEvent;
 import vip.mate.tool.mcp.runtime.McpProgressContext;
 import vip.mate.workspace.conversation.model.MessageContentPart;
 
@@ -156,6 +157,17 @@ public class ChatStreamTracker {
      */
     record SseEvent(long id, String name, String json) {}
 
+    private record ToolEventKey(String name, String callId, long timestamp) {
+        static ToolEventKey from(String name, Object payload) {
+            if (payload instanceof Map<?, ?> data
+                    && data.get("toolCallId") instanceof String callId && !callId.isBlank()
+                    && data.get("timestamp") instanceof Number timestamp) {
+                return new ToolEventKey(name, callId, timestamp.longValue());
+            }
+            return null;
+        }
+    }
+
     /**
      * 中断类型：区分用户主动停止和用户在运行中追加新消息
      */
@@ -171,6 +183,8 @@ public class ChatStreamTracker {
         final List<SseEmitter> subscribers = new ArrayList<>();
         final List<SseEvent> buffer = new ArrayList<>();
         final Object lock = new Object();
+        // Guarded by lock. Entries are consumed when the same event reaches the transcript.
+        final java.util.Set<ToolEventKey> liveToolEvents = new java.util.HashSet<>();
         volatile boolean done;
         /** Guarded by lock; once true, cleanup owns this state. */
         boolean evicting;
@@ -993,7 +1007,11 @@ public class ChatStreamTracker {
 
     private void broadcastNow(String conversationId, String eventName, String jsonData, boolean skipBuffer) {
         RunState state = runs.get(conversationId);
+        broadcastNow(state, conversationId, eventName, jsonData, skipBuffer, null);
+    }
 
+    private void broadcastNow(RunState state, String conversationId, String eventName, String jsonData,
+                              boolean skipBuffer, ToolEventKey liveToolEvent) {
         boolean isDone = "done".equals(eventName);
         boolean isPostTurnEvent = "goal_continuation".equals(eventName)
                 || (eventName != null && eventName.startsWith("async_task_"));
@@ -1063,11 +1081,15 @@ public class ChatStreamTracker {
         }
 
         synchronized (state.lock) {
+            if (liveToolEvent != null && (!isCurrent(state) || state.done)) return;
             long eventId = 0L;
             if (!skipBuffer) {
                 eventId = EVENT_IDS.nextId();
                 SseEvent event = new SseEvent(eventId, eventName, jsonData);
                 state.buffer.add(event);
+                if (liveToolEvent != null) {
+                    state.liveToolEvents.add(liveToolEvent);
+                }
                 if (state.buffer.size() > MAX_BUFFER_SIZE) {
                     trimBuffer(state.buffer);
                 }
@@ -1113,6 +1135,32 @@ public class ChatStreamTracker {
      */
     public void broadcastObject(String conversationId, String eventName, Object data) {
         broadcastObject(conversationId, eventName, data, false);
+    }
+
+    /** Publishes a tool event immediately and remembers it for the later transcript projection. */
+    public void broadcastLiveToolEvent(String conversationId, GraphEvent event) {
+        RunState state = runs.get(conversationId);
+        if (state == null) return;
+        String json;
+        try {
+            json = objectMapper.writeValueAsString(event.data());
+        } catch (Exception e) {
+            log.warn("Failed to serialize live tool event {}: {}", event.type(), e.getMessage());
+            return;
+        }
+        flushPendingContent(state);
+        broadcastNow(state, conversationId, event.type(), json, false,
+                ToolEventKey.from(event.type(), event.data()));
+    }
+
+    boolean consumeLiveToolEvent(String conversationId, String name, Object payload) {
+        ToolEventKey key = ToolEventKey.from(name, payload);
+        if (key == null) return false;
+        RunState state = runs.get(conversationId);
+        if (state == null) return false;
+        synchronized (state.lock) {
+            return isCurrent(state) && state.liveToolEvents.remove(key);
+        }
     }
 
     /**

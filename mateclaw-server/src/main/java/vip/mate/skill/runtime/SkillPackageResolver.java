@@ -480,7 +480,10 @@ public class SkillPackageResolver {
             } else {
                 result = securityService.validate(resolved);
                 if (resolved.getId() != null) {
-                    securityScanCache.put(resolved.getId(), new CachedScanOutcome(contentHash, result));
+                    boolean incomplete = result.getFindings() != null && result.getFindings().stream()
+                            .anyMatch(finding -> "SCAN_INCOMPLETE".equals(finding.getCategory()));
+                    if (incomplete) securityScanCache.remove(resolved.getId());
+                    else securityScanCache.put(resolved.getId(), new CachedScanOutcome(contentHash, result));
                 }
             }
             boolean trustedBuiltin = resolved.isBuiltin() && result.isBlocked();
@@ -494,6 +497,7 @@ public class SkillPackageResolver {
             resolved.setSecurityWarnings(result.getWarnings());
 
             // 转换 findings 为 JSON 友好格式
+            resolved.setSecurityFindings(List.of());
             if (result.getFindings() != null && !result.getFindings().isEmpty()) {
                 List<ResolvedSkill.SecurityFinding> secFindings = result.getFindings().stream()
                     .map(f -> ResolvedSkill.SecurityFinding.builder()
@@ -520,7 +524,17 @@ public class SkillPackageResolver {
             }
         } catch (Exception e) {
             log.error("Security scan failed for skill '{}': {}", resolved.getName(), e.getMessage());
-            resolved.setSecurityWarnings(List.of("Security scan error: " + e.getMessage()));
+            invalidateSecurityScan(resolved.getId());
+            resolved.setSecurityBlocked(true);
+            resolved.setSecuritySeverity("HIGH");
+            resolved.setSecuritySummary("Security scan incomplete");
+            resolved.setSecurityWarnings(List.of("Security scan could not be completed; rescan is required."));
+            resolved.setSecurityFindings(List.of(ResolvedSkill.SecurityFinding.builder()
+                    .ruleId("SCAN_EXECUTION_FAILED").category("SCAN_INCOMPLETE").severity("HIGH")
+                    .title("Security scan could not be completed")
+                    .description("The scanner did not return a complete verdict.")
+                    .remediation("Resolve the scanner error and rescan before loading this custom skill.")
+                    .build()));
         }
     }
 
@@ -777,6 +791,11 @@ public class SkillPackageResolver {
      * and keeps returning {@code enabled=true} forever. Stale wrapper
      * advertisements survive a disable/uninstall.
      */
+    /** Explicit rescans must inspect attached files even if SKILL.md has not changed. */
+    public void invalidateSecurityScan(Long skillId) {
+        if (skillId != null) securityScanCache.remove(skillId);
+    }
+
     public void deregisterSkillWrappers(Long skillId) {
         if (skillId == null) return;
         // Evict the security-scan cache entry too — a re-installed skill

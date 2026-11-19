@@ -10,6 +10,7 @@ export type SSEEventType =
   | 'content_delta'
   | 'thinking_delta'
   | 'message_complete'
+  | 'finish_reason'
   | 'done'
   | 'error'
   | 'session'

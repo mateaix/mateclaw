@@ -13,10 +13,12 @@ import vip.mate.exception.MateClawException;
 import vip.mate.wiki.dto.WikiEntityGraphView;
 import vip.mate.wiki.dto.WikiEntityView;
 import vip.mate.wiki.model.WikiKnowledgeBaseEntity;
+import vip.mate.wiki.model.WikiRawMaterialEntity;
 import vip.mate.wiki.service.WikiEntityExtractionService;
 import vip.mate.wiki.service.WikiEntityGraphService;
 import vip.mate.wiki.service.WikiKnowledgeBaseService;
 import vip.mate.wiki.service.WikiProcessingService;
+import vip.mate.wiki.service.WikiRawMaterialService;
 import vip.mate.workspace.core.annotation.RequireWorkspaceRole;
 
 import java.util.List;
@@ -36,6 +38,7 @@ public class WikiEntityController {
     private final WikiEntityGraphService graphService;
     private final WikiEntityExtractionService extractionService;
     private final WikiKnowledgeBaseService kbService;
+    private final WikiRawMaterialService rawMaterialService;
 
     /** List entities in a KB, optionally filtered by type, ranked by salience. */
     @RequireWorkspaceRole("viewer")
@@ -90,6 +93,40 @@ public class WikiEntityController {
             }
         });
         return Map.of("status", "started", "kbId", kbId);
+    }
+
+    /**
+     * Manually trigger entity extraction for one document. Runs on the wiki
+     * executor so the request returns immediately.
+     *
+     * @param force when true, re-extract chunks that already have mentions
+     */
+    @RequireWorkspaceRole("member")
+    @PostMapping("/kb/{kbId}/raw/{rawId}/entities/extract")
+    public Map<String, Object> extractRaw(@PathVariable Long kbId,
+                                          @PathVariable Long rawId,
+                                          @RequestParam(defaultValue = "false") boolean force,
+                                          @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(kbId, workspaceId);
+        WikiRawMaterialEntity raw = rawMaterialService.getById(rawId);
+        if (raw == null || !kbId.equals(raw.getKbId())) {
+            throw new MateClawException(404, "Raw material not found");
+        }
+        // Extraction reads the document's chunks, which exist only after processing completes.
+        if (!"completed".equals(raw.getProcessingStatus())) {
+            throw new MateClawException(400, "Raw material has not finished processing");
+        }
+        WikiProcessingService.WIKI_EXECUTOR.submit(() -> {
+            try {
+                int count = extractionService.extractForRaw(kbId, rawId, force);
+                log.info("[WikiEntity] Manual document extraction completed: kbId={}, rawId={}, entities={}",
+                        kbId, rawId, count);
+            } catch (Exception e) {
+                log.warn("[WikiEntity] Manual document extraction failed for kbId={}, rawId={}: {}",
+                        kbId, rawId, e.getMessage());
+            }
+        });
+        return Map.of("status", "started", "kbId", kbId, "rawId", rawId);
     }
 
     // ==================== Workspace Verification ====================

@@ -120,4 +120,37 @@ class MemoryHilServiceTest {
         assertTrue(saved.contains("## Identity\nMate"), "existing section kept");
         assertTrue(saved.contains("## Goals\nship the fix"), "new section appended");
     }
+    @Test void editTargetsAnExactHeadingRatherThanItsPrefixOrBodyText() {
+        String original = "Intro mentions ## Facts\n## Facts extra\nkeep this\n## Facts\nold\n## Next\nkeep next\n";
+        when(workspaceFileService.getFile(1L, "MEMORY.md")).thenReturn(file("MEMORY.md", original));
+        service.editMemoryEntry(1L, "MEMORY.md", "Facts", "fresh");
+        var saved = ArgumentCaptor.forClass(String.class);
+        verify(workspaceFileService).saveFile(eq(1L), eq("MEMORY.md"), saved.capture());
+        assertTrue(saved.getValue().startsWith("Intro mentions ## Facts\n## Facts extra\nkeep this\n## Facts\nfresh\n"));
+        assertTrue(saved.getValue().endsWith("## Next\nkeep next\n"));
+        assertFalse(saved.getValue().contains("\nold\n"));
+    }
+    @Test void prefixAndInlineHeadingsAreNotExistingSections() {
+        when(workspaceFileService.getFile(1L, "MEMORY.md")).thenReturn(file("MEMORY.md", "## Facts extra\nbody ## Facts\n"));
+        assertFalse(service.sectionExists(1L, "MEMORY.md", "Facts"));
+    }
+    @Test void duplicateHeadingsRefuseAnAmbiguousWrite() {
+        when(workspaceFileService.getFile(1L, "MEMORY.md")).thenReturn(file("MEMORY.md", "## Facts\none\n## Facts\ntwo\n"));
+        assertThrows(vip.mate.exception.MateClawException.class, () -> service.editMemoryEntry(1L, "MEMORY.md", "Facts", "fresh"));
+        verify(workspaceFileService, never()).saveFile(any(), any(), any());
+        verifyNoInteractions(eventPublisher);
+    }
+    @Test void crlfAndHeadingWithoutFinalNewlineRemainEditable() {
+        when(workspaceFileService.getFile(1L, "PROFILE.md")).thenReturn(file("PROFILE.md", "## Identity\r\nold\r\n## Next\r\nuntouched\r\n"));
+        service.editMemoryEntry(1L, "PROFILE.md", "Identity", "fresh");
+        var saved = ArgumentCaptor.forClass(String.class);
+        verify(workspaceFileService).saveFile(eq(1L), eq("PROFILE.md"), saved.capture());
+        assertTrue(saved.getValue().startsWith("## Identity\r\nfresh\r\n"));
+        assertTrue(saved.getValue().endsWith("## Next\r\nuntouched\r\n"));
+        reset(workspaceFileService);
+        when(workspaceFileService.getFile(1L, "PROFILE.md")).thenReturn(file("PROFILE.md", "## Identity"));
+        service.editMemoryEntry(1L, "PROFILE.md", "Identity", "fresh");
+        verify(workspaceFileService).saveFile(eq(1L), eq("PROFILE.md"), startsWith("## Identity\nfresh\n"));
+    }
+
 }

@@ -1,30 +1,78 @@
 #!/usr/bin/env bash
 #
-# scripts/build.sh — Build the MateClaw Spring Boot backend JAR and place it
-# at resources/app.jar so electron-builder can bundle it into the desktop app.
+# Build the MateClaw backend JAR and place it at resources/app.jar so
+# electron-builder can bundle it into the desktop app.
 #
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-SERVER_DIR="$(cd "$PROJECT_ROOT/../mateclaw-server" && pwd)"
-RESOURCES_DIR="$PROJECT_ROOT/resources"
+DESKTOP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="$(cd "$DESKTOP_DIR/.." && pwd)"
+RESOURCES_DIR="$DESKTOP_DIR/resources"
+UI_DIR="$PROJECT_ROOT/mateclaw-ui"
 
-echo "==> Building mateclaw-server JAR from $SERVER_DIR"
+echo "╔══════════════════════════════════════════════════╗"
+echo "║          MateClaw Desktop - Build Script         ║"
+echo "╚══════════════════════════════════════════════════╝"
+echo ""
 
-# Build the Spring Boot fat JAR (skip tests for packaging speed)
-cd "$SERVER_DIR"
-mvn clean package -DskipTests -Dmaven.test.skip=true -q
+echo "📦 Building MateClaw web UI..."
 
-# Locate the built JAR
-JAR_FILE=$(ls "$SERVER_DIR"/target/mateclaw-server-*.jar 2>/dev/null | head -1)
-if [ -z "$JAR_FILE" ]; then
-  echo "ERROR: Could not find built JAR in $SERVER_DIR/target/"
-  exit 1
+if [ ! -d "$UI_DIR" ]; then
+    echo "❌ Frontend directory not found: $UI_DIR"
+    exit 1
 fi
 
-echo "==> Copying $JAR_FILE → $RESOURCES_DIR/app.jar"
+cd "$UI_DIR"
+if [ ! -d "node_modules" ]; then
+    echo "   Installing frontend dependencies..."
+    if command -v pnpm &>/dev/null; then
+        pnpm install
+    elif command -v npm &>/dev/null; then
+        npm install
+    else
+        echo "❌ Neither pnpm nor npm found"
+        exit 1
+    fi
+fi
+
+if command -v pnpm &>/dev/null; then
+    pnpm build
+else
+    npm run build
+fi
+
+echo ""
+echo "📦 Building Spring Boot JAR with Maven reactor..."
+
+cd "$PROJECT_ROOT"
+
+if command -v mvn &>/dev/null; then
+    MVN="mvn"
+elif [ -f "./mvnw" ]; then
+    MVN="./mvnw"
+    chmod +x ./mvnw
+else
+    echo "❌ Maven not found. Install Maven or use Maven wrapper."
+    exit 1
+fi
+
+$MVN -pl mateclaw-server -am clean package -DskipTests -Dmaven.test.skip=true -q
+
+JAR_FILE=$(find mateclaw-server/target -maxdepth 1 -type f -name 'mateclaw-server-*.jar' ! -name '*sources*' ! -name '*.original' | sort | tail -1)
+if [ -z "$JAR_FILE" ]; then
+    echo "❌ JAR file not found in mateclaw-server/target/"
+    exit 1
+fi
+
+echo "✅ JAR built: $JAR_FILE"
+echo ""
+
+echo "📦 Copying JAR to desktop resources..."
 mkdir -p "$RESOURCES_DIR"
 cp "$JAR_FILE" "$RESOURCES_DIR/app.jar"
 
-echo "==> Done. JAR size: $(du -h "$RESOURCES_DIR/app.jar" | cut -f1)"
+JAR_SIZE=$(du -h "$RESOURCES_DIR/app.jar" | cut -f1)
+echo "✅ JAR copied to: $RESOURCES_DIR/app.jar ($JAR_SIZE)"
+echo ""

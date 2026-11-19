@@ -1,0 +1,12 @@
+# Reviewed defaults for managed 0.2.2-rc.1. Explicit administrator patches follow this file.
+- id: fs-observation-policy
+  disabled: false
+
+# SDK initialize accepts output limits only. Bind model metadata before the first request.
+- id: llm-deepseek
+  config:
+    defaultContextWindow: !!js Number(process.env.MATECLAW_DSH_CONTEXT_WINDOW || 128000)
+    models:
+      - id: !!js process.env.MATECLAW_DSH_MODEL || 'deepseek-v4-flash'
+        contextWindow: !!js Number(process.env.MATECLAW_DSH_CONTEXT_WINDOW || 128000)
+        maxTokens: !!js Number(process.env.MATECLAW_DSH_MAX_TOKENS || 4096)

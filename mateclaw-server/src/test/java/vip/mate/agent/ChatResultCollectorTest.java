@@ -10,6 +10,16 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 class ChatResultCollectorTest {
 
     @Test
+    void cumulativeUsageUpdatesAreReplacedByFinalUsage() {
+        AgentService.ChatResult result = ChatResultCollector.collect(Flux.just(
+                AgentService.StreamDelta.event("_usage_update", Map.of("promptTokens", 100, "completionTokens", 20)),
+                AgentService.StreamDelta.event("_usage_update", Map.of("promptTokens", 150, "completionTokens", 30)),
+                AgentService.StreamDelta.event("_usage_final", Map.of("promptTokens", 190, "completionTokens", 40))));
+        assertEquals(190, result.promptTokens());
+        assertEquals(40, result.completionTokens());
+    }
+
+    @Test
     void preservesStructuredFinishReasonAlongsideContentAndUsage() {
         AgentService.ChatResult result = ChatResultCollector.collect(Flux.just(
                 new AgentService.StreamDelta("partial failure", null),

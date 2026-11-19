@@ -208,6 +208,13 @@ public class ActionNode implements NodeAction {
             output.forcedToolCall("");
         }
 
+        if (!result.awaitingApproval() && !result.hasDirectOutputs()) {
+            vip.mate.agent.graph.guard.SkillOverviewAnswer.from(accessor.userMessage(),toolCalls,result.responses(),
+                    accessor.actionExecutionLedger().merge(actionLedger)).ifPresent(answer -> {
+                output.returnDirectTriggered(true).directToolOutputs(List.of(answer));
+            });
+        }
+
         // Pin skills the model loaded this run so the next reasoning turn's
         // catalog ranks them first.
         Set<String> requestedSkills = extractLoadedSkillNames(toolCalls);

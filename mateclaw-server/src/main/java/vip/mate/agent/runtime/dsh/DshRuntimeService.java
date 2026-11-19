@@ -232,6 +232,8 @@ public class DshRuntimeService implements AgentRuntimeProvider {
             Process process = null;
             DshGenerationStore.Lease lease = null;
             DshSdkTurn turn = null;
+            boolean answerDelivered = false;
+            long sequence = 0;
             String credential = "";
             try {
                 if (sink.isCancelled()) return;
@@ -265,7 +267,9 @@ public class DshRuntimeService implements AgentRuntimeProvider {
                         provider != null && provider.getApiKey() != null && !provider.getApiKey().isBlank(),
                         provider != null && provider.getBaseUrl() != null && !provider.getBaseUrl().isBlank());
                 DshLaunchSpec launch = DshLaunchSpec.create(configuration, agent.getWorkspaceId(), agent.getId(), session.workingDirectory());
-                process = processSupervisor.start(launch, childEnvironment(System.getenv(), session, configuration, provider));
+                Map<String, String> environment = childEnvironment(System.getenv(), session, configuration, provider);
+                modelEnvironment(environment, effectiveModelName, model, maxOutputTokens);
+                process = processSupervisor.start(launch, environment);
                 processRef.set(process);
                 if (process instanceof DshDockerProcess owned) {
                     var retainedLease = lease;
@@ -279,7 +283,6 @@ public class DshRuntimeService implements AgentRuntimeProvider {
                 sink.onCancel(() -> { cancelled.set(true); cancelProcess(startedProcess); });
                 if (sink.isCancelled()) return;
                 if (cancelled.get()) throw new InterruptedException("DSH_CANCELLED");
-                long sequence = 0;
                 try (DshSdkProcess sdk = new DshSdkProcess(process, objectMapper,
                         firstNonBlank(configuration.apiKey(), provider == null ? null : provider.getApiKey()))) {
                     sdk.initialize(Map.of("cwd", session.workingDirectory().toString(),
@@ -312,6 +315,11 @@ public class DshRuntimeService implements AgentRuntimeProvider {
                                                 RuntimeEventType.THINKING_DELTA, part.path("text").asText(""), Map.of())));
                                     }
                                 }
+                            } else if ("turn/end".equals(type) && !answerDelivered && !turn.answer().isEmpty()) {
+                                // The exact final step is known now; do not wait for idle or process shutdown.
+                                sink.next(RuntimeEventProjector.project(RuntimeEvent.of(conversationId, sequence++,
+                                        RuntimeEventType.ASSISTANT_DELTA, turn.answer(), Map.of())));
+                                answerDelivered = true;
                             } else if ("tool/call".equals(type) || "tool/result".equals(type)) {
                                 sink.next(RuntimeEventProjector.project(mapEvent(conversationId, sequence++, event)));
                             }
@@ -320,12 +328,13 @@ public class DshRuntimeService implements AgentRuntimeProvider {
                 }
                 if (cancelled.get()) throw new InterruptedException("DSH_CANCELLED");
                 if (!sink.isCancelled()) {
-                    if (!turn.answer().isEmpty()) sink.next(RuntimeEventProjector.project(RuntimeEvent.of(
+                    if (!answerDelivered && !turn.answer().isEmpty()) sink.next(RuntimeEventProjector.project(RuntimeEvent.of(
                             conversationId, sequence++, RuntimeEventType.ASSISTANT_DELTA, turn.answer(), Map.of())));
                     latestUsage.set(new RuntimeContextUsage(turn.inputTokens(), turn.outputTokens(), 0));
                     sink.next(RuntimeEventProjector.project(RuntimeEvent.of(conversationId, sequence++, RuntimeEventType.CONTEXT_USAGE,
                             null, Map.of("inputTokens", turn.inputTokens(), "outputTokens", turn.outputTokens(),
-                                    "promptTokens", turn.inputTokens(), "completionTokens", turn.outputTokens()))));
+                                    "promptTokens", turn.inputTokens(), "completionTokens", turn.outputTokens(),
+                                    "cacheReadTokens", turn.cacheReadTokens(), "cacheWriteTokens", turn.cacheWriteTokens()))));
                     sink.next(RuntimeEventProjector.project(RuntimeEvent.terminal(conversationId, sequence,
                             turn.terminalType(), turn.terminalType() == RuntimeEventType.COMPLETED ? Map.of()
                                     : Map.of("code", "DSH_INCOMPLETE_TURN", "error", "DSH turn ended: " + turn.reason()))));
@@ -333,8 +342,8 @@ public class DshRuntimeService implements AgentRuntimeProvider {
                 }
 
             } catch (Exception error) {
-                if (!sink.isCancelled() && turn != null && !turn.answer().isEmpty())
-                    sink.next(RuntimeEventProjector.project(RuntimeEvent.of(conversationId, 0,
+                if (!sink.isCancelled() && !answerDelivered && turn != null && !turn.answer().isEmpty())
+                    sink.next(RuntimeEventProjector.project(RuntimeEvent.of(conversationId, sequence++,
                             RuntimeEventType.ASSISTANT_DELTA, turn.answer(), Map.of())));
                 boolean cancellationConfirmed = cancelled.get();
                 if (process instanceof DshDockerProcess owned && !owned.cleanupConfirmed()) {
@@ -412,7 +421,10 @@ public class DshRuntimeService implements AgentRuntimeProvider {
             ModelConfigEntity model = resolveModel(configuration.modelName());
             ModelProviderEntity provider = resolveProvider(model);
             RuntimeSession session = new RuntimeSession("health", "health", 0L, 0L, configuration.modelName(), cwd, Map.of());
-            process = processSupervisor.start(launch, childEnvironment(System.getenv(), session, configuration, provider));
+            Map<String, String> environment = childEnvironment(System.getenv(), session, configuration, provider);
+            modelEnvironment(environment, resolveModelName(configuration.modelName(), model), model,
+                    task ? 64 : resolveMaxOutputTokens(model, windowProperties.getDefaultMaxInputTokens()));
+            process = processSupervisor.start(launch, environment);
             try (DshSdkProcess sdk = new DshSdkProcess(process, objectMapper,
                     firstNonBlank(configuration.apiKey(), provider == null ? null : provider.getApiKey()))) {
                 sdk.initialize(Map.of("cwd", cwd.toString(), "provider", "deepseek-official",
@@ -517,6 +529,15 @@ public class DshRuntimeService implements AgentRuntimeProvider {
         putIfPresent(environment, "DEEPSEEK_BASE_URL",
                 normalizeBaseUrl(firstNonBlank(configuration.baseUrl(), provider == null ? null : provider.getBaseUrl())));
         return environment;
+    }
+
+    private void modelEnvironment(Map<String, String> environment, String modelName, ModelConfigEntity model, int output) {
+        int window = model != null && model.getMaxInputTokens() != null && model.getMaxInputTokens() > 0
+                ? model.getMaxInputTokens() : windowProperties.getDefaultMaxInputTokens() > 0
+                ? windowProperties.getDefaultMaxInputTokens() : DEFAULT_CONTEXT_WINDOW;
+        environment.put("MATECLAW_DSH_MODEL", modelName);
+        environment.put("MATECLAW_DSH_CONTEXT_WINDOW", Integer.toString(window));
+        environment.put("MATECLAW_DSH_MAX_TOKENS", Integer.toString(output));
     }
 
     static String normalizeBaseUrl(String url) {
@@ -639,7 +660,11 @@ public class DshRuntimeService implements AgentRuntimeProvider {
                     Map.of("toolName", data.path("name").asText("dsh-tool"), "callId", data.path("callId").asText("")));
         }
         if (type.contains("tool") && (type.contains("end") || type.contains("result"))) {
-            return RuntimeEvent.of(sessionId, sequence, RuntimeEventType.TOOL_FINISHED, null, Map.of("callId", data.path("message").path("toolCallId").asText(data.path("callId").asText(""))));
+            String code = data.path("error").path("code").asText("");
+            boolean failed = data.path("message").path("isError").asBoolean(false);
+            return RuntimeEvent.of(sessionId, sequence, RuntimeEventType.TOOL_FINISHED, null, Map.of(
+                    "callId", data.path("message").path("toolCallId").asText(data.path("callId").asText("")),
+                    "isError", failed, "success", !failed, "errorCode", code, "cancelled", failed && "ABORTED".equals(code)));
         }
         if ("turn/end".equals(type)) {
             String kind = data.path("reason").path("kind").asText("");

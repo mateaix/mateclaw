@@ -85,7 +85,7 @@ class ReasoningNodeProgressBudgetTest {
   assertTrue(TokenEstimator.estimateTokens(cap.getValue().getInstructions())+1024<=24000,
           "captured prompt estimate="+TokenEstimator.estimateTokens(cap.getValue().getInstructions()));
  }
- @Test void unfitLatestToolPairReturnsTypedErrorWithoutModelOrCompaction() throws Exception {
+ @Test void unfitLatestToolPairReturnsTypedErrorAfterOneCompactionAttempt() throws Exception {
   var helper=mock(NodeStreamingChatHelper.class);var service=mock(ProgressLedgerService.class);
   var window=mock(ConversationWindowManager.class);
   when(window.compactAgedToolResponses(anyList(),anyInt())).thenAnswer(inv->inv.getArgument(0));
@@ -97,7 +97,7 @@ class ReasoningNodeProgressBudgetTest {
   List<Message> history=List.of(new UserMessage("ANCHOR"),AssistantMessage.builder().content("").toolCalls(List.of(new AssistantMessage.ToolCall("latest","function","execute_code","x".repeat(16000)))).build(),ToolResponseMessage.builder().responses(List.of(new ToolResponseMessage.ToolResponse("latest","execute_code","x".repeat(16000)))).build());
   var output=node.apply(new RunState(Map.of(CONVERSATION_ID,"conv",SYSTEM_PROMPT,"system",USER_MESSAGE,"ANCHOR",MESSAGES,history,MAX_ITERATIONS,100)));
   verify(helper,never()).streamCall(any(),any(),anyString(),anyString());
-  verify(window,never()).compactForRetry(anyList(),any(),anyString(),any());
+  verify(window).compactForRetry(anyList(),any(),anyString(),any());
   assertEquals("error_fallback",output.get(FINISH_REASON));
   assertTrue(output.get(FINAL_ANSWER).toString().contains("工具对"));
  }

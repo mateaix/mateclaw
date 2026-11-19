@@ -81,7 +81,9 @@ public class SkillInstallController {
     @PostMapping("/cancel/{taskId}")
     @RequireWorkspaceRole("admin")
     public R<Void> cancel(@PathVariable String taskId) {
-        skillInstaller.cancelTask(taskId);
+        if (!skillInstaller.cancelTask(taskId)) {
+            return R.fail(409, "Installation is committing, already finished, or unavailable; refresh its status.");
+        }
         return R.ok();
     }
 

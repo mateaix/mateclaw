@@ -17,7 +17,7 @@ final class ChatResultCollector {
         final String[] modelInfo = {null, null};
         final String[] finishReason = {null};
         stream.doOnNext(delta -> {
-            if (delta.isEvent() && "_usage_final".equals(delta.eventType())) {
+            if (delta.isUsage()) {
                 Map<String, Object> data = delta.eventData() != null ? delta.eventData() : Map.of();
                 usage[0] = ((Number) data.getOrDefault("promptTokens", 0)).intValue();
                 usage[1] = ((Number) data.getOrDefault("completionTokens", 0)).intValue();

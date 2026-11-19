@@ -67,12 +67,13 @@ class ToolFatalPublicationTest {
                 .thenReturn(() -> {});
         doAnswer(
                         invocation -> {
+                            GraphEventPublisher.GraphEvent event = invocation.getArgument(1);
                             if (GraphEventPublisher.EVENT_TOOL_COMPLETE.equals(
-                                    invocation.getArgument(1))) throw fatal;
+                                    event.type())) throw fatal;
                             return null;
                         })
                 .when(tracker)
-                .broadcastObject(anyString(), anyString(), any());
+                .broadcastLiveToolEvent(anyString(), any());
         var executor =
                 new ToolExecutionExecutor(
                         AgentToolSet.fromCallbacks(List.of(), List.of(callback)),

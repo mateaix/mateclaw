@@ -45,11 +45,14 @@ class PayloadReductionTest {
         assertNotNull(reduced);
         assertTrue(reduced.contains(call)); assertTrue(reduced.contains(response));
     }
-    @Test void payloadNeverRetriesOrFallsOverOrCountsAgainstHealth() {
+    @Test void payloadNeverRetriesOrFallsOverOrCountsAgainstHealth() throws Exception {
         var primary = org.mockito.Mockito.mock(org.springframework.ai.chat.model.ChatModel.class);
         var fallback = org.mockito.Mockito.mock(org.springframework.ai.chat.model.ChatModel.class);
         var health = org.mockito.Mockito.mock(vip.mate.llm.failover.ProviderHealthTracker.class);
         var tracker = org.mockito.Mockito.mock(vip.mate.channel.web.ChatStreamTracker.class);
+        org.mockito.Mockito.when(health.acquireRequest(org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any(java.util.function.BooleanSupplier.class)))
+                .thenReturn(org.mockito.Mockito.mock(vip.mate.llm.failover.ProviderHealthTracker.RequestPermit.class));
         org.mockito.Mockito.when(primary.stream(org.mockito.ArgumentMatchers.any(org.springframework.ai.chat.prompt.Prompt.class)))
                 .thenReturn(reactor.core.publisher.Flux.error(new RuntimeException("HTTP 413")));
         var helper = new NodeStreamingChatHelper(tracker,

@@ -526,6 +526,33 @@ class TeamControllerTest {
         verify(teamService, never()).deleteTeam(anyLong(), anyLong());
     }
 
+    @Test
+    void teamStreamDisablesProxyBufferingAndKeepsReplayCursor() throws Exception {
+        var emitters = new java.util.ArrayList<org.springframework.web.servlet.mvc.method.annotation.SseEmitter>();
+        org.mockito.Mockito.doAnswer(invocation -> {
+            var emitter = invocation.getArgument(1, org.springframework.web.servlet.mvc.method.annotation.SseEmitter.class);
+            emitters.add(emitter);
+            emitter.send(org.springframework.web.servlet.mvc.method.annotation.SseEmitter.event().comment("团队连接"));
+            return null;
+        }).when(eventChannel).attach(eq(TEAM_ID), any(), anyLong());
+        var mvc = org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(controller).build();
+        try {
+            for (Long cursor : java.util.Arrays.asList(null, 17L)) {
+                var request = org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/v1/teams/{id}/events", TEAM_ID);
+                if (cursor != null) request.header("Last-Event-ID", cursor);
+                mvc.perform(request)
+                        .andExpect(status().isOk())
+                        .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.request().asyncStarted())
+                        .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header().string("X-Accel-Buffering", "no"))
+                        .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header().string("Cache-Control", "no-store, no-transform"))
+                        .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.content().contentType("text/event-stream;charset=UTF-8"));
+            }
+            verify(eventChannel).attach(eq(TEAM_ID), any(), eq(Long.MAX_VALUE));
+            verify(eventChannel).attach(eq(TEAM_ID), any(), eq(17L));
+            emitters.forEach(emitter -> assertEquals(0L, emitter.getTimeout()));
+        } finally { emitters.forEach(org.springframework.web.servlet.mvc.method.annotation.SseEmitter::complete); }
+    }
+
     private void assertRole(String method, String role, Class<?>... parameterTypes) {
         try {
             RequireWorkspaceRole annotation = TeamController.class

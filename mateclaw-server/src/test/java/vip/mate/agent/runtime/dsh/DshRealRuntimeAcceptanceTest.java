@@ -25,6 +25,7 @@ class DshRealRuntimeAcceptanceTest {
     @TempDir Path temp;
     private DshRuntimeService service;
     private RuntimeSession session;
+    private DshRuntimeConfiguration configuration;
     private final ObjectMapper json = new ObjectMapper();
     private final List<ProcessHandle> owned = new CopyOnWriteArrayList<>();
 
@@ -40,7 +41,8 @@ class DshRealRuntimeAcceptanceTest {
         }
         assertTrue(key != null && !key.isBlank(), "real model credential required");
         var config = mock(DshRuntimeConfigService.class);
-        when(config.resolve()).thenReturn(new DshRuntimeConfiguration(System.getenv("MATECLAW_DSH_ACCEPTANCE_EXECUTABLE"), "", temp.toString(), url, "deepseek-v4-flash", key, "sdk", List.of(), temp.resolve("homes").toString()));
+        configuration = new DshRuntimeConfiguration(System.getenv("MATECLAW_DSH_ACCEPTANCE_EXECUTABLE"), "", temp.toString(), url, "deepseek-v4-flash", key, "sdk", List.of(), temp.resolve("homes").toString());
+        when(config.resolve()).thenReturn(configuration);
         var models=mock(ModelConfigService.class);var model=new ModelConfigEntity();model.setModelName("deepseek-v4-flash");model.setMaxTokens(4096);model.setMaxInputTokens(128000);
         when(models.resolveModel(any())).thenReturn(model);
         service=new DshRuntimeService(json, models, mock(ModelProviderService.class), config, new ConversationWindowProperties());
@@ -79,6 +81,64 @@ class DshRealRuntimeAcceptanceTest {
             record(crash?"crash":"cancel",Map.of("success",true,"ownedPids",owned.stream().map(ProcessHandle::pid).toList(),"allExited",owned.stream().noneMatch(ProcessHandle::isAlive),"events",events,"recoveryEvents",recovered));
         } finally { subscription.dispose();c.close(); }
     }
+    @Test void capturesRealReplyAndToolProtocol() throws Exception {
+        capture("sdk", "Return exactly SDK_OK with no punctuation or Markdown. Do not call tools.", "SDK_OK", false);
+        capture("tool-sdk", "Use bash to execute exactly printf DSH_TOOL_OK in the current directory, then reply exactly DSH_TOOL_OK without Markdown.", "DSH_TOOL_OK", true);
+    }
+    private void capture(String name, String prompt, String expected, boolean tool) throws Exception {
+        var launch = DshLaunchSpec.create(configuration, 991L, name, temp);
+        var environment = DshRuntimeService.childEnvironment(System.getenv(), session, configuration, null);
+        environment.put("MATECLAW_DSH_MODEL", "deepseek-v4-flash");
+        environment.put("MATECLAW_DSH_CONTEXT_WINDOW", "128000");
+        environment.put("MATECLAW_DSH_MAX_TOKENS", "4096");
+        var frames = new ArrayList<com.fasterxml.jackson.databind.JsonNode>();
+        var events = new ArrayList<com.fasterxml.jackson.databind.JsonNode>();
+        String id = "probe-" + UUID.randomUUID();
+        var turn = new DshSdkTurn(id, "probe");
+        try(var sdk = new DshSdkProcess(launch.processBuilder(environment).start(), json, configuration.apiKey())) {
+            sdk.initialize(Map.of("cwd",temp.toString(),"provider","deepseek-official","model","deepseek-v4-flash","maxTokens",4096), Duration.ofSeconds(30));
+            sdk.send("session/prompt", "probe", Map.of("sessionId",id,"contentBlocks",List.of(Map.of("type","text","text",prompt))));
+            while(!turn.complete()) {
+                var frame = sdk.next(Duration.ofSeconds(120));
+                events.addAll(turn.accept(frame));
+                String type = frame.path("params").path("event").path("type").asText();
+                if (!frame.has("method") || "session.status".equals(frame.path("method").asText()) ||
+                        Set.of("agent/inbox/spliced","assistant/message","tool/call","tool/result","turn/end","job/registered","job/settled").contains(type)) {
+                    var safe = frame.deepCopy();
+                    var data = safe.path("params").path("event").path("data");
+                    if (data.isObject()) {
+                        ((com.fasterxml.jackson.databind.node.ObjectNode)data).remove(List.of("stream","meta"));
+                        if (data.path("message").isObject())
+                            ((com.fasterxml.jackson.databind.node.ObjectNode)data.path("message")).remove("source");
+                        var content = data.path("message").path("content");
+                        if(content.isArray()) {
+                            for(var block:content) if(block.isObject())
+                                ((com.fasterxml.jackson.databind.node.ObjectNode)block).retain("type","text","id","name","arguments");
+                        }
+                    }
+                    frames.add(safe);
+                }
+            }
+        }
+        assertEquals(RuntimeEventType.COMPLETED, turn.terminalType());
+        assertEquals(expected, turn.answer());
+        assertTrue(turn.inputTokens()>0);
+        if(tool) {
+            var calls=events.stream().filter(e->"tool/call".equals(e.path("type").asText())).toList();
+            var results=events.stream().filter(e->"tool/result".equals(e.path("type").asText())).toList();
+            assertEquals(1,calls.size()); assertEquals(1,results.size());
+            assertFalse(results.getFirst().path("data").path("message").path("isError").asBoolean());
+            assertEquals(calls.getFirst().path("data").path("callId").asText(),results.getFirst().path("data").path("message").path("toolCallId").asText());
+        }
+        String report=System.getenv("MATECLAW_DSH_ACCEPTANCE_REPORT_DIR");
+        if(report!=null) {
+            Files.createDirectories(Path.of(report));
+            var lines=new ArrayList<String>();for(var frame:frames)lines.add(json.writeValueAsString(frame));
+            Files.write(Path.of(report).resolve("0.2.2-rc.1-"+name+".jsonl"),lines);
+        }
+        record(name,Map.of("success",true,"frames",frames.size(),"inputTokens",turn.inputTokens(),"outputTokens",turn.outputTokens()));
+    }
+
     @Test void explicitCancellationStopsRealToolTreeAndNextConnectionRecovers() throws Exception { blockedTurn(false); }
     @Test void unexpectedRootExitStopsRealToolTreeAndNextConnectionRecovers() throws Exception { blockedTurn(true); }
 

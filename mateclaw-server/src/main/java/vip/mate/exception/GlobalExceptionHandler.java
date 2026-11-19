@@ -154,6 +154,11 @@ public class GlobalExceptionHandler {
             }
             return null;
         }
+        if (e instanceof org.springframework.dao.DataAccessResourceFailureException) {
+            log.error("Database unavailable: {} {}", request.getMethod(), request.getRequestURI(), e);
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(R.fail(503, "Database temporarily unavailable. Please try again later."));
+        }
         log.error("Unexpected error: {} {}", request.getMethod(), request.getRequestURI(), e);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(R.fail("Internal server error"));
     }

@@ -48,6 +48,7 @@ class AgentGraphBuilderFinalizationWiringTest {
   }
   var disclosure=(ToolDisclosureService)ReflectionTestUtils.getField(builder,"toolDisclosureService");
   when(disclosure.split(any(),anySet(),anySet())).thenReturn(new ToolDisclosureService.ToolDisclosureSplit(List.of(),List.of()));
+  ReflectionTestUtils.setField(builder,"providerHealthTracker",new vip.mate.llm.failover.ProviderHealthTracker(new vip.mate.llm.failover.ProviderHealthProperties()));
   ReflectionTestUtils.setField(builder,"progressLedgerService",null);
   ReflectionTestUtils.setField(builder,"conversationWindowManager",null);
   ReflectionTestUtils.setField(builder,"markdownNormalizeEnabled",true);

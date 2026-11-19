@@ -45,6 +45,7 @@ class DshRuntimeModelLimitsTest {
         Path script = temp.resolve("fake-dsh.sh");
         Files.writeString(script, """
                 #!/bin/sh
+                printf '%s,%s,%s' "$MATECLAW_DSH_MODEL" "$MATECLAW_DSH_CONTEXT_WINDOW" "$MATECLAW_DSH_MAX_TOKENS" > model-env.txt
                 IFS= read -r initialize
                 printf '%s\\n' "$initialize" > initialize.json
                 id=$(printf '%s' "$initialize" | sed -n 's/.*"id":"\\([^"]*\\)".*/\\1/p')
@@ -85,6 +86,9 @@ class DshRuntimeModelLimitsTest {
         assertEquals("uncatalogued".equals(requested) ? requested : "custom-model", params.path("model").asText());
         assertTrue(params.path("maxTokens").isIntegralNumber(), "SDK must receive an explicit numeric output cap");
         assertEquals(expected, params.path("maxTokens").intValue());
+        int configuredWindow = "uncatalogued".equals(requested) ? 0 : window == null ? 0 : window;
+        int expectedWindow = configuredWindow > 0 ? configuredWindow : globalWindow > 0 ? globalWindow : 128000;
+        assertEquals(params.path("model").asText() + "," + expectedWindow + "," + expected, Files.readString(temp.resolve("model-env.txt")));
         assertFalse(params.has("contextWindow"), "SDK initialize does not support this field");
         verify(models, times(1)).resolveModel(any());
     }

@@ -3,7 +3,6 @@ package vip.mate.skill.installer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import vip.mate.skill.installer.model.*;
 import vip.mate.skill.model.SkillEntity;
@@ -40,19 +39,24 @@ public class SkillInstaller {
     private final SkillFileService skillFileService;
     private final ObjectMapper objectMapper;
     private final ApplicationEventPublisher eventPublisher;
+    private final SkillInstallWorker installWorker;
 
     /** 安装任务追踪 */
     private final ConcurrentHashMap<String, InstallTask> tasks = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Thread> installThreads = new ConcurrentHashMap<>();
 
     /**
      * 启动异步安装任务
      */
     public InstallTask startInstall(InstallRequest request) {
+        InstallRequest submitted = new InstallRequest();
+        org.springframework.beans.BeanUtils.copyProperties(request, submitted);
         String taskId = UUID.randomUUID().toString().replace("-", "").substring(0, 12);
-        InstallTask task = InstallTask.create(taskId, request.getBundleUrl());
+        InstallTask task = InstallTask.create(taskId, submitted.getBundleUrl());
+        task.setWorkspaceId(submitted.getWorkspaceId());
         tasks.put(taskId, task);
 
-        doInstallAsync(taskId, request);
+        doInstallAsync(taskId, submitted);
         return task;
     }
 
@@ -66,13 +70,16 @@ public class SkillInstaller {
     /**
      * 取消安装任务
      */
-    public void cancelTask(String taskId) {
+    public boolean cancelTask(String taskId) {
         InstallTask task = tasks.get(taskId);
-        if (task != null && task.getStatus() == InstallTask.InstallStatus.INSTALLING) {
-            task.setCancelRequested(true);
-            task.markCancelled();
-            log.info("Install task {} cancelled", taskId);
+        if (task == null) return false;
+        synchronized (task) {
+            if (!task.requestCancel()) return false;
+            Thread worker = installThreads.get(taskId);
+            if (worker != null) worker.interrupt();
         }
+        log.info("Install task {} cancelled", taskId);
+        return true;
     }
 
     /**
@@ -123,31 +130,45 @@ public class SkillInstaller {
 
     // ==================== 异步安装流程 ====================
 
-    @Async
     public CompletableFuture<Void> doInstallAsync(String taskId, InstallRequest request) {
-        InstallTask task = tasks.get(taskId);
-        if (task == null) return CompletableFuture.completedFuture(null);
+        try {
+            return installWorker.run(() -> runInstall(taskId, request));
+        } catch (RuntimeException rejected) {
+            InstallTask task = tasks.get(taskId);
+            if (task != null) task.markFailed("Unable to schedule installation: " + rejected.getMessage());
+            return CompletableFuture.failedFuture(rejected);
+        }
+    }
 
-        task.markInstalling();
+    private void runInstall(String taskId, InstallRequest request) {
+        InstallTask task = tasks.get(taskId);
+        if (task == null) return;
+        Thread worker = Thread.currentThread();
+        synchronized (task) {
+            if (!task.tryStart()) return;
+            installThreads.put(taskId, worker);
+        }
 
         try {
+            if (task.isCancelRequested()) return;
             // 1. 解析 bundle
             SkillBundle bundle = bundleResolver.resolve(request.getBundleUrl(), request.getVersion());
+            if (task.isCancelRequested()) return;
             if (bundle == null) {
                 task.markFailed("Failed to resolve skill bundle from: " + request.getBundleUrl());
-                return CompletableFuture.completedFuture(null);
+                return;
             }
 
             if (task.isCancelRequested()) {
                 task.markCancelled();
-                return CompletableFuture.completedFuture(null);
+                return;
             }
 
             // 2. 确定 skill 名称
             String skillName = request.getTargetName() != null ? request.getTargetName() : bundle.name();
             if (skillName == null || skillName.isBlank()) {
                 task.markFailed("Cannot determine skill name from bundle");
-                return CompletableFuture.completedFuture(null);
+                return;
             }
 
             // 3. 检查是否已存在（按工作区隔离：只在本工作区 + builtin 范围内查重，
@@ -156,31 +177,22 @@ public class SkillInstaller {
                     .anyMatch(s -> s.getName().equals(skillName));
             if (exists && !Boolean.TRUE.equals(request.getOverwrite())) {
                 task.markFailed("Skill '" + skillName + "' already exists. Set overwrite=true to replace.");
-                return CompletableFuture.completedFuture(null);
+                return;
             }
 
             if (task.isCancelRequested()) {
                 task.markCancelled();
-                return CompletableFuture.completedFuture(null);
+                return;
             }
+
+            if (!task.beginCommit()) return;
 
             // 4. Materialize SKILL.md (overwrite on reinstall, keep on first create).
             workspaceManager.initWorkspace(skillName, bundle.content(), exists, request.getWorkspaceId());
 
-            if (task.isCancelRequested()) {
-                workspaceManager.archiveWorkspace(skillName, request.getWorkspaceId());
-                task.markCancelled();
-                return CompletableFuture.completedFuture(null);
-            }
-
             // 5. Register/update the skill row first so we have an id for the file rows.
             SkillEntity skillEntity = upsertSkillRow(bundle, skillName, exists,
                     Boolean.TRUE.equals(request.getEnable()), request.getWorkspaceId());
-
-            if (task.isCancelRequested()) {
-                task.markCancelled();
-                return CompletableFuture.completedFuture(null);
-            }
 
             // 6. Persist bundle files: DB is canonical, FS is the materialized cache.
             //    Empty-bundle guard protects both sides from a malformed bundle
@@ -203,11 +215,13 @@ public class SkillInstaller {
             log.info("Skill '{}' installed successfully from {}", skillName, bundle.sourceUrl());
 
         } catch (Exception e) {
-            log.error("Install task {} failed: {}", taskId, e.getMessage(), e);
-            task.markFailed(e.getMessage());
+            if (!task.isCancelRequested()) {
+                log.error("Install task {} failed: {}", taskId, e.getMessage(), e);
+                task.markFailed(e.getMessage());
+            }
+        } finally {
+            synchronized (task) { installThreads.remove(taskId, worker); }
         }
-
-        return CompletableFuture.completedFuture(null);
     }
 
     /**
@@ -305,23 +319,9 @@ public class SkillInstaller {
      */
     private void persistBundleFiles(SkillEntity skillEntity, SkillBundle bundle, boolean force, String origin,
                                     Long workspaceId) {
-        Map<String, String> combined = new LinkedHashMap<>();
-        if (bundle.references() != null) {
-            for (var e : bundle.references().entrySet()) {
-                String key = e.getKey().startsWith("references/") ? e.getKey() : "references/" + e.getKey();
-                combined.put(key, e.getValue());
-            }
-        }
-        if (bundle.scripts() != null) {
-            for (var e : bundle.scripts().entrySet()) {
-                String key = e.getKey().startsWith("scripts/") ? e.getKey() : "scripts/" + e.getKey();
-                combined.put(key, e.getValue());
-            }
-        }
-
-        var dbApply = skillFileService.applyBundleFiles(skillEntity.getId(), combined, force);
-        var fsApply = workspaceManager.applyBundleFiles(skillEntity.getName(),
-                bundle.references(), bundle.scripts(), force, workspaceId);
+        Map<String, byte[]> combined = bundle.allFiles();
+        var dbApply = skillFileService.applyBundleBytes(skillEntity.getId(), combined, force);
+        var fsApply = workspaceManager.applyBundleBytes(skillEntity.getName(), combined, force, workspaceId);
 
         log.info("Persisted bundle for '{}' ({}): db(write={}, prune={}, preservedScripts={}, preservedRefs={}) " +
                         "fs(refs write={}, prune={}, preserved={} | scripts write={}, prune={}, preserved={})",

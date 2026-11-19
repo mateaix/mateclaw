@@ -50,4 +50,16 @@ class GlobalExceptionHandlerTest {
         assertFalse(GlobalExceptionHandler.isExpectedClientDisconnect(
                 new IllegalStateException("unexpected projector failure")));
     }
+
+    @Test
+    void databaseOutageIsUnavailableWithoutLeakingConnectionDetails() {
+        var request = new org.springframework.mock.web.MockHttpServletRequest("POST", "/api/v1/auth/login");
+        var response = handler.handleException(
+                new org.springframework.dao.DataAccessResourceFailureException("private database path"),
+                request, new org.springframework.mock.web.MockHttpServletResponse());
+
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, response.getStatusCode());
+        assertEquals(503, response.getBody().getCode());
+        assertFalse(response.getBody().getMsg().contains("private database path"));
+    }
 }
