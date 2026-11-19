@@ -122,6 +122,8 @@ class AnthropicSdkChatModelTest {
     @Test
     void signedAndRedactedThinkingRoundtripThroughJsonHistory() throws Exception {
         ChatResponse result = model.call(new Prompt("Hi"));
+        assertEquals(1, result.getResults().size());
+        assertEquals("tool-1", result.getResult().getOutput().getToolCalls().getFirst().id());
         Map<String, Object> metadata = result.getResult().getOutput().getMetadata();
         assertTrue(metadata.containsKey(AnthropicSdkChatModel.THINKING_BLOCKS));
         Map<String, Object> persisted =
@@ -141,6 +143,7 @@ class AnthropicSdkChatModelTest {
                         .build();
         model.call(new Prompt(List.of(new UserMessage("Hi"), assistant, tools)));
         JsonNode blocks = request.get().at("/messages/1/content");
+        assertEquals(3, blocks.size(), () -> "Missing tool history: " + request.get() + " result=" + result);
         assertEquals("thinking", blocks.get(0).path("type").asText());
         assertEquals("Reason carefully", blocks.get(0).path("thinking").asText());
         assertEquals("signed-original", blocks.get(0).path("signature").asText());
@@ -148,6 +151,19 @@ class AnthropicSdkChatModelTest {
         assertEquals("opaque-data", blocks.get(1).path("data").asText());
         assertEquals("tool_use", blocks.get(2).path("type").asText());
         assertNull(correlation.get());
+    }
+
+    @Test
+    void synchronousThinkingDoesNotReplaceTheFinalTextAnswer() {
+        response = response.replace("\"stop_reason\":\"tool_use\"", "\"stop_reason\":\"end_turn\"")
+                .replace("{\"type\":\"tool_use\",\"id\":\"tool-1\",\"name\":\"echo\",\"input\":{\"x\":1}}",
+                        "{\"type\":\"text\",\"text\":\"Final answer\"}");
+        ChatResponse result = model.call(new Prompt("Hi"));
+        assertEquals(1, result.getResults().size());
+        assertEquals("Final answer", result.getResult().getOutput().getText());
+        assertTrue(result.getResult().getOutput().getToolCalls().isEmpty());
+        assertEquals("Reason carefully", result.getResult().getOutput().getMetadata().get("reasoningContent"));
+        assertTrue(result.getResult().getOutput().getMetadata().containsKey(AnthropicSdkChatModel.THINKING_BLOCKS));
     }
 
     @Test

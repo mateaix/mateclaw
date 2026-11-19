@@ -36,7 +36,7 @@
 
         <jsonschema-generator.version>5.0.0</jsonschema-generator.version>
         <springdoc.version>3.1.1</springdoc.version>
-        <agentscope.version>2.0.4</agentscope.version>
+        <agentscope.version>2.0.5</agentscope.version>
         <networknt-schema.version>3.0.1</networknt-schema.version>
         <mcp-sdk.version>0.18.3</mcp-sdk.version>
         <okhttp.version>4.12.0</okhttp.version>

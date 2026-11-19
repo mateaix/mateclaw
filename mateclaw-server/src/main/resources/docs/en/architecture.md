@@ -126,11 +126,13 @@ The backend is a **single modular monolith**. Other projects are independent pac
 
 ## Native ReAct and explicit plan phases
 
-The backend uses Java 21, Spring Boot 4.1.1, Spring AI 2.0.1 and AgentScope Java 2.0.4. `NativePolicyDriver` creates a fresh native `ReActAgent` for each invocation; the SDK owns reasoning/acting iteration. Application policies retain prompt preparation, approvals, observations, summaries and goal budgets.
+The backend uses Java 21, Spring Boot 4.1.2, Spring AI 2.0.2 and AgentScope Java 2.0.5. `NativePolicyDriver` creates a fresh native `ReActAgent` for each invocation; the SDK owns reasoning/acting iteration. Application policies retain prompt preparation, approvals, observations, summaries and goal budgets.
 
 ### Request and budget ownership
 
-AgentScope 2.0.4 owns loop orchestration, while Spring AI/provider adapters prepare actual model requests. `PromptBudget` shares effective-option estimates across reasoning preflight and compaction-model calls; it does not replace provider serialization. Tool approvals, workspace guards, Goal budgets and completion gates remain application responsibilities. [Budget details](./models#context-budgets-and-request-preparation-3-0-0)
+AgentScope 2.0.5 owns loop orchestration, while Spring AI/provider adapters prepare actual model requests. `PromptBudget` shares effective-option estimates across reasoning preflight and compaction-model calls; it does not replace provider serialization. Tool approvals, workspace guards, Goal budgets and completion gates remain application responsibilities. [Budget details](./models#context-budgets-and-request-preparation-3-0-0)
+
+AgentScope Java 2.0.5 supplies native-loop and JSON decoding fixes, including rejection of trailing JSON. The application retains hand-written tool schemas and its own model, approval, memory and compaction implementations. It does not import Harness, SDK model providers or SDK JDBC/Redis storage, so upstream default-model, memory-namespace and queue-format changes require no application migration.
 
 ### Key pieces
 

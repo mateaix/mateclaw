@@ -158,7 +158,7 @@ class ReasoningNodeFinalizationTest {
             assertEquals("incomplete",out.get(FINISH_REASON));assertEquals(false,out.get(CONTENT_STREAMED));
             String diagnosis=String.valueOf(out.get(FINAL_ANSWER));
             assertFalse(diagnosis.contains("UNVERIFIED_OPERATION_RECOVERED"));assertTrue(diagnosis.contains("任务尚未完成"));
-            assertEquals(1,out.get(LLM_CALL_COUNT));assertEquals(0,out.get(PROMPT_TOKENS));assertEquals(0,out.get(COMPLETION_TOKENS));
+            assertEquals(1,out.get(LLM_CALL_COUNT));assertEquals(10,out.get(PROMPT_TOKENS));assertEquals(5,out.get(COMPLETION_TOKENS));
             tracker.broadcastObject("gate-test","flush",Map.of());
             assertFalse(capture.text().contains("content_delta"));assertFalse(capture.text().contains("UNVERIFIED_OPERATION_RECOVERED"));
             var replay=new Capture();tracker.attach("gate-test",replay);assertFalse(replay.text().contains("UNVERIFIED_OPERATION_RECOVERED"));

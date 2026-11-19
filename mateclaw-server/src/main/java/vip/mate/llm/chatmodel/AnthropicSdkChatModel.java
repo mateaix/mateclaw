@@ -154,7 +154,8 @@ public final class AnthropicSdkChatModel implements ChatModel {
             ChatResponse response, AnthropicThinkingScope scope, boolean stream) {
         List<Generation> generations = new ArrayList<>();
         List<Generation> source = response.getResults();
-        if (!stream && !source.isEmpty()) source = List.of(source.getLast());
+        // Spring AI places the final answer/tool calls first, followed by thinking generations.
+        if (!stream && !source.isEmpty()) source = List.of(source.getFirst());
         for (Generation generation : source) {
             AssistantMessage original = generation.getOutput();
             Map<String, Object> metadata = new LinkedHashMap<>(original.getMetadata());
