@@ -15,6 +15,7 @@
 import { computed, watchEffect } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { chatDocumentTitle, formatChatDocumentTitle } from '@/composables/useChatDocumentTitle'
+import { useChatFavicon } from '@/composables/useChatFavicon'
 import en from 'element-plus/es/locale/lang/en'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import { currentLocale } from '@/i18n'
@@ -47,6 +48,7 @@ useGlobalFileDownloadClick()
 useGlobalGeneratedImageBlob()
 
 const { t } = useI18n()
+useChatFavicon(chatDocumentTitle)
 
 watchEffect(() => {
   document.title = formatChatDocumentTitle(chatDocumentTitle.value, t('app.title'), t('chat.newChat'), {
