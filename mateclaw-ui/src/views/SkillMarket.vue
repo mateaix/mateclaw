@@ -646,6 +646,7 @@
             </button>
           </div>
 
+          <SkillScanIncompleteNotice :findings="parsedFindings(detailSkill)" />
           <ul v-if="parsedFindings(detailSkill).length > 0" class="scan-findings-list">
             <li
               v-for="(f, idx) in parsedFindings(detailSkill)"
@@ -819,6 +820,9 @@
 </template>
 
 <script setup lang="ts">
+import SkillScanIncompleteNotice from '@/components/skill/SkillScanIncompleteNotice.vue'
+import { hasIncompleteSkillScan } from '@/utils/skillScanState'
+import { applySkillSnapshot } from '@/utils/skillSnapshot'
 import { planSkillFileUploads, type SkillFileBucket } from '@/utils/skillFileUpload'
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -1661,13 +1665,7 @@ function findLoadedSkill(pred: (s: Skill) => boolean): Skill | undefined {
  *  doesn't need a full reload. (Enable-toggle, which moves a skill between
  *  sections, reloads both sections instead.) */
 function patchSkillInPlace(updated: Skill) {
-  for (const seg of [segments.enabled, segments.available]) {
-    const idx = seg.items.findIndex(s => s.id === updated.id)
-    if (idx >= 0) {
-      seg.items.splice(idx, 1, { ...seg.items[idx], ...updated })
-      return
-    }
-  }
+  applySkillSnapshot(updated, [segments.enabled, segments.available], detailSkill)
 }
 
 async function deleteSkill(idOrSkill: string | number | Skill) {
@@ -1825,11 +1823,10 @@ async function rescanSkill(skill: Skill) {
     if (updated) {
       // Patch the row in-place so the panel updates without a full page reload.
       patchSkillInPlace(updated)
-      mcToast.success(
-        updated.securityScanStatus === 'FAILED'
-          ? t('skills.security.rescanStillFailed')
-          : t('skills.security.rescanPassed')
-      )
+      if (updated.securityScanStatus === 'FAILED') {
+        mcToast.warning(t(hasIncompleteSkillScan(parsedFindings(updated))
+          ? 'skills.security.scanIncomplete' : 'skills.security.rescanStillFailed'))
+      } else mcToast.success(t('skills.security.rescanPassed'))
     }
     // Refresh runtime status too so the in-memory badges stay in sync.
     await loadRuntimeStatus()
@@ -1907,7 +1904,7 @@ function getScanPillCls(skill: Skill): string {
 }
 
 function getScanPillLabel(skill: Skill): string {
-  if (skill.securityScanStatus === 'FAILED') return t('skills.security.scanFailed')
+  if (skill.securityScanStatus === 'FAILED') return t(hasIncompleteSkillScan(parsedFindings(skill)) ? 'skills.security.scanIncomplete' : 'skills.security.scanFailed')
   if (skill.securityScanStatus === 'PASSED') return t('skills.security.scanned')
   return t('skills.security.notScanned')
 }

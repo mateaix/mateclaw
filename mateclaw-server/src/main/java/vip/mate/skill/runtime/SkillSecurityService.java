@@ -303,22 +303,20 @@ public class SkillSecurityService {
         List<SkillValidationResult.Finding> findings = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
 
-        // 1. 结构检查
-        checkStructure(skillDir, skillName, findings, warnings);
-
-        // 2. 扫描所有文件
+        if (!Files.isDirectory(skillDir)) {
+            incomplete(findings, "SCAN_DIRECTORY_UNAVAILABLE", ".");
+            return buildResult(skillName, findings, warnings);
+        }
         try {
-            List<Path> files = collectFiles(skillDir);
+            checkStructure(skillDir, skillName, findings, warnings);
+            List<Path> files = collectFiles(skillDir, findings);
             if (files.size() > MAX_FILES) {
-                warnings.add("Skill contains " + files.size() + " files (limit: " + MAX_FILES + "), only first " + MAX_FILES + " scanned");
+                incomplete(findings, "SCAN_FILE_LIMIT", ".");
                 files = files.subList(0, MAX_FILES);
             }
-
-            for (Path file : files) {
-                scanFile(file, skillDir, skillName, findings, warnings);
-            }
-        } catch (IOException e) {
-            warnings.add("Failed to scan directory: " + e.getMessage());
+            for (Path file : files) scanFile(file, skillDir, skillName, findings, warnings);
+        } catch (IOException | RuntimeException e) {
+            incomplete(findings, "SCAN_DIRECTORY_READ_FAILED", ".");
         }
 
         return buildResult(skillName, findings, warnings);
@@ -353,7 +351,7 @@ public class SkillSecurityService {
         }
 
         // 检查 symlink 逃逸
-        try (Stream<Path> walk = Files.walk(skillDir, 5)) {
+        try (Stream<Path> walk = Files.walk(skillDir, 10)) {
             walk.forEach(p -> {
                 if (Files.isSymbolicLink(p)) {
                     try {
@@ -371,21 +369,25 @@ public class SkillSecurityService {
                                 .build());
                         }
                     } catch (IOException e) {
-                        warnings.add("Failed to resolve symlink: " + p.getFileName());
+                        incomplete(findings, "SCAN_SYMLINK_READ_FAILED", skillDir.relativize(p).toString());
                     }
                 }
             });
         } catch (IOException e) {
-            warnings.add("Failed to check symlinks: " + e.getMessage());
+            incomplete(findings, "SCAN_DIRECTORY_READ_FAILED", ".");
         }
     }
 
-    private List<Path> collectFiles(Path skillDir) throws IOException {
+    private List<Path> collectFiles(Path skillDir, List<SkillValidationResult.Finding> findings) throws IOException {
         List<Path> files = new ArrayList<>();
         try (Stream<Path> walk = Files.walk(skillDir, 10)) {
-            walk.filter(Files::isRegularFile)
-                .filter(p -> !Files.isSymbolicLink(p))
-                .forEach(files::add);
+            walk.forEach(path -> {
+                if (Files.isSymbolicLink(path)) return;
+                if (Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)
+                        && skillDir.relativize(path).getNameCount() >= 10) {
+                    incomplete(findings, "SCAN_DEPTH_LIMIT", skillDir.relativize(path).toString());
+                } else if (Files.isRegularFile(path)) files.add(path);
+            });
         }
         return files;
     }
@@ -406,10 +408,11 @@ public class SkillSecurityService {
         try {
             long size = Files.size(file);
             if (size > MAX_FILE_SIZE) {
-                warnings.add("File too large to scan: " + relativePath + " (" + (size / 1024) + "KB)");
+                incomplete(findings, "SCAN_FILE_SIZE_LIMIT", relativePath);
                 return;
             }
-        } catch (IOException e) {
+        } catch (IOException | RuntimeException e) {
+            incomplete(findings, "SCAN_FILE_STAT_FAILED", relativePath);
             return;
         }
 
@@ -427,9 +430,20 @@ public class SkillSecurityService {
         try {
             String content = Files.readString(file);
             scanText(content, relativePath, skillName, role, findings, warnings);
-        } catch (IOException e) {
-            // 可能是二进制文件，跳过
+        } catch (IOException | RuntimeException e) {
+            // Known binary extensions are excluded above. Unreadable remaining files are not clean scans.
+            incomplete(findings, "SCAN_FILE_READ_FAILED", relativePath);
         }
+    }
+
+    private static void incomplete(List<SkillValidationResult.Finding> findings, String rule, String path) {
+        findings.add(SkillValidationResult.Finding.builder()
+                .ruleId(rule).category("SCAN_INCOMPLETE").severity(SkillValidationResult.Severity.HIGH)
+                .title("Security scan could not be completed")
+                .description("A required part of the skill could not be inspected within the scan limits.")
+                .filePath(path)
+                .remediation("Make text files readable UTF-8, reduce oversized files or file counts, then rescan before enabling.")
+                .build());
     }
 
     private void scanText(String content, String filePath, String skillName, FileRole role,

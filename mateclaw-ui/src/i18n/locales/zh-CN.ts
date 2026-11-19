@@ -4288,6 +4288,8 @@ export default {
       findingsTitle: '安全扫描失败',
       rescan: '重新扫描',
       rescanning: '扫描中...',
+      scanIncomplete: '扫描未完成',
+      scanIncompleteHint: '部分文件无法读取或超出扫描范围，尚不能确认扫描通过。请修复文件编码、读取权限或文件规模后重新扫描；自定义技能需扫描通过后才能加载；内置技能沿用显式信任策略。',
       rescanPassed: '重新扫描通过',
       rescanStillFailed: '重新扫描仍未通过，请查看详情',
       rescanFailed: '重新扫描失败',

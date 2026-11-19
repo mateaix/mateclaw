@@ -4196,6 +4196,8 @@ export default {
       findingsTitle: 'Security scan failed',
       rescan: 'Rescan',
       rescanning: 'Scanning...',
+      scanIncomplete: 'Scan incomplete',
+      scanIncompleteHint: 'Some files could not be read or exceeded scan limits. Fix file encoding, read access or skill size, then rescan. Custom skills must pass before loading; built-in skills retain their explicit trust policy.',
       rescanPassed: 'Rescan passed',
       rescanStillFailed: 'Rescan still failed — see findings below',
       rescanFailed: 'Rescan request failed',
