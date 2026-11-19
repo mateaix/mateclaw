@@ -724,12 +724,13 @@
         <div v-if="detailTab === 'lessons'" class="detail-section">
           <div class="lessons-header">
             <p class="detail-hint">{{ t('skills.detail.lessonsHint') }}</p>
-            <button class="lessons-clear-btn" :disabled="!detailLessonsRaw" @click="clearLessons">
+            <button class="lessons-clear-btn" :disabled="!detailLessonsRaw || deletingLesson || detailLessonsLoading" @click="clearLessons">
               {{ t('skills.detail.clearLessons') }}
             </button>
           </div>
           <p v-if="detailLessonsLoading" class="detail-empty">{{ t('common.loading') }}</p>
-          <p v-else-if="!detailLessonsRaw" class="detail-empty">{{ t('skills.detail.noLessons') }}</p>
+          <p v-else-if="detailLessonsEntries?.length === 0 || !detailLessonsRaw" class="detail-empty">{{ t('skills.detail.noLessons') }}</p>
+          <SkillLessonsPanel v-else-if="detailLessonsEntries" :entries="detailLessonsEntries" :disabled="deletingLesson" @remove="withdrawLesson" />
           <pre v-else class="detail-pre">{{ detailLessonsRaw }}</pre>
         </div>
 
@@ -820,6 +821,8 @@
 </template>
 
 <script setup lang="ts">
+import SkillLessonsPanel from '@/components/skill/SkillLessonsPanel.vue'
+import { useSkillLessons } from '@/composables/useSkillLessons'
 import SkillScanIncompleteNotice from '@/components/skill/SkillScanIncompleteNotice.vue'
 import { hasIncompleteSkillScan } from '@/utils/skillScanState'
 import { applySkillSnapshot } from '@/utils/skillSnapshot'
@@ -886,8 +889,13 @@ const rescanning = ref<Record<string, boolean>>({})
 const detailDrawerVisible = ref(false)
 const detailSkill = ref<Skill | null>(null)
 const detailTab = ref<'overview' | 'body' | 'files' | 'manifest' | 'tools' | 'features' | 'security' | 'lessons' | 'secrets' | 'memory'>('overview')
-const detailLessonsRaw = ref<string>('')
-const detailLessonsLoading = ref(false)
+const deletingLesson = ref(false)
+const { raw: detailLessonsRaw, entries: detailLessonsEntries, loading: detailLessonsLoading,
+  load: loadLessons, reset: resetLessons, clearLocal: clearLessonState, owns: ownsLessonPanel } = useSkillLessons(
+  computed(() => detailDrawerVisible.value ? detailSkill.value?.id : undefined),
+  (error: any) => mcToast.error(typeof error === 'string' ? error : error?.message || t('skills.messages.loadFailed')),
+)
+
 const detailEmployees = ref<Array<{ id: number; name: string; icon?: string; binding?: 'explicit' | 'implicit' }>>([])
 const detailEmployeesLoading = ref(false)
 
@@ -1217,7 +1225,7 @@ function openDetailDrawer(
 ) {
   detailSkill.value = skill
   detailTab.value = tab
-  detailLessonsRaw.value = ''
+  resetLessons()
   detailEmployees.value = []
   editingIdentity.value = false
   editingBody.value = false
@@ -1269,34 +1277,29 @@ async function loadDetailEmployees() {
   }
 }
 
-async function loadLessons() {
-  if (!detailSkill.value) return
-  detailLessonsLoading.value = true
+async function withdrawLesson(lessonId: string) {
+  if (!detailSkill.value || deletingLesson.value) return
+  const id = detailSkill.value.id
+  const ok = await mcConfirm({ title:t('skills.detail.withdrawLesson'), message:t('skills.detail.withdrawLessonConfirm'), tone:'danger' })
+  if (!ok || !ownsLessonPanel(id)) return
+  deletingLesson.value = true
   try {
-    const res: any = await skillApi.getLessons(detailSkill.value.id)
-    detailLessonsRaw.value = res?.data?.raw || ''
+    await skillApi.deleteLesson(id, lessonId)
+    if (ownsLessonPanel(id)) await loadLessons()
   } catch (e: any) {
-    detailLessonsRaw.value = ''
-    console.warn('[SkillMarket] failed to load lessons', e)
-  } finally {
-    detailLessonsLoading.value = false
-  }
+    if (ownsLessonPanel(id)) mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.messages.deleteFailed'))
+  } finally { deletingLesson.value = false }
 }
 
 async function clearLessons() {
   if (!detailSkill.value) return
-  const ok = await mcConfirm({
-    title: t('skills.messages.deleteTitle'),
-    message: t('skills.detail.clearLessonsConfirm'),
-    tone: 'danger',
-  })
-  if (!ok) return
+  const id = detailSkill.value.id
+  const ok = await mcConfirm({ title:t('skills.messages.deleteTitle'), message:t('skills.detail.clearLessonsConfirm'), tone:'danger' })
+  if (!ok || !ownsLessonPanel(id)) return
   try {
-    await skillApi.clearLessons(detailSkill.value.id)
-    detailLessonsRaw.value = ''
-  } catch (e: any) {
-    mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.messages.deleteFailed'))
-  }
+    await skillApi.clearLessons(id)
+    clearLessonState(id)
+  } catch (e: any) { if (ownsLessonPanel(id)) mcToast.error(typeof e === 'string' ? e : e?.message || t('skills.messages.deleteFailed')) }
 }
 
 watch(detailTab, (tab) => {

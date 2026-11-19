@@ -147,4 +147,70 @@ class SkillLessonsServiceTest {
         assertNull(id);
         assertTrue(publishedEvents.isEmpty());
     }
+    @Test void returnedIdIsPersistedAndOnlyThatLessonCanBeWithdrawn() throws IOException {
+        Path dir = Files.createDirectory(tempDir.resolve("precise"));
+        var skill = ResolvedSkill.builder().id(1L).name("precise").skillDir(dir).build();
+        String first = service.recordLesson(skill, null, "a", "wrong lesson", 50);
+        String second = service.recordLesson(skill, null, "b", "keep lesson", 50);
+        assertTrue(service.readLessons(skill).contains(first));
+        var restarted = new SkillLessonsService(workspaceManager, publisher);
+        assertTrue(restarted.deleteLesson(skill, first));
+        assertFalse(restarted.deleteLesson(skill, first));
+        String raw = restarted.readLessons(skill);
+        assertFalse(raw.contains("wrong lesson"));
+        assertTrue(raw.contains("keep lesson"));
+        assertTrue(raw.contains(second));
+        assertFalse(restarted.readLessonsBody(skill).contains("lesson-id:"));
+    }
+    @Test void markdownSubheadingsDoNotBecomeSeparateLessonsWhenApplyingTheCap() throws IOException {
+        Path dir = Files.createDirectory(tempDir.resolve("markdown"));
+        var skill = ResolvedSkill.builder().id(1L).name("markdown").skillDir(dir).build();
+        service.recordLesson(skill, null, null, "intro\n## Details\nkeep nested detail", 2);
+        service.recordLesson(skill, null, null, "second lesson", 2);
+        assertTrue(service.readLessons(skill).contains("intro"));
+        assertTrue(service.readLessons(skill).contains("keep nested detail"));
+    }
+    @Test void concurrentAppendsDoNotLoseOrTruncateSiblings() throws Exception {
+        Path dir = Files.createDirectory(tempDir.resolve("concurrent"));
+        var skill = ResolvedSkill.builder().id(1L).name("concurrent").skillDir(dir).build();
+        var concurrent = new SkillLessonsService(workspaceManager, event -> {});
+        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(4)) {
+            var tasks = new java.util.ArrayList<java.util.concurrent.Callable<String>>();
+            for (int i=0;i<20;i++) { final int n=i; tasks.add(() -> concurrent.recordLesson(skill,null,null,"unique-"+n+"!",50)); }
+            for (var future : pool.invokeAll(tasks)) assertNotNull(future.get());
+        }
+        String raw = concurrent.readLessons(skill);
+        for (int i=0;i<20;i++) assertTrue(raw.contains("unique-"+i+"!"));
+    }
+
+    @Test void withdrawingTheLastLessonLeavesNoPromptMemory() throws IOException {
+        Path dir = Files.createDirectory(tempDir.resolve("last"));
+        var skill = ResolvedSkill.builder().id(1L).name("last").skillDir(dir).build();
+        String id = service.recordLesson(skill, null, null, "remove me", 50);
+        assertTrue(service.deleteLesson(skill, id));
+        assertTrue(SkillLessonsService.entries(service.readLessons(skill)).isEmpty());
+        assertNull(service.readLessonsBody(skill));
+    }
+    @Test void legacyEntryIdsAreStableAndAmbiguousDuplicatesAreRefused() throws IOException {
+        Path dir = Files.createDirectory(tempDir.resolve("legacy"));
+        var skill = ResolvedSkill.builder().id(1L).name("legacy").skillDir(dir).build();
+        String entry = "## 2026-10-01 10:00\nkeep old lesson\n";
+        Path file = dir.resolve("LESSONS.md"); Files.writeString(file, "# Lessons learned for legacy\n\n" + entry);
+        var id = SkillLessonsService.entries(service.readLessons(skill)).getFirst().id();
+        assertTrue(id.startsWith("legacy-"));
+        assertEquals(id, SkillLessonsService.entries(service.readLessons(skill)).getFirst().id());
+        Files.writeString(file, "# Lessons learned for legacy\n\n" + entry + entry);
+        assertFalse(SkillLessonsService.entries(service.readLessons(skill)).getFirst().deletable());
+        String before = Files.readString(file);
+        assertFalse(service.deleteLesson(skill, id)); assertEquals(before, Files.readString(file));
+    }
+    @Test void unreadableLessonsAreNeverOverwrittenByAnAssumedEmptyStore() throws IOException {
+        Path dir = Files.createDirectory(tempDir.resolve("unreadable"));
+        var skill = ResolvedSkill.builder().id(1L).name("unreadable").skillDir(dir).build();
+        Path file = dir.resolve("LESSONS.md"); byte[] bytes = new byte[]{(byte)0xc3,(byte)0x28}; Files.write(file, bytes);
+        assertNull(service.recordLesson(skill,null,null,"must not overwrite",50));
+        assertArrayEquals(bytes, Files.readAllBytes(file));
+        assertFalse(service.deleteLesson(skill,"unknown"));
+    }
+
 }

@@ -236,6 +236,8 @@ export const conversationApi = {
 }
 
 // ==================== Skill ====================
+export interface SkillLessonEntry { id: string; heading: string; content: string; deletable: boolean }
+
 export const skillApi = {
   /** Paginated skill listing with search, source, status, and sort filters. */
   page: (params: {
@@ -293,6 +295,7 @@ export const skillApi = {
   // RFC-090 §7 + §11.4 — pre-flight requirements + LESSONS.md + reverse lookup
   requirements: (id: string | number) => http.get(`/skills/${id}/requirements`),
   getLessons: (id: string | number) => http.get(`/skills/${id}/lessons`),
+  deleteLesson: (id: string | number, lessonId: string) => http.delete(`/skills/${id}/lessons/${encodeURIComponent(lessonId)}`),
   clearLessons: (id: string | number) => http.post(`/skills/${id}/lessons/clear`),
   employees: (id: string | number) => http.get(`/skills/${id}/employees`),
   /**
