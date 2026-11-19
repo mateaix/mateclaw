@@ -30,7 +30,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, watch, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { mcToast } from '@/composables/useMcToast'
 import { http, agentContextApi } from '@/api'
@@ -48,14 +48,25 @@ interface FileInfo { filename: string; fileSize: number; enabled: boolean }
 
 const files = ref<FileInfo[]>([])
 const currentFile = ref('')
-const sections = ref<MemorySectionData[]>([])
+type BrowserSection = MemorySectionData & { agentId: string | number; filename: string }
+const sections = ref<BrowserSection[]>([])
 const loading = ref(false)
 
-watch(() => props.agentId, () => { loadFileList() }, { immediate: true })
+let listRevision = 0
+let fileRevision = 0
+onBeforeUnmount(() => { listRevision++; fileRevision++ })
+watch(() => props.agentId, () => {
+  fileRevision++
+  files.value = []; sections.value = []; currentFile.value = ''; loading.value = false
+  loadFileList()
+}, { immediate: true })
 
 async function loadFileList() {
+  const revision = ++listRevision
+  const agentId = props.agentId
   try {
-    const res: any = await agentContextApi.listFiles(props.agentId)
+    const res: any = await agentContextApi.listFiles(agentId)
+    if (revision !== listRevision || agentId !== props.agentId) return
     const allFiles: FileInfo[] = res.data || []
     // Memory-relevant files only: MEMORY.md, PROFILE.md, SOUL.md, structured/*.md
     const filtered = allFiles.filter((f: FileInfo) =>
@@ -69,18 +80,23 @@ async function loadFileList() {
     } else if (files.value.length > 0) {
       loadFile(files.value[0].filename)
     }
-  } catch { files.value = [] }
+  } catch { if (revision === listRevision && agentId === props.agentId) files.value = [] }
 }
 
 async function loadFile(filename: string) {
+  const revision = ++fileRevision
+  const agentId = props.agentId
+  const current = () => revision === fileRevision && agentId === props.agentId && currentFile.value === filename
   currentFile.value = filename
+  sections.value = []
   loading.value = true
   try {
-    const res: any = await agentContextApi.getFile(props.agentId, filename)
+    const res: any = await agentContextApi.getFile(agentId, filename)
+    if (!current()) return
     const content: string = res.data?.content || ''
-    sections.value = parseSections(content)
-  } catch { sections.value = [] }
-  finally { loading.value = false }
+    sections.value = parseSections(content).map(section => ({ ...section, agentId, filename }))
+  } catch { if (current()) sections.value = [] }
+  finally { if (current()) loading.value = false }
 }
 
 function parseSections(content: string): MemorySectionData[] {
@@ -118,30 +134,33 @@ function stripMarker(body: string): string {
  * Persist an edited section. Throws on failure so MemorySection can keep the
  * editor open and surface the error.
  */
-async function saveSection(sec: MemorySectionData, body: string) {
+async function saveSection(sec: BrowserSection, body: string) {
+  const { agentId, filename } = sec
+  const revision = fileRevision
   if (sec.synthetic) {
     // The preamble (content before the first ## heading) has no section key
     // the HiL endpoint can address — rewrite it through the workspace file
     // API, preserving every real `## ` section that follows.
-    const res: any = await agentContextApi.getFile(props.agentId, currentFile.value)
+    const res: any = await agentContextApi.getFile(agentId, filename)
     const content: string = res.data?.content || ''
     const headingIdx = content.search(/^## /m)
     const rest = headingIdx >= 0 ? content.slice(headingIdx) : ''
     const preamble = body.trim()
     const merged = preamble && rest ? `${preamble}\n\n${rest}` : preamble + rest
-    await agentContextApi.saveFile(props.agentId, currentFile.value, merged)
+    await agentContextApi.saveFile(agentId, filename, merged)
   } else {
     // Use HiL edit endpoint to write back with user-edited metadata.
     // `filename` tells the backend which memory file to edit — without it the
     // backend defaults to MEMORY.md and PROFILE.md / SOUL.md edits fail.
     await http.post(
-      `/memory/${props.agentId}/dream/reports/0/entries/${encodeURIComponent(sec.heading)}/edit`,
-      { content: body, filename: currentFile.value }
+      `/memory/${agentId}/dream/reports/0/entries/${encodeURIComponent(sec.heading)}/edit`,
+      { content: body, filename }
     )
   }
+  if (revision !== fileRevision || props.agentId !== agentId || currentFile.value !== filename) return
   mcToast.success(t('memory.hil.saved'))
   // Reload file to see changes
-  await loadFile(currentFile.value)
+  if (props.agentId === agentId && currentFile.value === filename) await loadFile(filename)
 }
 
 // Registry icon key for each memory file type.
