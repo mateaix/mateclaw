@@ -37,10 +37,13 @@ public class ProviderChatModelFactory {
 
     private final Map<ModelProtocol, ChatModelBuilder> builders;
     private final ModelProviderService modelProviderService;
+    private final LlmStatisticsCollector collector;
 
     public ProviderChatModelFactory(List<ChatModelBuilder> allBuilders,
-                                    ModelProviderService modelProviderService) {
+                                    ModelProviderService modelProviderService,
+                                    LlmStatisticsCollector collector) {
         this.modelProviderService = modelProviderService;
+        this.collector = collector;
         Map<ModelProtocol, ChatModelBuilder> map = new EnumMap<>(ModelProtocol.class);
         for (ChatModelBuilder b : allBuilders) {
             ChatModelBuilder previous = map.put(b.supportedProtocol(), b);
@@ -69,6 +72,7 @@ public class ProviderChatModelFactory {
             throw new MateClawException("err.agent.protocol_limited",
                     "No ChatModelBuilder registered for protocol: " + protocol.getId());
         }
-        return builder.build(model, provider, retry);
+        ChatModel raw = builder.build(model, provider, retry);
+        return new LlmStatisticsDecorator(raw, provider.getProviderId(), model.getModelName(), collector);
     }
 }
