@@ -314,6 +314,93 @@ Verify login, model and tool calls, history, cancellation followed by another tu
 
 ---
 
+## Offline 3.1.0 upgrade for an existing managed deployment
+
+This workflow covers 3.0.0 on linux/amd64, PostgreSQL 16, Compose project `deploy`, with persistent database/application volumes and existing runtime-home/cache mounts. It replaces only the backend image, including its admin UI and WebChat. Sites/docs, search, proxy and database containers remain in place; reload the proxy after replacing the backend.
+
+Internal deployment scripts and production receipts are not shipped in the public source repository. The commands below apply to a **reviewed 3.1.0 offline bundle supplied by the deployment maintainer**, not an ordinary source checkout. The historical 3.0.0 full-stack scripts pin that release and assume first-time runtime-directory creation; do not reuse them for this operation. Review other versions, platforms, databases and mount layouts separately.
+
+### Bundle and build checks
+
+Build the UI, WebChat and Java 21 backend, run appropriate regressions, then assemble the linux/amd64 image on the connected workstation. The production host imports images without building or pulling them.
+
+| File | Purpose |
+| --- | --- |
+| `manifest.json` | Release 3.1.0, source commit, platform and all five services' image tags/IDs; replace only the backend entry |
+| `images.tar.gz` | Backend image; the other pinned images must already exist on the host |
+| `backend_upgrade.py` / `original_upgrade.py` | Backend-only entry point and dependency snapshot; do not invoke the snapshot's CLI directly |
+| `acceptance.py` | Privileged pre-upgrade, validation and final acceptance checks |
+| `migration/run.sh`, Java source and `.class` files | Standalone Flyway runner without a Spring application context |
+| `SHA256SUMS` | Checksums covering images, manifest, operation scripts and migration entry point |
+
+Verify JAR version 3.1.0, embedded UI/WebChat, Boot 4.1.2, Spring AI 2.0.2, AgentScope Core 2.0.5 and Playwright 1.62.0. Retain the reviewed runtime and existing DSH configuration. This deployment retained Node 22.23.4 rather than switching to the optional Node 24/DSH candidate. Exclude production environment files, signing keys, temporary tokens, databases and user files from the bundle.
+
+### Maintenance sequence
+
+Review the bundle's fixed version, deployment path, state path and image inventory first; this is not a general-purpose release upgrader. Pause incoming work, let tools finish and check active Goal leases. The lease check does not replace full traffic control or inspection of other active tools.
+
+```bash
+# A fresh, reviewed bundle directory on the host; existing Docker/DB administration access required
+sha256sum -c SHA256SUMS
+python3 backend_upgrade.py preflight
+python3 acceptance.py before
+python3 backend_upgrade.py rehearse
+python3 backend_upgrade.py apply
+```
+
+1. **Preflight and baseline:** check architecture, image IDs, existing volumes/home/cache mounts, current JWT secret, image-only Compose and space. Size the actual backup; the script's minimum free-space threshold is not a capacity guarantee.
+2. **Online-copy rehearsal:** take a custom-format `pg_dump`, restore into a separate PostgreSQL on an internal network, then run Flyway only. No application tasks/channels, automatic repair, baseline or clean.
+3. **Stopped-writer backup:** stop the backend and retain the database, application data, workspace, skills/plugins, cache, environment, deployment/proxy configuration and certificates, and old image identities. Generate and verify per-file checksums.
+4. **Second rehearsal:** restore and validate this new stopped-writer database backup before switching images. V203 remains the target; an existing V203 database still requires history validation even when no migration is pending.
+5. **Validation startup:** save the original enabled Cron IDs, suspend Cron and Goal continuation, preserve JVM timezone/encoding options and recreate only the backend using `--no-build --pull never --no-deps`. Reload the proxy.
+
+The outage includes file copying, checksum verification, database restoration and startup. About 6.7 GiB of runtime/skill files produced roughly 350,000 backup entries in this deployment; dump size alone is a poor estimate of the maintenance window. Do not start another operation or remove state while backup verification is running.
+
+Successful `apply` means `validationReady=true` while phase remains `applying`; scheduling is still suspended. Continue only after reviewing business evidence:
+
+```bash
+python3 acceptance.py validation
+# Inspect every JSON passed field and review model/tool/history evidence
+python3 backend_upgrade.py resume
+python3 acceptance.py final
+python3 backend_upgrade.py verify
+```
+
+The acceptance script uses an existing administrator identity and JWT signing key to generate a short-lived test token; it does not change passwords or rotate application credentials. Run it only with existing administration rights in a restricted environment. It invokes configured models and creates a deployment-test conversation for constant text, a Shell `printf MATECLAW_TOOL_OK_31`, persistence and history follow-up. Calls incur usage and leave audit/test records; no business IM/email delivery is needed. Respect tool approval and policy boundaries; record and clean up incomplete test runs.
+
+A zero script exit status does not prove every business check passed: inspect the report. Token expiration does not establish key rotation. Remove temporary tokens afterwards and keep credentials out of published reports. `resume` restores original scheduling/configuration and restarts the backend; only then does state become `live` with `schedulingRestored=true`. Finally verify task counts, health/readiness UP, retained environment settings, public pages and actual JS/CSS responses.
+
+### Failure handling and rollback
+
+PostgreSQL initialization can expose a temporary Unix socket before its final server is ready. Wait for `pg_isready -h 127.0.0.1` before restoring. An initial rehearsal restore failed in this deployment and passed after private diagnostics were added; the first failure lacked sufficient evidence to attribute its cause conclusively to readiness timing. Successful Flyway checks did not use repair.
+
+Before switching, a failed validation must leave the old backend available while logs are reviewed. Internal post-switch checks attempt rollback, but its success must also be confirmed. Do not resume scheduling after failed business acceptance; after review use:
+
+```bash
+# The same verified, versioned bundle directory
+python3 backend_upgrade.py rollback
+```
+
+Rollback requires retained old images and the complete stopped-writer backup and discards post-upgrade writes. Restore the matching database, files, environment and old backend together; an old image alone cannot undo migrations or external tool effects. Retain backups/images. Do not run `down -v`, prune, clear checkpoints or force Flyway repair. After interruption or failed rollback, inspect state and logs rather than assuming recovery or deleting live state to retry.
+
+### Historical 3.1.0 acceptance and limits
+
+Receipt time: 2026-11-23 04:34:33 UTC (2026-11-22 23:34:33 in New York). These are results for that controlled deployment, not certification of every platform or a statement of current production health.
+
+| Check | Result |
+| --- | --- |
+| Complete backup | 352,110 manifest entries verified; rollback materials retained |
+| Database | Two successful copy restorations and Flyway checks at V203; zero new migrations, no repair |
+| Business acceptance | 17/17: authentication, pre-upgrade test token, configuration APIs, real chat, persistence, successful Shell event and history follow-up |
+| After scheduling resumed | 14/14 API checks; original 33 Cron jobs and Goal scheduling restored |
+| Runtime/configuration | Health/readiness UP, environment retained, other four containers not recreated |
+| Public admin UI | Matches the built output; five JS/CSS resources checked; browser login page renders |
+| Companion sites | Seven pages match the bundle; bilingual company attribution and company link verified |
+
+Model discovery/connection probing can fail while generation works. A configured usable model passed real generation, tools and follow-up checks. Existing credential failures for some other providers remain unresolved; this is not a claim that all models or external channels are healthy. Delivery through every IM, all optional plugins and platform installers were outside this acceptance scope.
+
+---
+
 ## Next steps
 
 - [Configuration](./config) — every environment variable and runtime toggle
