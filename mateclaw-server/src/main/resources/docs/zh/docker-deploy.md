@@ -286,7 +286,7 @@ curl -s 'http://localhost:8088/search?q=hello&format=json' | head -5
 `shm_size: 2gb` 没生效。`docker inspect mateclaw-server | grep ShmSize` 看实际值。老版本 Docker Engine 要升级到 24.0+。
 
 **搜索返回 "搜索暂时不可用"**
-SearXNG 容器没起来或 JSON 格式被镜像默认 settings 禁用。我们自己构建 `./docker/searxng/` 已经改好；如果用了旧的 volume 缓存要清：`docker compose down -v searxng && docker compose up -d searxng`。
+SearXNG 容器没起来或 JSON 格式被镜像默认 settings 禁用。我们自己构建 `./docker/searxng/` 已经改好；先重建并重新创建搜索容器：`docker compose up -d --build --force-recreate searxng`。
 
 **LLM 回答里出现乱码 / 豆腐块**
 镜像已经装了 `fonts-noto-cjk` 和 `fonts-noto-color-emoji`，不是字体问题。检查前端浏览器 locale。
@@ -295,13 +295,22 @@ SearXNG 容器没起来或 JSON 格式被镜像默认 settings 禁用。我们�
 
 ## 升级
 
+1. 暂停新请求和 Goal/Cron 调度，等待工具结束，记录当前版本、Compose 配置和镜像。
+2. 停止应用写入，备份数据库、`server_data`、工作空间、插件和 `.env`；保留 JWT 密钥，并在副本上演练恢复与迁移。备份必须位于待升级卷之外。
+3. 选择已发布的目标 tag，阅读对应[更新与升级说明](./changelog#升级与验证)，再构建和启动。下面以 3.1.0 为例：
+
 ```sh
-git pull
-docker compose build mateclaw-server   # 只重建后端
+docker compose stop mateclaw-server
+git fetch origin --tags
+git checkout v3.1.0
+docker compose build mateclaw-server
 docker compose up -d mateclaw-server
+docker compose logs --tail=100 mateclaw-server
 ```
 
-PostgreSQL 数据卷（`postgres_data`）不会动，Flyway 自动跑增量迁移 + 自愈 checksum 变化。**版本号写在 `mateclaw-server/pom.xml` 和 git tag**，生产环境建议钉 tag 而不是 `dev` 分支。
+`postgres_data` 在重建时保留，Flyway 校验通过后执行增量迁移。**校验和变化默认阻止启动，不会自动修复**；按[Flyway 故障处理](./config)检查历史与实际 schema，确认后才可单次启用修复，处理完恢复默认。版本由根 `pom.xml` 的 `<revision>` 和 git tag 确定。
+
+升级后验证登录、模型调用、工具执行、历史消息、取消后续聊、搜索及所用渠道，再恢复调度。回滚需要旧版本及配套的升级前数据库和文件备份；只切换旧镜像不能逆转迁移，也不能撤销外部工具效果。已有 MySQL 部署不能直接切换本 PostgreSQL Compose 期待自动迁移数据。
 
 ---
 

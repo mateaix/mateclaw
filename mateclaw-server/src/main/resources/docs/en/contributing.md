@@ -55,8 +55,9 @@ Open [http://localhost:5173](http://localhost:5173). Log in with `admin` / `admi
 ## Development workflow
 
 ```bash
-# 1. Make a feature branch from main
-git checkout -b feat/your-feature-name
+# 1. Make a feature branch from dev
+git fetch origin
+git checkout -b feat/your-feature-name origin/dev
 
 # 2. Work in small, meaningful commits
 git add path/to/changed-file
@@ -64,13 +65,15 @@ git commit -m "feat(scope): what you changed"
 
 # 3. Keep up to date with upstream
 git fetch upstream
-git rebase upstream/main
+git rebase upstream/dev
 
 # 4. Push and open a PR
 git push origin feat/your-feature-name
 ```
 
 ---
+
+Target `dev` for day-to-day contributions; `main` is for stable releases. Configure `upstream` as `https://github.com/mateaix/mateclaw.git` before rebasing.
 
 ## Branch naming
 
@@ -180,7 +183,7 @@ public class MyNewTool {
 
 Rebuild external plugins against the current `mateclaw-plugin-api` and Java 21. Plugins that call Spring AI provider APIs must migrate those calls to Spring AI 2 before rebuilding; removed provider DTOs and mutable setters are not binary compatible. Keep host-provided MateClaw API, Spring Boot and Spring AI libraries out of the plugin JAR. The compatibility bridge preserves defaults from legacy `ChatModel.getDefaultOptions()` implementations, but does not guarantee compatibility for older provider SDK bytecode. Test plugin loading, tool registration and a real invocation against the upgraded host before deployment.
 
-MyBatis Plus uses the Spring Boot 4 starter at 3.5.17. Its Spring integration classes moved from `com.baomidou.mybatisplus.extension.spring` to `com.baomidou.mybatisplus.spring`; update imports such as `MybatisSqlSessionFactoryBean` when rebuilding code that uses those classes.
+MyBatis Plus uses the Spring Boot 4 starter at 3.5.18.1. Its Spring integration classes moved from `com.baomidou.mybatisplus.extension.spring` to `com.baomidou.mybatisplus.spring`; update imports such as `MybatisSqlSessionFactoryBean` when rebuilding code that uses those classes.
 
 ### SQL schema changes
 

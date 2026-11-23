@@ -199,3 +199,11 @@ Create a role-specific agent → install skills → connect MCP servers → conf
 | Configure more options | [Configuration](./config) |
 | Connect more channels | [Channels](./channels) |
 | Deep-dive into the agent engine | [Agents](./agents) |
+
+## Daily operations and upgrades
+
+Change the default password after first login, then configure a model. Withdraw individual skill lessons when needed and inspect the impact preview before restoring a snapshot. After stopping a run, inspect actual tool outcomes before retrying to avoid repeating external actions.
+
+- [Skills and lessons](./skills) · [Memory editing](./memory) · [Chat and run status](./chat)
+- [3.1.0 release and upgrade notes](./changelog) · [Docker deployment, backup and rollback](./docker-deploy)
+- [Doctor diagnostics](./doctor) · [FAQ](./faq)

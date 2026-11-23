@@ -198,6 +198,8 @@ npm install && npm run dev -- --host 127.0.0.1    # http://localhost:5173
 
 On a fresh database, log in with `admin` / `admin123`, change the password, then configure a model in **Settings → Models**. Existing model settings are read from the root `data/` database; starting against `mateclaw-server/data/` opens a different database. Keep `.env.local` private and set a non-empty `JWT_SECRET` of at least 32 UTF-8 bytes.
 
+For contribution branches and PRs, use `dev`; `main` tracks stable releases. [User manual](https://claw.mate.vip/docs/en/user-guide) · [Deployment and upgrades](https://claw.mate.vip/docs/en/docker-deploy).
+
 ### Docker
 
 ```bash

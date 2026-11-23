@@ -55,8 +55,9 @@ npm run dev -- --host 127.0.0.1
 ## 开发流程
 
 ```bash
-# 1. 从 main 开一个 feature branch
-git checkout -b feat/your-feature-name
+# 1. 从 dev 开一个 feature branch
+git fetch origin
+git checkout -b feat/your-feature-name origin/dev
 
 # 2. 小而有意义的 commit
 git add path/to/changed-file
@@ -64,13 +65,15 @@ git commit -m "feat(scope): 你改了什么"
 
 # 3. 和上游保持同步
 git fetch upstream
-git rebase upstream/main
+git rebase upstream/dev
 
 # 4. 推送、开 PR
 git push origin feat/your-feature-name
 ```
 
 ---
+
+日常贡献的 PR 以 `dev` 为目标；`main` 用于稳定发布。上例中的 `upstream` 应先配置为 `https://github.com/mateaix/mateclaw.git`。
 
 ## 分支命名
 
@@ -179,7 +182,7 @@ public class MyNewTool {
 
 使用当前 `mateclaw-plugin-api` 和 Java 21 重新编译外部插件。如果插件直接调用 Spring AI 的供应商 API，先将这些调用迁移到 Spring AI 2；已移除的供应商 DTO 和可变 setter 不具备二进制兼容性。插件 JAR 不要打包由宿主提供的 MateClaw API、Spring Boot 和 Spring AI 库。兼容桥接会保留旧版 `ChatModel.getDefaultOptions()` 实现提供的默认选项，但不能保证旧供应商 SDK 字节码可用。部署前在升级后的宿主中验证插件加载、工具注册和实际调用。
 
-MyBatis Plus 使用3.5.17的 Spring Boot 4 starter。Spring 集成类已从 `com.baomidou.mybatisplus.extension.spring` 移至 `com.baomidou.mybatisplus.spring`；重新编译直接使用这些类的代码时，需要更新 `MybatisSqlSessionFactoryBean` 等导入。
+MyBatis Plus 使用3.5.18.1的 Spring Boot 4 starter。Spring 集成类已从 `com.baomidou.mybatisplus.extension.spring` 移至 `com.baomidou.mybatisplus.spring`；重新编译直接使用这些类的代码时，需要更新 `MybatisSqlSessionFactoryBean` 等导入。
 
 ### SQL schema 变更
 

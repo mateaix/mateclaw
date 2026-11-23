@@ -198,6 +198,8 @@ npm install && npm run dev -- --host 127.0.0.1    # http://localhost:5173
 
 新数据库默认登录：`admin` / `admin123`。登录后修改密码，并在 **设置 → 模型** 配置模型。已有模型配置从根目录 `data/` 数据库读取；使用 `mateclaw-server/data/` 会打开另一份数据库。不要提交 `.env.local`，其中 `JWT_SECRET` 必须非空且至少包含 32 个 UTF-8 字节。
 
+日常贡献分支和 PR 以 `dev` 为目标，`main` 用于稳定发布。[操作手册](https://claw.mate.vip/docs/zh/user-guide) · [部署与升级](https://claw.mate.vip/docs/zh/docker-deploy)。
+
 ### Docker 部署
 
 ```bash

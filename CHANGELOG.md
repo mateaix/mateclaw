@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Documentation: align contribution branches with `dev`, clarify deployment backups, Flyway validation and rollback, refresh user-guide/README links, and document verified private-to-public synchronization.
+- Website quick start: explicitly build the Docker services on first startup.
+
 ## 3.1.0 — 2026-11-19
 
 Changes after v3.0.0:

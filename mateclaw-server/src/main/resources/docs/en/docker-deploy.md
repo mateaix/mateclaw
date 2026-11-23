@@ -286,7 +286,7 @@ US servers pulling through Aliyun is slow. The default `pom.xml` puts Maven Cent
 `shm_size: 2gb` didn't take effect. Check the actual value with `docker inspect mateclaw-server | grep ShmSize`. Upgrade Docker Engine to 24.0+ if it's still showing 64 MB.
 
 **Search returns "Search temporarily unavailable"**
-SearXNG either isn't up or the image default settings disabled JSON output. Our own `./docker/searxng/` build patches this; if you're reusing an old named volume, reset it: `docker compose down -v searxng && docker compose up -d searxng`.
+SearXNG either isn't up or the image default settings disabled JSON output. Our own `./docker/searxng/` build patches this; rebuild and recreate only the search container: `docker compose up -d --build --force-recreate searxng`.
 
 **LLM responses show tofu boxes (□) for Chinese**
 The image already installs `fonts-noto-cjk` and `fonts-noto-color-emoji`, so this isn't a server-side font issue. Check your frontend browser's locale / font settings.
@@ -295,13 +295,22 @@ The image already installs `fonts-noto-cjk` and `fonts-noto-color-emoji`, so thi
 
 ## Upgrading
 
+1. Pause new requests and Goal/Cron scheduling, let active tools finish, and record the current version, Compose configuration and images.
+2. Stop application writes and back up the database, `server_data`, workspace, plugins and `.env`. Retain the JWT secret; rehearse restoration and migrations on a copy. Store backups outside the volumes being upgraded.
+3. Select a published target tag and read its [upgrade notes](./changelog#upgrade-and-validation). For example, to build 3.1.0:
+
 ```sh
-git pull
-docker compose build mateclaw-server   # only rebuild the backend
+docker compose stop mateclaw-server
+git fetch origin --tags
+git checkout v3.1.0
+docker compose build mateclaw-server
 docker compose up -d mateclaw-server
+docker compose logs --tail=100 mateclaw-server
 ```
 
-The `postgres_data` volume persists across rebuilds. Flyway runs incremental migrations automatically and self-heals checksum changes on restart. **Version is pinned in `mateclaw-server/pom.xml` and the git tag** — prefer pinning to a tag in production, not tracking `dev`.
+The `postgres_data` volume survives rebuilds. Flyway validates history before incremental migration. **Checksum drift blocks startup by default; it does not self-heal.** Follow [Flyway recovery guidance](./config), inspect history and the actual schema, and enable repair only for a reviewed, controlled startup before restoring the default. The root `pom.xml` `<revision>` and git tag identify the version.
+
+Verify login, model and tool calls, history, cancellation followed by another turn, search and configured channels before resuming scheduling. Rollback requires the old application and its matching pre-upgrade database and file backups; an old image alone cannot reverse migrations or external tool effects. An existing MySQL deployment cannot switch to this PostgreSQL Compose stack and expect automatic data migration.
 
 ---
 
