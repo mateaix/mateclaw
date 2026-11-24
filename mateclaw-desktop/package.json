@@ -1,6 +1,6 @@
 {
   "name": "mateclaw-desktop",
-  "version": "3.1.0",
+  "version": "3.2.0-SNAPSHOT",
   "description": "MateClaw Desktop - AI Assistant powered by Spring AI 2 + AgentScope 2",
   "author": "MateClaw Team",
   "license": "Apache-2.0",
