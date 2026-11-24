@@ -74,6 +74,7 @@ const props = defineProps<{
   done?: number
   total?: number
   startedAt?: string
+  finishedAt?: string
 }>()
 
 defineEmits<{
@@ -158,8 +159,12 @@ const pagesProgress = computed(() => {
 const elapsed = computed(() => {
   if (!props.startedAt) return ''
   const start = new Date(props.startedAt).getTime()
-  const now = Date.now()
-  const sec = Math.floor((now - start) / 1000)
+  // A terminal job's duration must survive refreshes unchanged. Old records
+  // without a finish time have no reliable duration; do not keep timing them.
+  if (isTerminal.value && !props.finishedAt) return ''
+  const end = isTerminal.value ? new Date(props.finishedAt!).getTime() : Date.now()
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return ''
+  const sec = Math.max(0, Math.floor((end - start) / 1000))
   if (sec < 60) return `${sec}s`
   return `${Math.floor(sec / 60)}m ${sec % 60}s`
 })

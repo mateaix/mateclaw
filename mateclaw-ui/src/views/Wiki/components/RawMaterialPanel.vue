@@ -315,7 +315,7 @@
         </div>
         <!-- RFC-033: Job stage bar — show when job has progressed past 'queued' or reached terminal -->
         <JobStageBar
-          v-if="rawJobs[raw.id] && (rawJobs[raw.id].stage !== 'queued' || rawJobs[raw.id].status !== 'queued')"
+          v-if="isCurrentRawJob(raw.processingStatus, rawJobs[raw.id]) && (rawJobs[raw.id].stage !== 'queued' || rawJobs[raw.id].status !== 'queued')"
           :stage="rawJobs[raw.id].stage"
           :status="rawJobs[raw.id].status"
           :current-model="rawJobs[raw.id].currentModelName ?? (rawJobs[raw.id].currentModelId ? `Model #${rawJobs[raw.id].currentModelId}` : undefined)"
@@ -325,6 +325,7 @@
           :done="rawJobs[raw.id].done ?? raw.progressDone"
           :total="rawJobs[raw.id].total ?? raw.progressTotal"
           :started-at="rawJobs[raw.id].startedAt ?? undefined"
+          :finished-at="rawJobs[raw.id].finishedAt ?? undefined"
           @reprocess="reprocess(raw.id)"
           @repair="handleLocalRepair(raw.id)"
         />
@@ -392,6 +393,7 @@ import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
 import { wikiApi } from '@/api/index'
 import { processWithConcurrency } from '@/utils/wikiUpload'
 import JobStageBar from './JobStageBar.vue'
+import { isCurrentRawJob } from '../utils/wikiJob'
 import type { WikiProcessingJob } from '@/composables/useWikiJobPoller'
 
 const { t } = useI18n()

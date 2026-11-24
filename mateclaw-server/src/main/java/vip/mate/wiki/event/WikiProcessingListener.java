@@ -1,7 +1,8 @@
 package vip.mate.wiki.event;
 
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.event.EventListener;
+import org.springframework.transaction.event.TransactionPhase;
+import org.springframework.transaction.event.TransactionalEventListener;
 import org.springframework.stereotype.Component;
 import vip.mate.wiki.WikiProperties;
 import vip.mate.wiki.service.WikiProcessingService;
@@ -34,7 +35,11 @@ public class WikiProcessingListener {
         log.info("[Wiki] Listener initialized with rawMaterialSemaphore permits={}", parallel);
     }
 
-    @EventListener
+    // Upload/reprocess publishes inside the material transaction. A worker
+    // started before commit can miss the row or see its previous terminal
+    // state, skip it, and leave the committed material pending forever (#692).
+    // Directory scans also publish without a transaction and must still run.
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
     public void onWikiProcessing(WikiProcessingEvent event) {
         log.info("[Wiki] Processing event received: rawId={}, kbId={}", event.getRawMaterialId(), event.getKbId());
         // 立即把实际处理派发到 wiki 的虚拟线程池，释放事件发布者线程和共享的 @Async 池

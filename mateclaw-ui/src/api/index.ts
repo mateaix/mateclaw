@@ -1246,6 +1246,8 @@ export const wikiApi = {
   downloadRaw: (kbId: number, rawId: number) =>
     http.get<Blob>(`/wiki/knowledge-bases/${kbId}/raw/${rawId}/download`, {
       responseType: 'blob',
+      // Large originals may take longer than the global 30-second API budget.
+      timeout: 0,
     }),
 
   // Wiki Pages
