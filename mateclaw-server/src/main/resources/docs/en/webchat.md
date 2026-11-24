@@ -178,7 +178,15 @@ data: {"message":"..."}  (on failure)
 1. `POST /upload` (multipart): returns `{fileId, fileName, contentType, size}`.
 2. Add the fileId to the `attachmentIds` array in the body of the next `/stream` call. Unknown / expired / foreign fileIds are silently dropped (only the text part is sent, no error).
 3. The agent reads server-side files directly; the `fileUrl` in a message is a relative download path (`/api/v1/channels/webchat/files?storedName=...`) — the client appends auth headers to download.
-4. Agent-generated files (PDF/DOCX/...) appear in assistant replies as `/api/v1/files/generated/<uuid>` URLs, downloadable **without auth**, with a 7-day TTL.
+4. Agent-generated files (PDF/DOCX/...) appear in assistant replies as `/api/v1/files/generated/<uuid>` URLs and remain available for 7 days. Web/API visitors should extract `<uuid>` and download through the channel endpoint:
+
+   ```http
+   GET /api/v1/channels/webchat/files?visitorId=<visitorId>&sessionId=<sessionId>&storedName=<uuid>
+   X-MC-Key: <channel-api-key>
+   X-MC-Visitor-Token: <visitorToken>
+   ```
+
+   For uploads, `storedName` remains the uploaded `fileId`; for generated files, it is the UUID from the generated link, not a filename, absolute path, or full URL. Use the same `visitorId` and `sessionId` used to generate the file; omit `sessionId` if the conversation did not use one. The server validates the channel, visitor, conversation and owning workspace. Expired, unowned or foreign files return 404. The original `/api/v1/files/generated/<uuid>` endpoint requires dashboard login authentication: it neither accepts visitorToken authentication nor allows anonymous downloads.
 
 ## Session lifecycle: pin / archive / delete
 

@@ -183,7 +183,15 @@ SDK 里展示"AI 正在打字..."气泡、工具执行徽章("正在搜索...")�
 1. `POST /upload`(multipart):返回 `{fileId, fileName, contentType, size}`。
 2. 在下一次 `/stream` 的请求体里把 fileId 加到 `attachmentIds` 数组。未知 / 过期 / 不属于该访客的 fileId 会被静默丢弃(仅发送文本部分,不报错)。
 3. Agent 下载时直接读服务端文件;消息里的 `fileUrl` 是相对下载路径(`/api/v1/channels/webchat/files?storedName=...`),客户端拼接鉴权头就能下载。
-4. Agent 生成的文件(PDF/DOCX/...)在助手回复里以 `/api/v1/files/generated/<uuid>` URL 形式出现,**无鉴权下载**,7 天 TTL。
+4. Agent 生成的文件(PDF/DOCX/...)在助手回复里以 `/api/v1/files/generated/<uuid>` URL 形式出现，保留 7 天。Web/API 访客应提取其中的 `<uuid>`，通过同一个渠道下载接口请求：
+
+   ```http
+   GET /api/v1/channels/webchat/files?visitorId=<visitorId>&sessionId=<sessionId>&storedName=<uuid>
+   X-MC-Key: <channel-api-key>
+   X-MC-Visitor-Token: <visitorToken>
+   ```
+
+   `storedName` 对上传附件仍使用上传返回的 `fileId`，对生成文件使用生成链接中的 UUID（不是文件名、绝对路径或完整 URL）。`visitorId`、`sessionId` 必须与生成文件时一致；未使用 `sessionId` 的会话可省略该参数。服务端会校验渠道、访客、会话和文件所属工作空间；文件过期、无归属或不属于该会话时返回 404。原 `/api/v1/files/generated/<uuid>` 是后台登录鉴权接口，不能直接使用 visitorToken，也不是免鉴权下载地址。
 
 ## 会话生命周期:置顶 / 归档 / 删除
 

@@ -80,6 +80,7 @@ public class WebChatController {
     private final ConversationCompletionPublisher completionPublisher;
     private final vip.mate.memory.identity.MemoryOwnerResolver memoryOwnerResolver;
     private final WebChatFileService fileService;
+    private final vip.mate.tool.document.GeneratedFileCache generatedFileCache;
     private final WebChatTokenRevocationService tokenRevocationService;
     private final vip.mate.audit.service.AuditEventService auditService;
     private final vip.mate.llm.routing.AgentBindingResolver agentBindingResolver;
@@ -1636,7 +1637,7 @@ public class WebChatController {
 
     /**
      * 下载文件（出站）。serves both visitor-uploaded files and agent-produced files
-     * written under the conversation dir. 鉴权同上，路径在服务端派生目录内防穿越。
+     * in the upload tree or generated-file cache. 鉴权同上，并校验文件会话/工作空间归属。
      */
     @Operation(summary = "WebChat 下载文件")
     @GetMapping("/files")
@@ -1664,15 +1665,32 @@ public class WebChatController {
             return ResponseEntity.status(404).build();
         }
         Path file = fileService.resolve(conversationId, storedName).orElse(null);
-        if (file == null) {
-            return ResponseEntity.notFound().build();
-        }
-
+        Resource resource;
+        String filename;
         String contentType;
-        try {
-            contentType = Files.probeContentType(file);
-        } catch (IOException e) {
-            contentType = null;
+        if (file != null) {
+            resource = new FileSystemResource(file);
+            filename = file.getFileName().toString();
+            try {
+                contentType = Files.probeContentType(file);
+            } catch (IOException e) {
+                contentType = null;
+            }
+        } else {
+            // Generated documents live outside the upload tree. Authorize their
+            // metadata before loading bytes, never resolve global filenames or
+            // accept a cache id as permission to another visitor's artifact (#694).
+            var access = generatedFileCache.getAuthorized(storedName, owner ->
+                    channel.getWorkspaceId() != null
+                            && channel.getWorkspaceId().equals(owner.workspaceId())
+                            && conversationId.equals(owner.conversationId()));
+            if (access.status() != vip.mate.tool.document.GeneratedFileCache.AccessStatus.FOUND) {
+                return ResponseEntity.notFound().build();
+            }
+            var entry = access.entry();
+            resource = new org.springframework.core.io.ByteArrayResource(entry.bytes());
+            filename = entry.filename();
+            contentType = entry.mimeType();
         }
         MediaType mediaType = MediaType.APPLICATION_OCTET_STREAM;
         if (contentType != null) {
@@ -1685,14 +1703,18 @@ public class WebChatController {
         // Only inline images; everything else downloads as an attachment. nosniff
         // stops the browser from re-interpreting the bytes as active content.
         boolean inlineImage = contentType != null && contentType.startsWith("image/");
-        String encodedName = URLEncoder.encode(file.getFileName().toString(), StandardCharsets.UTF_8)
+        String encodedName = URLEncoder.encode(filename, StandardCharsets.UTF_8)
                 .replace("+", "%20");
         return ResponseEntity.ok()
                 .contentType(mediaType)
                 .header("X-Content-Type-Options", "nosniff")
+                .header("Content-Security-Policy",
+                        "sandbox allow-downloads; default-src 'none'; img-src * data:; "
+                                + "style-src 'unsafe-inline'; font-src * data:; media-src *; "
+                                + "base-uri 'none'; form-action 'none'")
                 .header(HttpHeaders.CONTENT_DISPOSITION,
                         (inlineImage ? "inline" : "attachment") + "; filename*=UTF-8''" + encodedName)
-                .body(new FileSystemResource(file));
+                .body(resource);
     }
 
     /**

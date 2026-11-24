@@ -17,6 +17,7 @@ import vip.mate.MateClawApplication;
 import vip.mate.agent.AgentService;
 import vip.mate.agent.model.AgentEntity;
 import vip.mate.workspace.core.service.ChatUploadLocationResolver;
+import vip.mate.tool.document.GeneratedFileCache;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -90,12 +91,17 @@ class WebChatAttachmentE2ETest {
     @Autowired private JdbcTemplate jdbc;
 
     @MockitoBean private AgentService agentService;
+    @MockitoBean private GeneratedFileCache generatedFileCache;
+    private GeneratedFileCache generatedFiles;
 
     private HttpClient http;
 
     @BeforeEach
     void setUp() {
         http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
+        generatedFiles = new GeneratedFileCache(uploadRoot.resolve("generated-" + java.util.UUID.randomUUID()));
+        org.mockito.Mockito.when(generatedFileCache.getAuthorized(anyString(), any()))
+                .thenAnswer(call -> generatedFiles.getAuthorized(call.getArgument(0), call.getArgument(1)));
 
         jdbc.update("DELETE FROM mate_channel WHERE id = ?", CHANNEL_ID);
         jdbc.update("DELETE FROM mate_agent WHERE id = ?", AGENT_ID);
@@ -385,6 +391,49 @@ class WebChatAttachmentE2ETest {
         assertThat(resp.body()).isEqualTo(payload);
         assertThat(resp.headers().firstValue("Content-Type").orElse(""))
                 .contains("text/plain");
+    }
+
+    @Test
+    void downloadReturnsGeneratedBytesForOwningSessionAfterCacheRestart() throws Exception {
+        String visitor = "vAtt-generated";
+        String session = "generated-session";
+        stream(visitor, session, "generate a report", "[]");
+        String conversation = WebChatController.deriveConversationId(API_KEY, visitor, session);
+        Path storage = uploadRoot.resolve("cold-generated");
+        var producer = new GeneratedFileCache(storage);
+        String id = producer.put("report bytes".getBytes(StandardCharsets.UTF_8), "报告.pdf", "application/pdf",
+                new GeneratedFileCache.Owner(1L, null, conversation));
+        generatedFiles = new GeneratedFileCache(storage);
+        var response = downloadGenerated(id, visitor, session);
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(response.body()).isEqualTo("report bytes".getBytes(StandardCharsets.UTF_8));
+        assertThat(response.headers().firstValue("Content-Type").orElse("")).contains("application/pdf");
+        assertThat(response.headers().firstValue("Content-Disposition").orElse("")).contains("attachment", "filename*=UTF-8''");
+        assertThat(response.headers().firstValue("Content-Security-Policy").orElse("")).contains("sandbox");
+    }
+
+    @Test
+    void generatedFilesCannotCrossVisitorSessionOrWorkspaceBoundaries() throws Exception {
+        String visitor = "vAtt-isolated";
+        String session = "own-session";
+        stream(visitor, session, "hello", "[]");
+        String own = WebChatController.deriveConversationId(API_KEY, visitor, session);
+        for (var owner : java.util.List.of(
+                new GeneratedFileCache.Owner(1L, null, WebChatController.deriveConversationId(API_KEY, "other", session)),
+                new GeneratedFileCache.Owner(1L, null, WebChatController.deriveConversationId(API_KEY, visitor, "other")),
+                new GeneratedFileCache.Owner(2L, null, own),
+                new GeneratedFileCache.Owner(null, null, own),
+                new GeneratedFileCache.Owner(1L, null, null))) {
+            String id = generatedFiles.put(new byte[]{42}, "secret.txt", "text/plain", owner);
+            assertThat(downloadGenerated(id, visitor, session).statusCode()).isEqualTo(404);
+        }
+        assertThat(downloadGenerated(java.util.UUID.randomUUID().toString(), visitor, session).statusCode()).isEqualTo(404);
+    }
+
+    private HttpResponse<byte[]> downloadGenerated(String id, String visitor, String session) throws Exception {
+        return http.send(HttpRequest.newBuilder(filesUri(id, visitor, session)).timeout(HTTP_TIMEOUT)
+                .header("X-MC-Key", API_KEY).header("X-MC-Visitor-Token", tokenFor(visitor)).GET().build(),
+                HttpResponse.BodyHandlers.ofByteArray());
     }
 
     @Test
