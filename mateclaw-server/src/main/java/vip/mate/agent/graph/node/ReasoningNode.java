@@ -933,7 +933,11 @@ public class ReasoningNode implements NodeAction {
         boolean bufferedCandidate = finalizationCoordinator != null
                 && vip.mate.agent.graph.guard.TaskFinalizationCoordinator.eligible(
                     accessor.actionCompletionRequired(), accessor.actionExecutionLedger());
-        boolean holdContent = bufferedCandidate || finalizationCoordinator != null && !toolCallbacks.isEmpty();
+        // Available tools alone do not make a reply require validation (#693).
+        // Hold actual task results and observed source evidence so rejected drafts
+        // and citation repairs cannot leak before the final publication boundary.
+        boolean holdContent = bufferedCandidate || finalizationCoordinator != null
+                && accessor.sourceEvidenceLedger().hasEvidence();
         var projectedFacts = bufferedCandidate ? accessor.actionExecutionLedger()
                 .projectAnswerFacts(Math.min(2000,Math.max(256, loopContextWindowTokens() / 8))) : null;
         if (projectedFacts != null && !projectedFacts.coreFactsFit()) {

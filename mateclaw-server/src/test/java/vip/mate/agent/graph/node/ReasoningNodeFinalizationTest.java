@@ -433,23 +433,75 @@ class ReasoningNodeFinalizationTest {
             tracker.broadcastObject("gate-test","flush",Map.of());assertTrue(capture.text().contains("content_delta"));
         } finally {tracker.onShutdown();}
     }
-    @Test void plainToolEnabledAnswerIsHeldThenAvailableOnceWithoutVerifier() throws Exception {
+    @Test void plainToolEnabledAnswerStreamsWithoutVerifier() throws Exception {
         var tracker=new ChatStreamTracker(new ObjectMapper());
         try {
             tracker.register("gate-test");var capture=new Capture();tracker.attach("gate-test",capture);
             var helper=new NodeStreamingChatHelper(tracker);var model=mock(ChatModel.class);
-            when(model.stream(any(Prompt.class))).thenReturn(Flux.just(response("Hello")));
+            var visibleBeforeCompletion = new java.util.concurrent.atomic.AtomicBoolean();
+            when(model.stream(any(Prompt.class))).thenReturn(Flux.just(response("Hello"))
+                    .concatWith(Flux.defer(() -> {
+                        tracker.broadcastObject("gate-test", "flush", Map.of());
+                        visibleBeforeCompletion.set(capture.text().contains("content_delta"));
+                        return Flux.just(response(" world"));
+                    })));
             var callback=mock(org.springframework.ai.tool.ToolCallback.class);
             when(callback.getToolDefinition()).thenReturn(org.springframework.ai.tool.definition.ToolDefinition.builder()
                     .name("calculate").description("calculate").inputSchema("{}").build());
             var tools=mock(AgentToolSet.class);when(tools.callbacks()).thenReturn(List.of(callback));
             var node=new ReasoningNode(model,tools,null,helper,null,tracker);enable(node,helper,tracker);
             var values=state();values.remove(ACTION_EXECUTION_LEDGER);values.remove(PENDING_EVENTS);
-            var out=node.apply(new RunState(values));assertEquals("Hello",out.get(FINAL_ANSWER));
-            assertEquals(false,out.get(CONTENT_STREAMED));verify(model).stream(any(Prompt.class));
-            tracker.broadcastObject("gate-test","flush",Map.of());assertFalse(capture.text().contains("content_delta"));
+            var out=node.apply(new RunState(values));assertEquals("Hello world",out.get(FINAL_ANSWER));
+            assertEquals(true,out.get(CONTENT_STREAMED));verify(model).stream(any(Prompt.class));
+            tracker.broadcastObject("gate-test","flush",Map.of());assertTrue(capture.text().contains("content_delta"));
             assertFalse(capture.text().contains("finalization_check"));
+            assertTrue(visibleBeforeCompletion.get(), "Content must be visible before the model finishes");
         } finally {tracker.onShutdown();}
+    }
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"action", "source", "wiki"})
+    void requiredValidationStillHoldsContentWithoutConfiguredTools(String reason) throws Exception {
+        var tracker = new ChatStreamTracker(new ObjectMapper());
+        try {
+            tracker.register("gate-test");
+            var capture = new Capture();
+            tracker.attach("gate-test", capture);
+            var helper = new NodeStreamingChatHelper(tracker);
+            var model = mock(ChatModel.class);
+            when(model.stream(any(Prompt.class))).thenReturn(Flux.just(response("Hello")),
+                    Flux.just(response("{\"decision\":\"ACCEPT\",\"taskComplete\":true,\"remainingWork\":false,\"failedCallCount\":0,\"recoveryClaims\":[],\"reason\":\"Complete\"}")));
+            var tools = mock(AgentToolSet.class);
+            when(tools.callbacks()).thenReturn(List.of());
+            var node = new ReasoningNode(model, tools, null, helper, null, tracker);
+            enable(node, helper, tracker);
+            var values = state();
+            values.remove(ACTION_EXECUTION_LEDGER);
+            values.remove(PENDING_EVENTS);
+            if (reason.equals("action")) {
+                values.put(ACTION_COMPLETION_REQUIRED, true);
+            } else if (reason.equals("source")) {
+                values.put(SOURCE_EVIDENCE_LEDGER,
+                        vip.mate.agent.graph.state.SourceEvidenceLedger.empty().withSourcePath("README.md"));
+            } else {
+                values.put(SOURCE_EVIDENCE_LEDGER,
+                        vip.mate.agent.graph.state.SourceEvidenceLedger.fromToolResponses(List.of(
+                                new ToolResponseMessage.ToolResponse("wiki-1", "wiki_semantic_search",
+                                        "{\"chunks\":[{\"index\":1,\"chunkId\":101,\"rawTitle\":\"Handbook\",\"snippet\":\"Hello\"}]}"))));
+            }
+            var out = node.apply(new RunState(values));
+            if (!reason.equals("action")) assertNotEquals(true, out.get(CONTENT_STREAMED));
+            tracker.broadcastObject("gate-test", "flush", Map.of());
+            assertFalse(capture.text().contains("content_delta"));
+            if (reason.equals("wiki") || reason.equals("action")) {
+                assertEquals(true, out.get(CONTINUE_REASONING), "Required action or citation correction must continue");
+                assertEquals("", out.get(FINAL_ANSWER));
+            } else {
+                assertEquals("Hello", out.get(FINAL_ANSWER));
+            }
+            verify(model).stream(any(Prompt.class));
+        } finally {
+            tracker.onShutdown();
+        }
     }
     @Test void cancellationDuringVerifierDoesNotPublishHeldCandidate() throws Exception {
         var tracker=new ChatStreamTracker(new ObjectMapper());
