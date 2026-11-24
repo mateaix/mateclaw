@@ -164,10 +164,10 @@
           </div>
 
           <div class="shortcuts-hint" :title="shortcutsHintText">
-            <kbd>Ctrl+K</kbd>
+            <kbd>Alt+K</kbd>
             <span>{{ t('nav.shortcutAgents') }}</span>
             <span class="shortcuts-hint__sep">|</span>
-            <kbd>Ctrl+N</kbd>
+            <kbd>Alt+N</kbd>
             <span>{{ t('nav.shortcutNew') }}</span>
           </div>
         </template>
@@ -240,6 +240,7 @@ import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
 import { applyLocale, currentLocale, type AppLocale } from '@/i18n'
 import { SwitchButton, Lock, Unlock } from '@element-plus/icons-vue'
 import ChangePasswordDialog from '@/components/ChangePasswordDialog.vue'
+import { getGlobalShortcutAction } from '@/utils/globalShortcuts'
 
 const router = useRouter()
 const route = useRoute()
@@ -313,7 +314,7 @@ watch(compactViewport, (compact) => {
 }, { immediate: true })
 
 const shortcutsHintText = computed(() =>
-  `Ctrl+K ${t('nav.shortcutAgents')} | Ctrl+N ${t('nav.shortcutNew')}`,
+  `Alt+K ${t('nav.shortcutAgents')} | Alt+N ${t('nav.shortcutNew')}`,
 )
 
 function openAgentsMenu() {
@@ -329,25 +330,11 @@ function fireNewChatShortcut() {
   }
 }
 
-function isEditableTarget(el: EventTarget | null): boolean {
-  if (!(el instanceof HTMLElement)) return false
-  if (el.isContentEditable) return true
-  const tag = el.tagName
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true
-  return false
-}
-
 function onGlobalKeydown(e: KeyboardEvent) {
-  const mod = e.metaKey || e.ctrlKey
-  if (!mod || e.altKey) return
-  const key = e.key.toLowerCase()
-  if (key !== 'k' && key !== 'n') return
-  // Ctrl+N within an editable field should keep its native behavior; Ctrl+K
-  // is rarely used by browsers (Firefox uses it for search-bar focus), but we
-  // still want to let the chat input handle native paste / undo unblocked.
-  if (key === 'n' && isEditableTarget(e.target)) return
+  const action = getGlobalShortcutAction(e, e.target)
+  if (!action) return
   e.preventDefault()
-  if (key === 'k') {
+  if (action === 'agents') {
     openAgentsMenu()
   } else {
     fireNewChatShortcut()

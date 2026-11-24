@@ -854,7 +854,7 @@ export default {
     roleAdmin: 'Admin',
     shortcutAgents: 'Employees',
     shortcutNew: 'New',
-    shortcutsHint: 'Ctrl+K {agents} | Ctrl+N {newAction}',
+    shortcutsHint: 'Alt+K {agents} | Alt+N {newAction}',
   },
   notifications: {
     pendingApprovals: '{n} tool call(s) pending approval',

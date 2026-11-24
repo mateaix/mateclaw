@@ -248,10 +248,10 @@ Two global shortcuts let you jump between conversations without touching the mou
 
 | Shortcut | Action |
 |----------|--------|
-| `Ctrl/Cmd + K` | Open the employee picker to jump to any chat |
-| `Ctrl/Cmd + N` | Start a new conversation |
+| `Alt + K` | Open the employee picker to jump to any chat |
+| `Alt + N` | Start a new conversation |
 
-`Ctrl+N` does not fire while you're typing in an input or textarea — its native behavior is left alone.
+`Alt+K` and `Alt+N` do not fire while you're typing in an input or textarea — their native behavior is left alone.
 
 ### Session Admin page
 
@@ -270,7 +270,7 @@ This page exists for the "lots of conversations" case:
 ### Shared employee picker
 
 ::: tip Added in 1.4.0
-A single shared picker dialog is reused in three places: the sidebar, the `Ctrl+K` shortcut, and the new-conversation modal.
+A single shared picker dialog is reused in three places: the sidebar, the `Alt+K` shortcut, and the new-conversation modal.
 :::
 
 All three entry points open the **same dialog** with identical behavior. Agent icons inside it are **color-coded per employee**, so in a multi-employee workspace you can tell who's who at a glance.
