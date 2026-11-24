@@ -100,6 +100,8 @@ import java.util.Set;
 public class AgentGraphBuilder {
 
     private final ToolRegistry toolRegistry;
+    @org.springframework.beans.factory.annotation.Autowired
+    private vip.mate.tool.mcp.runtime.McpWorkspaceAccess mcpWorkspaceAccess;
     private final AgentBindingService agentBindingService;
     private final SkillService skillService;
     private final vip.mate.skill.runtime.SkillRuntimeService skillRuntimeService;
@@ -326,6 +328,7 @@ public class AgentGraphBuilder {
      */
     public BaseAgent build(AgentEntity entity, String modelProvider, String modelName) {
         AgentToolSet toolSet = toolRegistry.getEnabledToolSet();
+        if (mcpWorkspaceAccess != null) toolSet = mcpWorkspaceAccess.scope(toolSet, entity.getWorkspaceId());
 
         // Move 6 — Permission flattening at build time.
         //

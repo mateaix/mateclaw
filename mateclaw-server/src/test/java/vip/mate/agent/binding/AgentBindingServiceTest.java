@@ -249,17 +249,37 @@ class AgentBindingServiceTest {
     }
 
     @Test
-    @DisplayName("bindSkill 允许 MCP 虚拟 skill（McpServerEntity 无 workspace，全局共享）")
+    @DisplayName("bindSkill allows existing global MCP virtual skills")
     void bindSkillAllowsVirtualMcpSkill() {
-        // Virtual MCP id range starts at McpSkillBridge.VIRTUAL_ID_BASE (9e18).
-        // No mate_skill or mate_mcp_server seeding needed — the bridge is
-        // bypassed entirely for MCP because there's no workspace to compare.
+        seedMcp(42L, null);
         long virtualMcpId = vip.mate.skill.mcp.McpSkillBridge.VIRTUAL_ID_BASE + 42L;
         assertDoesNotThrow(() -> bindingService.bindSkill(agentId, virtualMcpId));
 
         Set<Long> ids = bindingService.getBoundSkillIds(agentId);
         assertNotNull(ids);
         assertTrue(ids.contains(virtualMcpId), "MCP virtual binding 应当落到 mate_agent_skill");
+    }
+
+    private void seedMcp(long id, Long workspaceId) {
+        jdbcTemplate.update("MERGE INTO mate_mcp_server (id,name,transport,url,enabled,workspace_id,deleted,create_time,update_time) "
+                + "KEY(id) VALUES (?,?,'sse','https://example.invalid/mcp',TRUE,?,0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
+                id, "binding-mcp-" + id, workspaceId);
+    }
+
+    @Test void mcpSkillAndAtomicToolBindingsRejectForeignAndMissingServers() {
+        long serverId = 778001L;
+        seedMcp(serverId, 2L);
+        long skill = vip.mate.skill.mcp.McpSkillBridge.VIRTUAL_ID_BASE + serverId;
+        String tool = vip.mate.tool.mcp.runtime.McpToolNameResolver.prefixedName(serverId, "search");
+        assertThrows(vip.mate.exception.MateClawException.class, () -> bindingService.bindSkill(agentId, skill));
+        assertThrows(vip.mate.exception.MateClawException.class, () -> bindingService.bindTool(agentId, tool));
+        assertThrows(vip.mate.exception.MateClawException.class, () -> bindingService.setToolBindings(agentId, List.of(tool)));
+        assertDoesNotThrow(() -> bindingService.setToolBindings(agentId, List.of()));
+        seedMcp(serverId, 1L);
+        assertDoesNotThrow(() -> bindingService.bindSkill(agentId, skill));
+        assertDoesNotThrow(() -> bindingService.bindTool(agentId, tool));
+        assertThrows(vip.mate.exception.MateClawException.class, () -> bindingService.bindSkill(agentId,
+                vip.mate.skill.mcp.McpSkillBridge.VIRTUAL_ID_BASE + 778002L));
     }
 
     @Test

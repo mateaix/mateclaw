@@ -29,9 +29,11 @@
         {{ descriptionText }}
       </div>
       <div v-if="!isCatalog" class="mcp-card-meta">
+        {{ t(server!.workspaceId == null ? 'mcp.ownership.global' : 'mcp.ownership.current') }} ·
         {{ t('mcp.card.toolCount', { n: server!.toolCount || 0 }) }}
         <template v-if="lastSeen"> · {{ lastSeen }}</template>
         <button
+          :disabled="!canManage"
           class="mcp-tier-pill"
           :class="{ 'mcp-tier-pill--ext': tier === 'extension' }"
           :title="tier === 'extension' ? t('mcp.tier.extensionHint') : t('mcp.tier.coreHint')"
@@ -55,6 +57,7 @@
     >
       <input
         type="checkbox"
+        :disabled="!canManage"
         :checked="server!.enabled"
         @change="emit('toggle', server!)"
       />
@@ -92,7 +95,7 @@
           class="mcp-card-action"
           :title="t('mcp.actions.test')"
           :aria-label="t('mcp.actions.test')"
-          :disabled="testing"
+          :disabled="testing || !canManage"
           @click="emit('test', server!)"
         >
           <svg v-if="!testing" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -107,6 +110,7 @@
         </button>
         <button
           class="mcp-card-action"
+          :disabled="!canManage"
           :title="t('common.edit')"
           :aria-label="t('common.edit')"
           @click="emit('edit', server!)"
@@ -132,6 +136,7 @@ const props = defineProps<{
   server?: McpServer
   catalogEntry?: McpCatalogEntry
   testing?: boolean
+  canManage?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -227,7 +232,7 @@ function formatRelative(iso: string): string {
 
 function onPrimaryAction() {
   if (isCatalog.value) emit('add', props.catalogEntry!)
-  else emit('edit', props.server!)
+  else if (props.canManage) emit('edit', props.server!)
 }
 </script>
 

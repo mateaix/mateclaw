@@ -117,6 +117,17 @@ class SkillRuntimeServiceWorkspaceExecutionTest {
         assertFalse(SkillRuntimeService.matchesWorkspace(ws1, null), "unresolved workspace never sees a real skill");
     }
 
+    @Test
+    void graphWithoutWorkspaceAdvertisesOnlyGlobalSkillMetadata() {
+        var global = entity(81L, "shared-mcp", "mcp");
+        var foreign = entity(82L, "foreign-mcp-secret", "mcp");
+        var runtime = runtimeWith(List.of(resolved(global, false, null), resolved(foreign, false, 2L)),
+                List.of(global, foreign));
+        String prompt = runtime.buildSkillPromptEnhancement(null, null, 8192, 695L, null);
+        assertTrue(prompt.contains("shared-mcp"));
+        assertFalse(prompt.contains("foreign-mcp-secret"));
+    }
+
     private static SkillEntity entity(Long id, String name, String type) {
         SkillEntity entity = new SkillEntity();
         entity.setId(id);

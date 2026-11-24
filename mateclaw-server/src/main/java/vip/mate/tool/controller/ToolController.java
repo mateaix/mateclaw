@@ -48,8 +48,9 @@ public class ToolController {
     @Operation(summary = "获取员工可绑定的全部原子工具（含 MCP）")
     @GetMapping("/available")
     @RequireWorkspaceRole("member")
-    public R<List<AvailableToolDTO>> listAvailable() {
-        return R.ok(availableToolService.listAvailable());
+    public R<List<AvailableToolDTO>> listAvailable(
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        return R.ok(availableToolService.listAvailable(workspaceId != null ? workspaceId : 1L));
     }
 
     @Operation(summary = "获取工具详情")

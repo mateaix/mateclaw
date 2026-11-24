@@ -32,6 +32,8 @@ import java.util.Set;
 public class EnableExtensionTool {
 
     private final ToolRegistry toolRegistry;
+    @org.springframework.beans.factory.annotation.Autowired
+    private vip.mate.tool.mcp.runtime.McpWorkspaceAccess mcpWorkspaceAccess;
     private final ToolDisclosureService toolDisclosureService;
     private final AgentBindingService agentBindingService;
 
@@ -59,6 +61,7 @@ public class EnableExtensionTool {
         // reported active yet never appear (the reasoning-node split only activates
         // tools in the agent's own set).
         AgentToolSet agentSet = toolRegistry.getEnabledToolSet();
+        if (mcpWorkspaceAccess != null) agentSet = mcpWorkspaceAccess.scope(agentSet, ChatOrigin.from(ctx).workspaceId());
         Long agentId = ChatOrigin.from(ctx).agentId();
         if (agentId != null) {
             Set<String> effective = agentBindingService.getEffectiveToolNames(agentId);

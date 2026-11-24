@@ -15,7 +15,7 @@ Almost everything. The scoped resources:
 | Resource | Scoped how |
 |----------|-----------|
 | **Agents** | Every agent row has a `workspace_id` foreign key |
-| **Skills** | Custom and MCP skills are scoped per workspace; builtin skills are global |
+| **Skills** | Custom skills are scoped per workspace; MCP skills follow server ownership (local or global); builtin skills are global |
 | **Wiki knowledge bases** | Every KB belongs to exactly one workspace |
 | **Conversations and messages** | Scoped to the workspace the agent lives in |
 | **Workspace memory files** | `workspace/{workspaceId}/{agentId}/...` |
@@ -30,7 +30,7 @@ What's **not** scoped (i.e., global):
 
 - JWT secret and auth config
 - Model providers and API keys (global, with usage-tracked per workspace)
-- MCP server definitions (global connections; workspace access is controlled by permissions)
+- MCP servers marked globally shared (legacy configurations remain shared; new ones default to the current workspace)
 - System-level settings in `mate_system_setting`
 - Builtin skills
 
@@ -196,7 +196,7 @@ Same-named skills coexist independently across workspaces: install dedup filters
 
 ## What isolation does NOT cover
 
-- **Shared global config** — JWT secret, model provider API keys, MCP server definitions are global. A workspace admin can't change them.
+- **Shared global config** — JWT secret and model provider API keys are global. Legacy MCP definitions remain globally shared and only system administrators manage them; local MCP servers are managed by their workspace administrators.
 - **Audit log cross-workspace access** — security admins with the right permissions can query audit events across all workspaces. This is intentional — you want to see suspicious activity regardless of which workspace it happened in.
 - **Token usage reporting** — aggregated globally, broken down per-workspace, per-agent, per-model in the Dashboard.
 - **Model provider costs** — one billing relationship per provider at the global level; per-workspace quotas are on the [Roadmap](./roadmap).

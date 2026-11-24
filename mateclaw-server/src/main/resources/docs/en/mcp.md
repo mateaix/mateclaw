@@ -17,6 +17,16 @@ This is the escape hatch. If you need a capability MateClaw doesn't ship with â€
 
 ---
 
+## Workspace ownership
+
+New MCP configurations belong to the current workspace. Connection lists, employee tool/skill pickers, employee generation and runtime calls expose only that workspace's servers plus explicitly global shared servers. Switching workspaces reloads the list.
+
+Servers created before this upgrade remain **globally shared**: they are not automatically moved into Default, preserving existing employee access. Cards label global and current-workspace ownership. System administrators may move a global server into the current workspace or make a local server global through the edit dialog. Workspace administrators may manage their own servers, but cannot change or probe global configurations. Switch to the target workspace before migrating a global server.
+
+After migration, other workspaces cannot add bindings or invoke the server through an old cached employee graph. Existing binding rows are retained, so access can resume if ownership is restored. Global servers intentionally remain usable across workspaces.
+
+API requests use `X-Workspace-Id`, defaulting to Default (ID 1) when omitted. `POST /api/v1/mcp/servers` defaults to the request workspace and ignores body ownership. System administrators may explicitly use the `global=true` query parameter to create/share a global server, or `global=false` on update to move it into the current workspace. Omitting that parameter on update preserves ownership. A body `workspaceId` cannot bypass request workspace validation.
+
 ## What MCP actually is
 
 ```

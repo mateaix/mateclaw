@@ -2333,6 +2333,7 @@ export default {
     },
   },
   mcp: {
+    ownership: { label: 'Ownership', global: 'Global · shared across workspaces', current: 'Current workspace' },
     kicker: 'Capability Bridge',
     title: 'MCP Connections',
     subtitle: 'Connect agents to external data sources and tools',

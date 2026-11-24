@@ -4,7 +4,8 @@
  * components can import a single domain type without pulling axios with it.
  */
 export interface McpServer {
-  id: number
+  id: string
+  workspaceId?: string | null
   name: string
   description: string
   transport: 'stdio' | 'sse' | 'streamable_http'
@@ -37,6 +38,7 @@ export interface McpTestResult {
 
 /** Form payload — superset of the create/edit body. */
 export interface McpServerForm {
+  global?: boolean
   name: string
   description: string
   transport: 'stdio' | 'sse' | 'streamable_http'
@@ -53,6 +55,7 @@ export interface McpServerForm {
 
 export function emptyMcpForm(): McpServerForm {
   return {
+    global: false,
     name: '',
     description: '',
     transport: 'stdio',

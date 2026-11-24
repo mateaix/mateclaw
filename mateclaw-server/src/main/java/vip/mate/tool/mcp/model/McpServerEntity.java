@@ -20,6 +20,10 @@ public class McpServerEntity {
     @TableId(type = IdType.ASSIGN_ID)
     private Long id;
 
+    /** Owning workspace; null denotes a shared global server. */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private Long workspaceId;
+
     /** 服务器名称（唯一标识） */
     private String name;
 

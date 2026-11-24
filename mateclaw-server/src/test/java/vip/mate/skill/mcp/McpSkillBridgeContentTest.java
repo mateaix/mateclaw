@@ -39,6 +39,15 @@ class McpSkillBridgeContentTest {
     }
 
     @Test
+    void carriesWorkspaceOwnershipIntoBothVirtualViews() {
+        McpServerEntity server = newServer(42L, "private-server");
+        server.setWorkspaceId(2L);
+        when(mcpServerService.listAll()).thenReturn(List.of(server));
+        assertEquals(2L, bridge.listMcpDerivedSkillEntities().get(0).getWorkspaceId());
+        assertEquals(2L, bridge.listMcpDerivedResolvedSkills().get(0).getWorkspaceId());
+    }
+
+    @Test
     @DisplayName("resolved skill carries a non-empty SKILL.md listing the server's tools")
     void resolvedSkillHasSynthesizedContent() {
         McpServerEntity server = newServer(42L, "github");

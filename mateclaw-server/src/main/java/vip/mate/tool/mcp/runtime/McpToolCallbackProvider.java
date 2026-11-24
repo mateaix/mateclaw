@@ -31,6 +31,9 @@ public class McpToolCallbackProvider implements ToolCallbackProvider {
     private final McpClientManager mcpClientManager;
     private final McpReturnDirectProperties returnDirectProperties;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private McpWorkspaceAccess workspaceAccess;
+
     @Override
     public ToolCallback[] getToolCallbacks() {
         try {
@@ -68,6 +71,10 @@ public class McpToolCallbackProvider implements ToolCallbackProvider {
                 } else {
                     wrapped.add(cb);
                 }
+            }
+            if (workspaceAccess != null) {
+                return wrapped.stream().map(cb -> (ToolCallback) new WorkspaceScopedMcpToolCallback(cb, workspaceAccess))
+                        .toArray(ToolCallback[]::new);
             }
             return wrapped.toArray(new ToolCallback[0]);
         } catch (Exception e) {

@@ -129,6 +129,11 @@ public class SkillRuntimeService {
         refreshActiveSkills();
     }
 
+    @EventListener(vip.mate.tool.mcp.event.McpServerChangedEvent.class)
+    public void onMcpScopeChanged() {
+        activeSkillsCache.invalidateAll();
+    }
+
     @EventListener(SkillWorkspaceEvent.class)
     public void onWorkspaceEvent(SkillWorkspaceEvent event) {
         // Coalesce bursts of workspace events (every bundled-skill sync at
@@ -455,11 +460,10 @@ public class SkillRuntimeService {
                 .filter(s -> matchesCurrentPlatform(s, currentOs))
                 .collect(java.util.stream.Collectors.toList());
         // Workspace filter — a workspace-B agent must not see workspace-A's
-        // skills in its catalog. Builtin skills are global; virtual MCP
-        // skills carry no workspace (null) and stay globally visible. Only
-        // applied when the caller supplies the agent's workspace; the debug
-        // preview passes null to keep its global view.
-        if (agentWorkspaceId != null) {
+        // skills in its catalog. Builtin and explicitly global skills stay
+        // visible. A real agent with missing workspace context must fail closed;
+        // only the internal no-agent diagnostic overload retains a global view.
+        if (agentWorkspaceId != null || agentId != null) {
             activeSkills = activeSkills.stream()
                     .filter(s -> matchesWorkspace(s, agentWorkspaceId))
                     .collect(java.util.stream.Collectors.toList());

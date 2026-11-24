@@ -24,6 +24,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 class AgentGenerationServiceTest {
+    private AvailableToolService tools;
     private ChatModel model;
     private AgentGenerationService service;
 
@@ -31,14 +32,14 @@ class AgentGenerationServiceTest {
     void setUp() {
         var configs = mock(ModelConfigService.class);
         var builder = mock(AgentGraphBuilder.class);
-        var tools = mock(AvailableToolService.class);
+        tools = mock(AvailableToolService.class);
         var skills = mock(SkillService.class);
         var kbs = mock(WikiKnowledgeBaseService.class);
         var config = new ModelConfigEntity();
         model = mock(ChatModel.class);
         when(configs.getDefaultModel()).thenReturn(config);
         when(builder.buildRuntimeChatModel(config)).thenReturn(model);
-        when(tools.listAvailable()).thenReturn(List.of());
+        when(tools.listAvailable(1L)).thenReturn(List.of());
         when(skills.listEnabledSkills(1L)).thenReturn(List.of());
         when(kbs.listByWorkspace(1L)).thenReturn(List.of());
         service = new AgentGenerationService(configs, builder, new ObjectMapper(), tools, skills, kbs);
@@ -47,6 +48,26 @@ class AgentGenerationServiceTest {
     private void response(String text) {
         when(model.call(any(Prompt.class))).thenReturn(new ChatResponse(
                 List.of(new Generation(new AssistantMessage(text)))));
+    }
+
+    @org.junit.jupiter.api.Test
+    void generationUsesOnlyWorkspaceVisibleToolCatalog() {
+        var local = vip.mate.tool.model.AvailableToolDTO.builder()
+                .name("local_tool").description("local_description").available(true).build();
+        var foreign = vip.mate.tool.model.AvailableToolDTO.builder()
+                .name("foreign_tool").description("foreign_secret").available(true).build();
+        when(tools.listAvailable(42L)).thenReturn(List.of(local));
+        when(tools.listAvailable()).thenReturn(List.of(local, foreign));
+        response("{\"name\":\"helper\"}");
+
+        service.generateDraft("helper", 42L);
+
+        var prompt = org.mockito.ArgumentCaptor.forClass(Prompt.class);
+        verify(model).call(prompt.capture());
+        assertTrue(prompt.getValue().getContents().contains("local_description"));
+        assertFalse(prompt.getValue().getContents().contains("foreign_secret"));
+        verify(tools).listAvailable(42L);
+        verify(tools, never()).listAvailable();
     }
 
     @ParameterizedTest

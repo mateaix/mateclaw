@@ -59,6 +59,17 @@ public class AvailableToolService {
         return out;
     }
 
+    /** Explicit scope: a missing workspace sees global servers only. */
+    public List<AvailableToolDTO> listAvailable(Long workspaceId) {
+        List<AvailableToolDTO> out = new ArrayList<>();
+        appendBuiltinTools(out);
+        appendPluginTools(out);
+        for (McpServerEntity server : mcpServerService.listEnabledVisible(workspaceId)) {
+            appendOneMcpServer(out, server);
+        }
+        return out;
+    }
+
     private void appendBuiltinTools(List<AvailableToolDTO> out) {
         for (ToolEntity t : toolService.listEnabledTools()) {
             if (t == null || t.getName() == null || t.getName().isBlank()) continue;

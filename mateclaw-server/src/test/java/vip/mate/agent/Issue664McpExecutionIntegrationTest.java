@@ -207,6 +207,8 @@ class Issue664McpExecutionIntegrationTest {
             var enabled = AgentToolSet.fromCallbacks(List.of(),
                     List.of(callback(A), callback(B), callback("web_search"), callback("browser_use")));
             when(registry.getEnabledToolSet()).thenReturn(enabled);
+            var scope = (vip.mate.tool.mcp.runtime.McpWorkspaceAccess) ReflectionTestUtils.getField(builder, "mcpWorkspaceAccess");
+            when(scope.scope(any(), any())).thenAnswer(inv -> inv.getArgument(0));
             var guardConfig = (ToolGuardConfigService) ReflectionTestUtils.getField(builder, "toolGuardConfigService");
             when(guardConfig.getDeniedTools()).thenReturn(denySelected ? Set.of(A) : Set.of());
             ReflectionTestUtils.setField(builder, "agentBindingService", bindings());

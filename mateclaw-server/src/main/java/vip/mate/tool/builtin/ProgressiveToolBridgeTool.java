@@ -53,6 +53,8 @@ public class ProgressiveToolBridgeTool {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private final ToolRegistry toolRegistry;
+    @org.springframework.beans.factory.annotation.Autowired
+    private vip.mate.tool.mcp.runtime.McpWorkspaceAccess mcpWorkspaceAccess;
     private final AgentBindingService agentBindingService;
     private final ToolGuardConfigService toolGuardConfigService;
 
@@ -137,11 +139,12 @@ public class ProgressiveToolBridgeTool {
     private AgentToolSet effectiveToolSet(ToolContext ctx) {
         AgentToolSet scoped = scopedToolSet(ctx);
         if (scoped != null) {
-            return scoped;
+            return mcpWorkspaceAccess != null ? mcpWorkspaceAccess.scope(scoped, ChatOrigin.from(ctx).workspaceId()) : scoped;
         }
         // Compatibility fallback for direct/unit invocations outside a graph.
         // Normal graph execution always supplies the executor-owned snapshot.
         AgentToolSet set = toolRegistry.getEnabledToolSet();
+        if (mcpWorkspaceAccess != null) set = mcpWorkspaceAccess.scope(set, ChatOrigin.from(ctx).workspaceId());
         Long agentId = ChatOrigin.from(ctx).agentId();
         Set<String> denied = new LinkedHashSet<>(toolGuardConfigService.getDeniedTools());
         if (agentId != null) {

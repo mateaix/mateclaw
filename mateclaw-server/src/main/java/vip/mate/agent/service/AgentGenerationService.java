@@ -74,7 +74,7 @@ public class AgentGenerationService {
         }
 
         // Build the capability catalog the model is allowed to pick from.
-        List<AvailableToolDTO> tools = bindableTools();
+        List<AvailableToolDTO> tools = bindableTools(wsId);
         List<SkillEntity> skills = workspaceSkills(wsId);
         List<WikiKnowledgeBaseEntity> kbs = workspaceKbs(wsId);
 
@@ -106,10 +106,10 @@ public class AgentGenerationService {
 
     // ==================== Catalog ====================
 
-    private List<AvailableToolDTO> bindableTools() {
+    private List<AvailableToolDTO> bindableTools(Long workspaceId) {
         List<AvailableToolDTO> all;
         try {
-            all = availableToolService.listAvailable();
+            all = availableToolService.listAvailable(workspaceId);
         } catch (Exception e) {
             log.warn("[AgentGen] failed to list tools: {}", e.getMessage());
             return List.of();

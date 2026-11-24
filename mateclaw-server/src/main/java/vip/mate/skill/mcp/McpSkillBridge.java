@@ -187,6 +187,7 @@ public class McpSkillBridge {
         s.setNameZh(displayName(server));
         s.setDescription(buildDescription(server));
         s.setSkillType("mcp");
+        s.setWorkspaceId(server.getWorkspaceId());
         s.setIcon(iconFor(server));
         s.setVersion("1.0.0");
         s.setAuthor("mcp-bridge");
@@ -230,6 +231,7 @@ public class McpSkillBridge {
                 .description(buildDescription(server))
                 .content(buildSkillContent(server, tools))
                 .source("mcp")
+                .workspaceId(server.getWorkspaceId())
                 .skillDir(null)
                 .configuredSkillDir(null)
                 .runtimeAvailable(connected)

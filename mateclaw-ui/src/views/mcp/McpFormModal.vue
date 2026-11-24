@@ -22,6 +22,14 @@
         </div>
 
         <div class="form-grid">
+          <div class="form-group full-width">
+            <label class="form-label">{{ t('mcp.ownership.label') }}</label>
+            <select v-if="isGlobalAdmin" v-model="form.global" class="form-input">
+              <option :value="false">{{ t('mcp.ownership.current') }}</option>
+              <option :value="true">{{ t('mcp.ownership.global') }}</option>
+            </select>
+            <span v-else>{{ t('mcp.ownership.current') }}</span>
+          </div>
           <div class="form-group">
             <label class="form-label">{{ t('mcp.fields.name') }} *</label>
             <input v-model="form.name" class="form-input" :placeholder="t('mcp.placeholders.name')" />
@@ -143,6 +151,7 @@ import type { McpCatalogEntry } from './catalog'
 import McpKvEditor from './McpKvEditor.vue'
 
 const props = defineProps<{
+  isGlobalAdmin?: boolean
   modelValue: boolean
   editing?: McpServer | null
   prefill?: McpCatalogEntry | null
@@ -182,6 +191,7 @@ watch(
 
 function hydrateFromServer(s: McpServer) {
   Object.assign(form, {
+    global: s.workspaceId == null,
     name: s.name,
     description: s.description || '',
     transport: s.transport,

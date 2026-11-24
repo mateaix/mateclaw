@@ -6,7 +6,7 @@
         <p class="section-desc">{{ t('mcp.subtitle') }}</p>
       </div>
       <div class="section-header__actions">
-        <button class="btn-secondary" :disabled="isRefreshing" @click="refreshAll">
+        <button class="btn-secondary" :disabled="isRefreshing || !workspace.isGlobalAdmin" @click="refreshAll">
           <svg
             width="14"
             height="14"
@@ -65,6 +65,7 @@
           :key="server.id"
           :server="server"
           :testing="testingId === server.id"
+          :can-manage="canManage(server)"
           @edit="openEditModal"
           @test="testServer"
           @toggle="toggleServer"
@@ -111,6 +112,7 @@
       v-model="modalVisible"
       :editing="editingServer"
       :prefill="catalogPrefill"
+      :is-global-admin="workspace.isGlobalAdmin"
       @save="onSave"
       @delete="onDelete"
     />
@@ -137,11 +139,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import McPagination from '@/components/common/McPagination.vue'
 import { mcConfirm } from '@/components/common/useConfirm'
 import { mcToast } from '@/composables/useMcToast'
+import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
 import { mcpApi } from '@/api/index'
 import { useMcpServers } from '@/composables/useMcpServers'
 import McpCard from './mcp/McpCard.vue'
@@ -151,8 +154,11 @@ import type { McpServer, McpServerForm } from './mcp/types'
 import type { McpCatalogEntry } from './mcp/catalog'
 
 const { t } = useI18n()
+const workspace = useWorkspaceStore()
+let workspaceGeneration = 0
 
 const {
+  canManage,
   isLoading,
   isRefreshing,
   testingId,
@@ -176,6 +182,12 @@ const {
 const modalVisible = ref(false)
 const editingServer = ref<McpServer | null>(null)
 const catalogPrefill = ref<McpCatalogEntry | null>(null)
+watch(() => workspace.currentWorkspaceId, () => {
+  workspaceGeneration++
+  modalVisible.value = false
+  editingServer.value = null
+  catalogPrefill.value = null
+}, { flush: 'sync' })
 
 const installedTotal = computed(() => filteredInstalled.value.length)
 const catalogTotal = computed(() => filteredCatalog.value.length)
@@ -186,6 +198,7 @@ function openCreateModal() {
   modalVisible.value = true
 }
 function openEditModal(server: McpServer) {
+  if (!canManage(server)) return
   editingServer.value = server
   catalogPrefill.value = null
   modalVisible.value = true
@@ -205,22 +218,27 @@ async function onSave(form: McpServerForm, editing: McpServer | null) {
 }
 
 async function onDelete(server: McpServer) {
+  if (!canManage(server)) return
+  const generation = workspaceGeneration
   const confirmed = await mcConfirm({
     title: t('common.delete'),
     message: t('mcp.messages.deleteConfirm', { name: server.name }),
     tone: 'danger',
   })
-  if (!confirmed) return
+  if (!confirmed || generation !== workspaceGeneration || !canManage(server)) return
   const ok = await removeServer(server)
   if (ok) modalVisible.value = false
 }
 
 async function setServerTier(server: McpServer, tier: 'core' | 'extension') {
+  if (!canManage(server)) return
+  const generation = workspaceGeneration
   try {
     await mcpApi.setDisclosureTier(server.id, tier)
+    if (generation !== workspaceGeneration) return
     await reload()
   } catch (e: any) {
-    mcToast.error(e?.message || t('mcp.messages.tierFailed'))
+    if (generation === workspaceGeneration) mcToast.error(e?.message || t('mcp.messages.tierFailed'))
   }
 }
 

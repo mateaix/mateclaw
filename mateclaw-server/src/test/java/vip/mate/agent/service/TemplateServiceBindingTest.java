@@ -198,7 +198,7 @@ class TemplateServiceBindingTest {
         t.setDefaultToolNames(List.of("search", "ghost_tool", "browser_use"));
         registerTemplate(t);
 
-        when(availableToolService.listAvailable()).thenReturn(List.of(
+        when(availableToolService.listAvailable(org.mockito.ArgumentMatchers.any())).thenReturn(List.of(
                 availableTool("search"),
                 availableTool("browser_use")));
 
@@ -223,7 +223,7 @@ class TemplateServiceBindingTest {
         t.setDefaultToolNames(List.of("search"));
         registerTemplate(t);
 
-        when(availableToolService.listAvailable())
+        when(availableToolService.listAvailable(org.mockito.ArgumentMatchers.any()))
                 .thenThrow(new RuntimeException("MCP discovery upstream timeout"));
 
         AgentEntity created = spyService.applyTemplate("picker-down-stub", WORKSPACE, CREATOR, null);

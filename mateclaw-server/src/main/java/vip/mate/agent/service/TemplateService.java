@@ -234,7 +234,7 @@ public class TemplateService {
 
         Set<String> bindable;
         try {
-            bindable = availableToolService.listAvailable().stream()
+            bindable = availableToolService.listAvailable(created.getWorkspaceId()).stream()
                     .filter(AvailableToolDTO::isAvailable)
                     .map(AvailableToolDTO::getName)
                     .collect(Collectors.toSet());

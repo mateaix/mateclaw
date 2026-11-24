@@ -2178,6 +2178,7 @@ export default {
     },
   },
   mcp: {
+    ownership: { label: '所属范围', global: '全局 · 所有工作区共享', current: '当前工作区' },
     kicker: '能力桥接',
     title: 'MCP 连接',
     subtitle: '把 Agent 连到外部数据源和工具',

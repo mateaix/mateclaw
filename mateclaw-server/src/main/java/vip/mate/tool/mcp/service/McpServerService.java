@@ -154,6 +154,20 @@ public class McpServerService {
                 .orderByAsc(McpServerEntity::getName));
     }
 
+    /** Explicit scope: a missing workspace can only see global infrastructure. */
+    public static boolean isVisible(McpServerEntity server, Long workspaceId) {
+        return server != null && (server.getWorkspaceId() == null
+                || server.getWorkspaceId().equals(workspaceId));
+    }
+
+    public List<McpServerEntity> listVisible(Long workspaceId) {
+        return listAll().stream().filter(server -> isVisible(server, workspaceId)).toList();
+    }
+
+    public List<McpServerEntity> listEnabledVisible(Long workspaceId) {
+        return listEnabled().stream().filter(server -> isVisible(server, workspaceId)).toList();
+    }
+
     public McpServerEntity getById(Long id) {
         McpServerEntity entity = mcpServerMapper.selectById(id);
         if (entity == null) {
@@ -191,7 +205,13 @@ public class McpServerService {
     }
 
     public McpServerEntity update(Long id, McpServerEntity updates) {
+        return update(id, updates, getById(id).getWorkspaceId());
+    }
+
+    public McpServerEntity update(Long id, McpServerEntity updates, Long workspaceId) {
         McpServerEntity existing = getById(id);
+
+        existing.setWorkspaceId(workspaceId);
 
         // Merge fields (only update non-null fields)
         if (updates.getName() != null) existing.setName(updates.getName());
@@ -218,6 +238,7 @@ public class McpServerService {
         mcpServerMapper.updateById(existing);
 
         log.info("MCP server updated: name={}, id={}", existing.getName(), id);
+        publishChanged("server-updated");
 
         // Reconnect if enabled, disconnect if disabled. Reconnect runs
         // asynchronously so a slow / unreachable server can't freeze the
@@ -389,6 +410,7 @@ public class McpServerService {
     public McpServerEntity sanitize(McpServerEntity entity) {
         McpServerEntity copy = new McpServerEntity();
         copy.setId(entity.getId());
+        copy.setWorkspaceId(entity.getWorkspaceId());
         copy.setName(entity.getName());
         copy.setDescription(entity.getDescription());
         copy.setTransport(entity.getTransport());

@@ -159,7 +159,7 @@ public class AgentAuthoringTool {
         // Tools: only those the binding service would accept (available == true).
         List<Map<String, String>> toolCatalog = new ArrayList<>();
         try {
-            for (AvailableToolDTO t : availableToolService.listAvailable()) {
+            for (AvailableToolDTO t : availableToolService.listAvailable(workspaceId)) {
                 if (t == null || !t.isAvailable() || t.getName() == null || t.getName().isBlank()) continue;
                 Map<String, String> m = new LinkedHashMap<>();
                 m.put("name", t.getName());
@@ -239,7 +239,7 @@ public class AgentAuthoringTool {
         if (requestedTools.isEmpty()) return List.of();
         Set<String> bindable;
         try {
-            bindable = availableToolService.listAvailable().stream()
+            bindable = availableToolService.listAvailable(agent.getWorkspaceId()).stream()
                     .filter(AvailableToolDTO::isAvailable)
                     .map(AvailableToolDTO::getName)
                     .collect(Collectors.toSet());

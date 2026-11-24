@@ -85,6 +85,8 @@ public class SkillController {
     private final AgentService agentService;
     private final AgentBindingService agentBindingService;
     private final vip.mate.skill.mcp.McpSkillBridge mcpSkillBridge;
+    @org.springframework.beans.factory.annotation.Autowired
+    private vip.mate.tool.mcp.runtime.McpWorkspaceAccess mcpWorkspaceAccess;
     private final vip.mate.skill.acp.AcpSkillBridge acpSkillBridge;
     private final SkillLifecycleService skillLifecycleService;
     private final SkillCuratorJob skillCuratorJob;
@@ -143,7 +145,7 @@ public class SkillController {
         // "MCP" and "all" tab badges match what the list endpoint shows.
         try {
             long virtualMcp = countUnshadowedVirtualSkills(
-                    mcpSkillBridge.listMcpDerivedSkillEntities(), realNames);
+                    visibleMcpSkills(workspaceId), realNames);
             if (virtualMcp > 0) {
                 result.merge("mcp", virtualMcp, Long::sum);
                 result.merge("all", virtualMcp, Long::sum);
@@ -235,6 +237,17 @@ public class SkillController {
 
     record VirtualPageMergeResult(List<SkillEntity> records, long total) {}
 
+    private List<ResolvedSkill> visibleResolvedSkills(Long workspaceId) {
+        return skillRuntimeService.resolveAllSkillsStatus().stream()
+                .filter(skill -> SkillRuntimeService.matchesWorkspace(skill, workspaceId != null ? workspaceId : 1L)).toList();
+    }
+
+    private List<SkillEntity> visibleMcpSkills(Long workspaceId) {
+        Long effective = workspaceId != null ? workspaceId : 1L;
+        return mcpSkillBridge.listMcpDerivedSkillEntities().stream()
+                .filter(s -> s.getWorkspaceId() == null || effective.equals(s.getWorkspaceId())).toList();
+    }
+
     private List<SkillEntity> visibleVirtualSkills(Long workspaceId,
                                                    String keyword,
                                                    String skillType,
@@ -252,7 +265,7 @@ public class SkillController {
         List<SkillEntity> result = new ArrayList<>();
         if (includeMcpVirtuals) {
             try {
-                result.addAll(filterVirtualSkills(mcpSkillBridge.listMcpDerivedSkillEntities(),
+                result.addAll(filterVirtualSkills(visibleMcpSkills(workspaceId),
                         realNames, keyword, enabled, scanStatus, runtime));
             } catch (Exception ignored) {
                 // Bridge failure must not break the Skills page.
@@ -627,7 +640,7 @@ public class SkillController {
 
         try {
             result.addAll(enabledOnly(filterShadowedVirtualSkills(
-                    mcpSkillBridge.listMcpDerivedSkillEntities(), realNames)));
+                    visibleMcpSkills(workspaceId), realNames)));
         } catch (Exception e) {
             // Bridge failure must not 500 the picker — same defensive stance as /counts.
         }
@@ -664,7 +677,7 @@ public class SkillController {
         // RFC-090 §3.2 — virtual MCP-derived skills synthesize a row
         // on demand from the live MCP server entity.
         if (vip.mate.skill.mcp.McpSkillBridge.isVirtualMcpSkillId(id)) {
-            List<SkillEntity> virt = mcpSkillBridge.listMcpDerivedSkillEntities();
+            List<SkillEntity> virt = visibleMcpSkills(workspaceId);
             return virt.stream()
                     .filter(s -> id.equals(s.getId()))
                     .findFirst()
@@ -749,6 +762,10 @@ public class SkillController {
         // Connections in sync. ACP virtual skills have no such mapping and
         // stay read-only via rejectVirtualSkillMutation below.
         if (vip.mate.skill.mcp.McpSkillBridge.isVirtualMcpSkillId(id)) {
+            if (mcpWorkspaceAccess != null) mcpWorkspaceAccess.requireMutable(
+                    vip.mate.skill.mcp.McpSkillBridge.extractMcpServerId(id),
+                    workspaceId != null ? workspaceId : 1L,
+                    org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication());
             return R.ok(mcpSkillBridge.toggleVirtualSkill(id, enabled));
         }
         rejectVirtualSkillMutation(id);
@@ -759,8 +776,10 @@ public class SkillController {
     @Operation(summary = "预览技能 Prompt 增强效果（调试用，与 Agent 真实运行时一致）")
     @GetMapping("/prompt-preview")
     @RequireWorkspaceRole("admin")
-    public R<Map<String, Object>> promptPreview() {
-        String prompt = skillRuntimeService.buildSkillPromptEnhancement();
+    public R<Map<String, Object>> promptPreview(
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        String prompt = skillRuntimeService.buildSkillPromptEnhancement(null, null, null, null,
+                workspaceId != null ? workspaceId : 1L);
         return R.ok(Map.of(
                 "actualLength", prompt.length(),
                 "estimatedTokens", prompt.length() / 3,
@@ -773,16 +792,18 @@ public class SkillController {
     @Operation(summary = "获取 active skills 运行时视图")
     @GetMapping("/runtime/active")
     @RequireWorkspaceRole("admin")
-    public R<Map<String, Object>> getActiveSkills() {
-        List<ResolvedSkill> skills = skillRuntimeService.getActiveSkills();
+    public R<Map<String, Object>> getActiveSkills(
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        List<ResolvedSkill> skills = skillRuntimeService.getActiveSkills(workspaceId != null ? workspaceId : 1L);
         return R.ok(Map.of("count", skills.size(), "skills", skills));
     }
 
     @Operation(summary = "获取所有技能的运行时解析状态（管理页面使用）")
     @GetMapping("/runtime/status")
     @RequireWorkspaceRole("admin")
-    public R<List<ResolvedSkill>> getRuntimeStatus() {
-        return R.ok(skillRuntimeService.resolveAllSkillsStatus());
+    public R<List<ResolvedSkill>> getRuntimeStatus(
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        return R.ok(visibleResolvedSkills(workspaceId));
     }
 
     @Operation(summary = "刷新 active skills 缓存，resync=true 时同步内置技能到 workspace")
@@ -814,8 +835,9 @@ public class SkillController {
     @Operation(summary = "Pre-flight requirement statuses for a skill (RFC-090)")
     @GetMapping("/{id}/requirements")
     @RequireWorkspaceRole("member")
-    public R<Map<String, Object>> requirements(@PathVariable Long id) {
-        ResolvedSkill resolved = skillRuntimeService.resolveAllSkillsStatus().stream()
+    public R<Map<String, Object>> requirements(@PathVariable Long id,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        ResolvedSkill resolved = visibleResolvedSkills(workspaceId).stream()
                 .filter(r -> r != null && id.equals(r.getId()))
                 .findFirst()
                 .orElse(null);
@@ -947,8 +969,9 @@ public class SkillController {
     @Operation(summary = "Read per-skill LESSONS.md (RFC-090 §11.4)")
     @GetMapping("/{id}/lessons")
     @RequireWorkspaceRole("member")
-    public R<Map<String, Object>> getLessons(@PathVariable Long id) {
-        ResolvedSkill resolved = skillRuntimeService.resolveAllSkillsStatus().stream()
+    public R<Map<String, Object>> getLessons(@PathVariable Long id,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        ResolvedSkill resolved = visibleResolvedSkills(workspaceId).stream()
                 .filter(r -> r != null && id.equals(r.getId()))
                 .findFirst()
                 .orElse(null);
@@ -976,8 +999,9 @@ public class SkillController {
     @Operation(summary = "Clear all lessons for a skill (RFC-090 §11.4)")
     @PostMapping("/{id}/lessons/clear")
     @RequireWorkspaceRole("admin")
-    public R<Map<String, Object>> clearLessons(@PathVariable Long id) {
-        ResolvedSkill resolved = skillRuntimeService.resolveAllSkillsStatus().stream()
+    public R<Map<String, Object>> clearLessons(@PathVariable Long id,
+            @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        ResolvedSkill resolved = visibleResolvedSkills(workspaceId).stream()
                 .filter(r -> r != null && id.equals(r.getId()))
                 .findFirst()
                 .orElse(null);

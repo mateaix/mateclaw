@@ -98,12 +98,13 @@ public class AgentBindingService implements AgentBindingResolver {
      * ACP virtual skills aren't rows in {@code mate_skill}; the bridge
      * synthesizes them from {@code mate_acp_endpoint}. We need this to
      * answer "what workspace does this virtual id belong to?" when an
-     * agent tries to bind one. MCP virtual skills don't need a bridge
-     * reference — {@link McpSkillBridge#isVirtualMcpSkillId(Long)} is a
-     * static range check, and MCP servers carry no workspace today, so
-     * binding any MCP virtual id is allowed for any agent.
+     * agent tries to bind one. MCP virtual bindings use McpWorkspaceAccess
+     * to validate the backing server, including missing-server rejection and
+     * legacy global sharing.
      */
     private final AcpSkillBridge acpSkillBridge;
+    @Autowired
+    private vip.mate.tool.mcp.runtime.McpWorkspaceAccess mcpWorkspaceAccess;
 
     @Autowired
     public AgentBindingService(AgentSkillBindingMapper skillBindingMapper,
@@ -402,8 +403,12 @@ public class AgentBindingService implements AgentBindingResolver {
         if (agent == null) {
             throw new MateClawException("err.agent.not_found", 404, "Agent 不存在: " + agentId);
         }
-        // MCP virtual: no workspace on McpServerEntity — globally bindable.
+        // MCP virtuals inherit their backing server ownership; legacy null remains shared.
         if (McpSkillBridge.isVirtualMcpSkillId(skillId)) {
+            if (mcpWorkspaceAccess != null && !mcpWorkspaceAccess.canAccess(
+                    McpSkillBridge.extractMcpServerId(skillId), agent.getWorkspaceId())) {
+                throw new MateClawException("err.workspace.forbidden", 403, "MCP skill belongs to another workspace or is missing");
+            }
             return;
         }
         SkillEntity skill;
@@ -567,6 +572,8 @@ public class AgentBindingService implements AgentBindingResolver {
             for (Long skillId : boundSkillIds) {
                 ResolvedSkill resolved = findResolvedSkillById(skillId);
                 if (resolved == null) continue;
+                AgentEntity boundAgent = agentMapper.selectById(agentId);
+                if (!SkillRuntimeService.matchesWorkspace(resolved, boundAgent != null ? boundAgent.getWorkspaceId() : null)) continue;
                 if (!vip.mate.skill.runtime.SkillRuntimeService.passesActiveGate(resolved)) {
                     // A disabled / security-blocked / setup-needed skill must
                     // not contribute tools to the LLM advertisement even if
@@ -605,7 +612,7 @@ public class AgentBindingService implements AgentBindingResolver {
         // To deny a single MCP tool when none are ticked and tools are
         // enabled, use the tool-guard deny path in AgentGraphBuilder.
         if (!toolsDisabled) {
-            Set<String> enabledMcpTools = getEnabledMcpToolNames();
+            Set<String> enabledMcpTools = getEnabledMcpToolNames(agentId);
             boolean agentScopedMcpExplicitly = directTools != null && !directTools.isEmpty()
                     && !Collections.disjoint(directTools, enabledMcpTools);
             if (!agentScopedMcpExplicitly) {
@@ -622,10 +629,12 @@ public class AgentBindingService implements AgentBindingResolver {
      * cache parse error) yield an empty set so the caller's allowlist is
      * strictly narrower, never wider, than the picker — never throws.
      */
-    private Set<String> getEnabledMcpToolNames() {
+    private Set<String> getEnabledMcpToolNames(Long agentId) {
+        AgentEntity agent = agentMapper.selectById(agentId);
         try {
             return availableToolService.listAvailable().stream()
                     .filter(t -> "mcp".equals(t.getSource()))
+                    .filter(t -> mcpWorkspaceAccess == null || agent != null && mcpWorkspaceAccess.canUse(t.getProviderId(), agent.getWorkspaceId()))
                     .filter(AvailableToolDTO::isAvailable)
                     .map(AvailableToolDTO::getName)
                     .filter(n -> n != null && !n.isBlank())
@@ -867,6 +876,7 @@ public class AgentBindingService implements AgentBindingResolver {
     }
 
     public AgentToolBinding bindTool(Long agentId, String toolName) {
+        requireMcpToolWorkspace(agentId, toolName);
         // Mirror of bindSkill: writing any tool row clears the opt-out flag
         // so the binding state cannot contradict the agent-level toggle.
         clearToolsDisabledFlag(agentId);
@@ -914,6 +924,7 @@ public class AgentBindingService implements AgentBindingResolver {
      * </ul>
      */
     public void setToolBindings(Long agentId, List<String> toolNames) {
+        if (toolNames != null) toolNames.forEach(name -> requireMcpToolWorkspace(agentId, name));
         validateNewToolBindings(agentId, toolNames);
 
         // Side effect parallel to setSkillBindings: a non-empty save is an
@@ -943,6 +954,16 @@ public class AgentBindingService implements AgentBindingResolver {
      * "remove this stale tool") still succeed even if upstream state has
      * drifted.
      */
+    private void requireMcpToolWorkspace(Long agentId, String name) {
+        var ref = vip.mate.tool.mcp.runtime.McpToolNameResolver.parse(name);
+        if (ref == null || mcpWorkspaceAccess == null) return;
+        var agent = agentMapper.selectById(agentId);
+        if (agent == null || !mcpWorkspaceAccess.canAccess(ref.serverId(), agent.getWorkspaceId())) {
+            throw new MateClawException("err.workspace.forbidden", 403,
+                    "MCP tool belongs to another workspace or is missing");
+        }
+    }
+
     private void validateNewToolBindings(Long agentId, List<String> incoming) {
         if (incoming == null || incoming.isEmpty()) {
             return;

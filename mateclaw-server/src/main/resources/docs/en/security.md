@@ -403,7 +403,7 @@ Full details in [Workspaces](./workspaces).
 
 ### What isolation does NOT cover
 
-- **Shared global config** — JWT secret, model provider keys, MCP server definitions are global
+- **Shared global config** — JWT secret and model provider keys are global; MCP servers can be local or globally shared, with legacy servers remaining shared and global management restricted to system administrators
 - **Audit logs** — all workspaces' security events are in the same audit log; only admins with audit access read across workspaces
 
 ---

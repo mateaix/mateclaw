@@ -76,6 +76,7 @@ class AgentToolOptOutTest {
         var runtime = mock(vip.mate.skill.runtime.SkillRuntimeService.class);
         var skill = mock(vip.mate.skill.runtime.model.ResolvedSkill.class);
         when(skill.getId()).thenReturn(10L);
+        when(skill.getWorkspaceId()).thenReturn(null);
         when(skill.isEnabled()).thenReturn(true);
         when(skill.isRuntimeAvailable()).thenReturn(true);
         when(skill.isDependencyReady()).thenReturn(true);
