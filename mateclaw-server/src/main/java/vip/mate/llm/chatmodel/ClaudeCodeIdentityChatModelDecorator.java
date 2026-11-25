@@ -20,6 +20,7 @@ import reactor.core.publisher.Flux;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Claude Code OAuth identity transform applied to every Anthropic request
@@ -209,12 +210,9 @@ public class ClaudeCodeIdentityChatModelDecorator implements ChatModel {
             }
             rebuilt.add(new AssistantMessage.ToolCall(tc.id(), tc.type(), newName, tc.arguments()));
         }
-        return AssistantMessage.builder()
-                .content(original.getText())
-                .properties(original.getMetadata())
-                .toolCalls(rebuilt)
-                .media(original.getMedia())
-                .build();
+        Map<String, AssistantMessage.ToolCall> byId = new java.util.HashMap<>();
+        rebuilt.forEach(call -> byId.put(call.id(), call));
+        return AssistantMessageParts.mapToolCalls(original, call -> byId.getOrDefault(call.id(), call));
     }
 
     /* ====================================================================== */

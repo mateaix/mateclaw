@@ -449,15 +449,8 @@ public class GoalEvaluationService implements Evaluator {
         if (text != null && !text.isBlank()) {
             return text;
         }
-        // Fallback for reasoning models that emit everything as reasoningContent
-        // and leave the regular content empty; the JSON often tails the trace.
-        var metadata = output.getMetadata();
-        if (metadata != null) {
-            Object rc = metadata.get("reasoningContent");
-            if (rc instanceof String s && !s.isBlank()) {
-                return s;
-            }
-        }
+        String reasoning = vip.mate.llm.chatmodel.AssistantMessageParts.reasoningText(output);
+        if (reasoning != null && !reasoning.isBlank()) return reasoning;
         return text;
     }
 

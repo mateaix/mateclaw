@@ -176,12 +176,7 @@ public final class AnthropicSdkChatModel implements ChatModel {
                     metadata.put("reasoningContent", scope.thinkingText());
             }
             AssistantMessage normalized =
-                    AssistantMessage.builder()
-                            .content(original.getText())
-                            .properties(metadata)
-                            .toolCalls(original.getToolCalls())
-                            .media(original.getMedia())
-                            .build();
+                    original.mutate().properties(metadata).build();
             generations.add(new Generation(normalized, generation.getMetadata()));
         }
         ChatResponseMetadata original = response.getMetadata();

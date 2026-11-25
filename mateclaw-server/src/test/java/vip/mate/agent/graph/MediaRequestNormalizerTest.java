@@ -45,6 +45,18 @@ class MediaRequestNormalizerTest {
             assertTrue(((UserMessage) MediaRequestNormalizer.normalize(new Prompt(List.of(user))).getInstructions().getFirst()).getMedia().isEmpty());
         }
     }
+    @Test void filteringOneAttachmentPreservesInterleavedPartsAndSignatures() {
+        var before = org.springframework.ai.chat.messages.part.TextPart.of("before");
+        var after = org.springframework.ai.chat.messages.part.TextPart.of("after");
+        var image = org.springframework.ai.chat.messages.part.MediaPart.of(valid());
+        var badImage = org.springframework.ai.chat.messages.part.MediaPart.of(empty());
+        var signed = new org.springframework.ai.chat.messages.part.ReasoningPart("reason", null,
+                new org.springframework.ai.chat.messages.part.OpaquePayload("anthropic", "thinking", "signed"), Map.of());
+        var assistant = AssistantMessage.builder().parts(List.of(signed, before, image, after, badImage)).build();
+        var result = (AssistantMessage) MediaRequestNormalizer.normalize(new Prompt(List.of(assistant))).getInstructions().getFirst();
+        assertEquals(List.of(signed, before, image, after), result.getParts());
+        assertEquals(5, assistant.getParts().size());
+    }
     @Test void validPromptAndToolResponsesAreUnchanged() {
         var user = UserMessage.builder().text("").media(List.of(valid())).build();
         var response = ToolResponseMessage.builder().responses(List.of(new ToolResponseMessage.ToolResponse("id", "tool", ""))).build();

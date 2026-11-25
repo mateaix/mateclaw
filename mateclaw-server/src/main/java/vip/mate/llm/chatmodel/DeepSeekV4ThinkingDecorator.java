@@ -172,7 +172,7 @@ public class DeepSeekV4ThinkingDecorator implements ChatModel {
     private static AssistantMessage rewriteAssistant(AssistantMessage am, boolean enabled) {
         Map<String, Object> meta = am.getMetadata();
         boolean hasTools = am.hasToolCalls();
-        boolean hasReasoning = meta != null && (meta.containsKey(REASONING_CONTENT_KEY) || meta.containsKey("reasoningContent"));
+        boolean hasReasoning = !am.getReasoning().isEmpty() || meta != null && (meta.containsKey(REASONING_CONTENT_KEY) || meta.containsKey("reasoningContent"));
 
         // Fast path: no rewrite needed.
         if (enabled && (!hasTools || hasReasoning)) {
@@ -192,11 +192,7 @@ public class DeepSeekV4ThinkingDecorator implements ChatModel {
             newMeta.remove(REASONING_CONTENT_KEY);
             newMeta.remove("reasoningContent");
         }
-        return AssistantMessage.builder()
-                .content(am.getText())
-                .properties(newMeta)
-                .toolCalls(am.getToolCalls())
-                .media(am.getMedia())
-                .build();
+        return enabled ? am.mutate().properties(newMeta).build()
+                : AssistantMessageParts.withoutReasoning(am, false, newMeta);
     }
 }

@@ -94,11 +94,9 @@ public final class PayloadReduction {
             Message original = messages.get(i);
             Message copy = original;
             if (original instanceof UserMessage user && !user.getMedia().isEmpty()) {
-                copy = UserMessage.builder().text(omissionText(user.getText()))
-                        .metadata(user.getMetadata()).build();
+                copy = user.mutate().text(omissionText(user.getText())).media(List.of()).build();
             } else if (original instanceof AssistantMessage assistant && !assistant.getMedia().isEmpty()) {
-                copy = AssistantMessage.builder().content(omissionText(assistant.getText()))
-                        .toolCalls(assistant.getToolCalls()).properties(assistant.getMetadata()).build();
+                copy = assistant.mutate().content(omissionText(assistant.getText())).media(List.of()).build();
             }
             if (copy != original) {
                 if (view == null) view = new ArrayList<>(messages);

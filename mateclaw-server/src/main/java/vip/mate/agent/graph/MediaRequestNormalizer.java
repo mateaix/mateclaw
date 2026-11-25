@@ -1,6 +1,8 @@
 package vip.mate.agent.graph;
 
 import org.springframework.ai.chat.messages.*;
+import org.springframework.ai.chat.messages.part.MediaPart;
+import org.springframework.ai.chat.messages.part.MessagePart;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.content.Media;
 import java.util.ArrayList;
@@ -18,19 +20,24 @@ public final class MediaRequestNormalizer {
         for (Message message : prompt.getInstructions()) {
             Message normalized = message;
             if (message instanceof UserMessage user) {
-                var media = validMedia(user.getMedia());
-                if (!media.equals(user.getMedia())) {
+                var parts = validParts(user.getParts());
+                var media = media(parts);
+                if (!parts.equals(user.getParts())) {
                     String text = user.getText();
                     if (media.isEmpty() && (text == null || text.isBlank())) text = EMPTY_MEDIA;
-                    normalized = UserMessage.builder().text(text).media(media).metadata(user.getMetadata()).build();
+                    var builder = UserMessage.builder().metadata(user.getMetadata()).parts(parts);
+                    if (!java.util.Objects.equals(text, user.getText())) builder.text(text);
+                    normalized = builder.build();
                 }
             } else if (message instanceof AssistantMessage assistant) {
-                var media = validMedia(assistant.getMedia());
-                if (!media.equals(assistant.getMedia())) {
+                var parts = validParts(assistant.getParts());
+                var media = media(parts);
+                if (!parts.equals(assistant.getParts())) {
                     String text = assistant.getText();
                     if (media.isEmpty() && assistant.getToolCalls().isEmpty() && (text == null || text.isBlank())) text = EMPTY_MEDIA;
-                    normalized = AssistantMessage.builder().content(text).media(media)
-                            .toolCalls(assistant.getToolCalls()).properties(assistant.getMetadata()).build();
+                    var builder = AssistantMessage.builder().properties(assistant.getMetadata()).parts(parts);
+                    if (!java.util.Objects.equals(text, assistant.getText())) builder.content(text);
+                    normalized = builder.build();
                 }
             }
             result.add(normalized);
@@ -39,8 +46,24 @@ public final class MediaRequestNormalizer {
         return changed ? new Prompt(result, prompt.getOptions()) : prompt;
     }
 
-    private static List<Media> validMedia(List<Media> media) {
-        return media.stream().filter(item -> !isEmpty(item)).map(RequestImageResizer::resize).toList();
+    private static List<MessagePart> validParts(List<MessagePart> parts) {
+        List<MessagePart> result = new ArrayList<>(parts.size());
+        for (MessagePart part : parts) {
+            if (part instanceof MediaPart attachment) {
+                if (isEmpty(attachment.media())) continue;
+                Media resized = RequestImageResizer.resize(attachment.media());
+                result.add(resized == attachment.media() ? part
+                        : new MediaPart(resized, attachment.payload(), attachment.attributes()));
+            } else {
+                result.add(part);
+            }
+        }
+        return result;
+    }
+
+    private static List<Media> media(List<MessagePart> parts) {
+        return parts.stream().filter(MediaPart.class::isInstance).map(MediaPart.class::cast)
+                .map(MediaPart::media).toList();
     }
 
     private static boolean isEmpty(Media media) {

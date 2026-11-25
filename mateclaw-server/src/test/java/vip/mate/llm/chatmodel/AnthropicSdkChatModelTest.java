@@ -162,6 +162,8 @@ class AnthropicSdkChatModelTest {
         assertEquals(1, result.getResults().size());
         assertEquals("Final answer", result.getResult().getOutput().getText());
         assertTrue(result.getResult().getOutput().getToolCalls().isEmpty());
+        assertEquals(2, result.getResult().getOutput().getReasoning().size());
+        assertNotNull(result.getResult().getOutput().getReasoning().getFirst().payload());
         assertEquals("Reason carefully", result.getResult().getOutput().getMetadata().get("reasoningContent"));
         assertTrue(result.getResult().getOutput().getMetadata().containsKey(AnthropicSdkChatModel.THINKING_BLOCKS));
     }
