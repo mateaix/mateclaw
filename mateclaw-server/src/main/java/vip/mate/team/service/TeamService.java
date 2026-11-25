@@ -6,6 +6,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Isolation;
 import vip.mate.agent.model.AgentEntity;
 import vip.mate.agent.repository.AgentMapper;
 import vip.mate.team.event.TeamChangedEvent;
@@ -41,10 +42,16 @@ public class TeamService {
     private final AgentTeamMemberMapper memberMapper;
     private final AgentMapper agentMapper;
     private final ApplicationEventPublisher eventPublisher;
+    private final TeamRosterLifecycleService rosterLifecycle;
 
-    @Transactional
+    // Roster checks after a team-lock wait must see newly committed changes.
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public AgentTeamEntity createTeam(Long workspaceId, String name, String description, Long leadAgentId,
                                       List<Long> memberAgentIds, String createdBy) {
+        List<Long> roster = new ArrayList<>();
+        roster.add(leadAgentId);
+        if (memberAgentIds != null) roster.addAll(memberAgentIds);
+        rosterLifecycle.lockAgents(roster);
         requireAgentInWorkspace(leadAgentId, workspaceId, "lead");
         requireNotInAnyTeam(leadAgentId);
         if (memberAgentIds != null) {
@@ -77,8 +84,10 @@ public class TeamService {
         return team;
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public void addMember(Long teamId, Long workspaceId, Long agentId, String role) {
+        rosterLifecycle.lockAgents(List.of(agentId));
+        lockTeam(teamId);
         AgentTeamEntity team = requireTeam(teamId, workspaceId);
         if (TeamRole.LEAD.equals(role)) {
             throw new IllegalArgumentException("a team has exactly one lead; role must be member or reviewer");
@@ -92,12 +101,14 @@ public class TeamService {
         notifyTeamChanged(teamId);
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public void removeMember(Long teamId, Long workspaceId, Long agentId) {
+        lockTeam(teamId);
         AgentTeamEntity team = requireTeam(teamId, workspaceId);
         if (agentId.equals(team.getLeadAgentId())) {
             throw new IllegalArgumentException("cannot remove the team lead; delete the team instead");
         }
+        rosterLifecycle.assertMemberRemovable(teamId, agentId);
         memberMapper.delete(Wrappers.<AgentTeamMemberEntity>lambdaQuery()
                 .eq(AgentTeamMemberEntity::getTeamId, teamId)
                 .eq(AgentTeamMemberEntity::getAgentId, agentId));
@@ -106,9 +117,11 @@ public class TeamService {
         notifyTeamChanged(teamId);
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public void deleteTeam(Long teamId, Long workspaceId) {
+        lockTeam(teamId);
         requireTeam(teamId, workspaceId);
+        rosterLifecycle.assertTeamDeletable(teamId);
         // Capture membership before it is wiped so every agent gets evicted.
         List<Long> agentIds = listMembers(teamId).stream()
                 .map(AgentTeamMemberEntity::getAgentId).toList();
@@ -145,6 +158,11 @@ public class TeamService {
     public List<AgentTeamEntity> listAllTeams() {
         return teamMapper.selectList(Wrappers.<AgentTeamEntity>lambdaQuery()
                 .orderByDesc(AgentTeamEntity::getCreateTime));
+    }
+
+    /** Serialize task creation/retry and roster mutation inside their existing transactions. */
+    public void lockTeam(Long teamId) {
+        rosterLifecycle.lockTeam(teamId);
     }
 
     public AgentTeamEntity getTeam(Long teamId) {

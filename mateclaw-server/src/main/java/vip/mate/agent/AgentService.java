@@ -103,6 +103,9 @@ public class AgentService {
      */
     private final Map<Long, Map<String, BaseAgent>> agentInstances = new ConcurrentHashMap<>();
 
+    @Autowired
+    private vip.mate.team.service.TeamRosterLifecycleService rosterLifecycle;
+
     // ==================== CRUD ====================
 
     public List<AgentEntity> listAgents() {
@@ -235,7 +238,10 @@ public class AgentService {
         }
     }
 
+    // Roster checks after a team-lock wait must see newly committed changes.
+    @org.springframework.transaction.annotation.Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public void deleteAgent(Long id) {
+        rosterLifecycle.prepareAgentDeletion(id);
         AgentEntity prior = agentMapper.selectById(id);
         agentMapper.deleteById(id);
         agentInstances.remove(id);

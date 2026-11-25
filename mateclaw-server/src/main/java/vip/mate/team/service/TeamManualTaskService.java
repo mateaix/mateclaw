@@ -4,6 +4,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Isolation;
 import vip.mate.team.event.TeamRunDispatchCommittedIntent;
 import vip.mate.team.model.AgentTeamEntity;
 import vip.mate.team.model.TeamRunCreateCommand;
@@ -23,7 +24,8 @@ public class TeamManualTaskService {
     private final TeamTaskService taskService;
     private final ApplicationEventPublisher events;
 
-    @Transactional
+    // Roster checks after a team-lock wait must see newly committed changes.
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public TeamTaskEntity createTask(AgentTeamEntity team, TeamTaskCreateCommand command) {
         boolean autoRun = command.getRunId() == null;
         TeamRunEntity run = autoRun ? startRun(team, command) : requirePlanningRun(team, command.getRunId());

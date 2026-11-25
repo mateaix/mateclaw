@@ -386,7 +386,9 @@ class TeamTaskServiceTest {
     @DisplayName("successful retry triggers run projection")
     void retryProjectsRun() {
         when(taskMapper.update(isNull(), any())).thenReturn(1);
-        when(taskMapper.selectById(5L)).thenReturn(runTask(5L, TeamTaskStatus.PENDING));
+        TeamTaskEntity failed = runTask(5L, TeamTaskStatus.FAILED);
+        failed.setAssigneeAgentId(MEMBER_ID);
+        when(taskMapper.selectOne(any())).thenReturn(failed);
 
         assertTrue(service.retryTask(5L));
 

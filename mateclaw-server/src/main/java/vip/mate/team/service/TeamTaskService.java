@@ -11,6 +11,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import vip.mate.decision.api.DecisionTicket;
 import vip.mate.decision.api.DecisionMode;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Isolation;
 import vip.mate.team.model.AgentTeamEntity;
 import vip.mate.team.model.TeamTaskCommentEntity;
 import vip.mate.team.model.TeamTaskCreateCommand;
@@ -161,8 +162,10 @@ public class TeamTaskService {
 
     // ==================== creation ====================
 
-    @Transactional
+    // Roster checks after a team-lock wait must see newly committed changes.
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public TeamTaskEntity createTask(TeamTaskCreateCommand cmd) {
+        teamService.lockTeam(cmd.getTeamId());
         AgentTeamEntity team = teamService.getTeam(cmd.getTeamId());
         if (team == null || !TeamService.STATUS_ACTIVE.equals(team.getStatus())) {
             throw new IllegalArgumentException("team not found or not active: " + cmd.getTeamId());
@@ -418,16 +421,30 @@ public class TeamTaskService {
     }
 
     /** Human-requested retry only: explicitly grants a fresh dispatch budget. */
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public boolean retryTask(Long taskId) {
         return retryTask(taskId, true);
     }
 
     /** Lead retries share the original task's budget and retain failure feedback. */
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public boolean retryTaskFromLead(Long taskId) {
         return retryTask(taskId, false);
     }
 
     private boolean retryTask(Long taskId, boolean resetBudget) {
+        // Serialize retries for this task before validating its current roster.
+        // READ_COMMITTED ensures validation stays fresh after the team-lock wait;
+        // historical failed tasks must not resurrect work for removed members.
+        TeamTaskEntity task = taskMapper.selectOne(Wrappers.<TeamTaskEntity>lambdaQuery()
+                .eq(TeamTaskEntity::getId, taskId).last("FOR UPDATE"));
+        if (task == null || task.getStatus() == null || !TeamTaskStatus.RETRYABLE.contains(task.getStatus())) return false;
+        teamService.lockTeam(task.getTeamId());
+        AgentTeamEntity team = teamService.getTeam(task.getTeamId());
+        if (team == null || !TeamService.STATUS_ACTIVE.equals(team.getStatus())
+                || task.getAssigneeAgentId() == null
+                || task.getAssigneeAgentId().equals(team.getLeadAgentId())
+                || !teamService.isMember(task.getTeamId(), task.getAssigneeAgentId())) return false;
         var update = Wrappers.<TeamTaskEntity>lambdaUpdate()
                 .eq(TeamTaskEntity::getId, taskId)
                 .in(TeamTaskEntity::getStatus, TeamTaskStatus.FAILED, TeamTaskStatus.STALE)

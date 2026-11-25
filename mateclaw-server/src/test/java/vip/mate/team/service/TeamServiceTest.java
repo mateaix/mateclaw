@@ -51,7 +51,7 @@ class TeamServiceTest {
         memberMapper = mock(AgentTeamMemberMapper.class);
         agentMapper = mock(AgentMapper.class);
         service = new TeamService(teamMapper, memberMapper, agentMapper,
-                mock(ApplicationEventPublisher.class));
+                mock(ApplicationEventPublisher.class), mock(TeamRosterLifecycleService.class));
     }
 
     private AgentEntity agent(Long id, String agentType) {

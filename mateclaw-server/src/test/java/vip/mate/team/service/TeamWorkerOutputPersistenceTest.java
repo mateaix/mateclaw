@@ -109,6 +109,8 @@ class TeamWorkerOutputPersistenceTest {
         var team = new AgentTeamEntity();
         team.setId(10L);
         team.setWorkspaceId(30L);
+        team.setStatus(TeamService.STATUS_ACTIVE);
+        when(teamService.isMember(10L, 2L)).thenReturn(true);
         team.setLeadAgentId(1L);
         when(teamService.getTeam(10L)).thenReturn(team);
         when(teamService.getTeamForAgent(1L)).thenReturn(Optional.of(team));

@@ -56,6 +56,7 @@
                 </span>
                 <span class="team-card__count">{{ t('teams.memberCount', { count: vo.memberCount }) }}</span>
               </div>
+              <TeamChatButton v-if="workspaceStore.can('chat')" :lead-agent-id="String(vo.team.leadAgentId)" :disabled="!isTeamLeadAvailable(vo.team.leadAgentId)" />
             </div>
           </div>
         </template>
@@ -80,6 +81,7 @@
               </span>
             </div>
             <div class="detail-header__right">
+              <TeamChatButton v-if="workspaceStore.can('chat')" :lead-agent-id="String(store.currentTeam.team.leadAgentId)" :disabled="!isTeamLeadAvailable(store.currentTeam.team.leadAgentId)" />
               <div class="view-switch">
                 <button
                   class="view-seg"
@@ -602,6 +604,7 @@ import { useMarkdownRenderer } from '@/composables/useMarkdownRenderer'
 import { buildWorkerChatRoute } from '@/components/team-run/teamRunPresentation'
 import TeamRunDrawer from '@/components/team-run/TeamRunDrawer.vue'
 import TeamRunsPanel from '@/components/team-run/TeamRunsPanel.vue'
+import TeamChatButton from '@/components/team-run/TeamChatButton.vue'
 import {
   canManageTeamRunAttention,
   captureTeamAttentionContext,
@@ -932,6 +935,10 @@ onBeforeUnmount(() => {
 })
 
 // ==================== team actions ====================
+
+function isTeamLeadAvailable(leadAgentId: string): boolean {
+  return agentStore.agents.some(agent => String(agent.id) === String(leadAgentId) && agent.enabled)
+}
 
 async function openTeam(teamId: string) {
   try {

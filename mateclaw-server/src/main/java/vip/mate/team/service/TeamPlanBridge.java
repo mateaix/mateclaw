@@ -7,6 +7,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Isolation;
 import vip.mate.agent.model.AgentEntity;
 import vip.mate.agent.repository.AgentMapper;
 import vip.mate.planning.model.PlanEntity;
@@ -156,7 +157,8 @@ public class TeamPlanBridge {
      *                 referencing an earlier step); the caller guarantees
      *                 validity via its sequential-chain fallback
      */
-    @Transactional
+    // Roster checks after a team-lock wait must see newly committed changes.
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public String delegatePlan(AgentTeamEntity team, Long planId, String goal,
                                List<String> steps, List<List<Integer>> stepDeps,
                                List<Long> memberIds, String leadConversationId) {

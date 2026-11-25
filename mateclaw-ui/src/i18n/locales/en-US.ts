@@ -90,6 +90,8 @@ export default {
     chunkLoadFailed: 'Failed to load page resources. Check your network and try again.',
   },
   teams: {
+    chatUnavailable: 'The team lead is unavailable. Check that the agent is enabled.',
+    chatWithTeam: 'Chat with team',
     kicker: 'Multi-Agent Collaboration',
     title: 'Agent Teams',
     subtitle: 'Multi-agent teams: the lead orchestrates, members execute',
