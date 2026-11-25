@@ -385,7 +385,8 @@ async function testInModal() {
     try {
       const saved: any = await datasourceApi.create(form.value)
       editingDs.value = saved.data
-      form.value = { ...saved.data }
+      // Never copy a server-returned password into the form; use the update sentinel.
+      form.value = { ...saved.data, password: '******' }
       await loadDatasources()
     } catch (e: any) {
       mcToast.error(e?.message || t('datasources.messages.saveFailed'))

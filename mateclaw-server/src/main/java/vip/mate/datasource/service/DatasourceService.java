@@ -68,6 +68,7 @@ public class DatasourceService {
         }
         encryptPassword(entity);
         datasourceMapper.insert(entity);
+        maskPassword(entity);
         return entity;
     }
 
@@ -82,6 +83,7 @@ public class DatasourceService {
         datasourceMapper.updateById(entity);
         // 失效连接池缓存
         connectionManager.invalidate(entity.getId());
+        maskPassword(entity);
         return entity;
     }
 
