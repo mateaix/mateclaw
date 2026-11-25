@@ -4,6 +4,7 @@
 
 These additions are on `dev` / `3.2.0-SNAPSHOT`; no new stable release or tag is declared here.
 
+- Team dispatch briefing: new tasks save bounded objective/description/acceptance-criteria/constraints snapshots in existing metadata, reused on retries with legacy fallback; lead chats gain a scoped member strip and `@` preference picker without bypassing board delegation. No database migration is required for these additions.
 - Employee templates: save immutable, workspace-scoped native employee configuration snapshots; preserve inheritance/opt-out/binding semantics, selected shared documents and safe model preferences; recruit with a new name or delete a custom template. Missing or disabled dependencies fail before recruitment. Built-in template behavior is unchanged; DSH snapshots and cross-workspace export are not supported.
 - Coordinator mode: opt-in native team leads use the governed task board, scoped memory/time tools and result synthesis without generic delegation, automatic Goal wiring or hosted search. The scope covers persisted plan resumes, primary/fallback clients and standalone team summaries. Existing bindings and normal employee behavior are preserved; active lead turns block mode changes.
 - Team access and roster lifecycle: direct team-chat entry, single-team membership, unfinished-task guards on destructive roster changes, lead deletion protection, and rejection of retries for removed assignees.

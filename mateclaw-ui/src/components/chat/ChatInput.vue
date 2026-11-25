@@ -143,6 +143,26 @@
         @select="handleSkillSelect"
         @close="handleSlashClose"
       />
+      <div
+        v-if="mentionActive"
+        id="team-mention-list"
+        role="listbox"
+        :aria-label="t('chatTeam.members')"
+        class="team-mention-list"
+      >
+        <button
+          v-for="(member, index) in mentionMatches"
+          :id="`team-mention-${index}`"
+          :key="member.agentId"
+          type="button"
+          role="option"
+          :aria-selected="index === mentionIndex"
+          @mousedown.prevent
+          @click="insertMemberMention(member)"
+        >
+          {{ member.name }}
+        </button>
+      </div>
       <textarea
         ref="textareaRef"
         v-model="inputValue"
@@ -157,7 +177,14 @@
         @compositionend="isComposing = false"
         @focus="onTextareaFocus"
         @blur="onTextareaBlur"
-        @input="autoResize"
+        :aria-expanded="mentionActive"
+        :aria-controls="mentionActive ? 'team-mention-list' : undefined"
+        :aria-activedescendant="
+          mentionActive ? `team-mention-${mentionIndex}` : undefined
+        "
+        @click="updateMentionCursor"
+        @keyup="handleMentionCursorKeyup"
+        @input="handleTextInput"
         @paste="handlePaste"
       ></textarea>
 
@@ -251,7 +278,13 @@ import { useToolLabel } from '@/composables/useToolLabel'
 import SkillSlashMenu from '@/components/chat/SkillSlashMenu.vue'
 import type { ChatAttachment, PendingApprovalMeta, StreamPhase, QueuedMessage, Skill } from '@/types'
 
+export interface MemberCandidate {
+  agentId: string
+  name: string
+  enabled?: boolean | null
+}
 interface Props {
+  memberCandidates?: MemberCandidate[]
   /** 输入值 */
   modelValue?: string
   /** 占位符 */
@@ -298,6 +331,7 @@ interface Props {
 }
 
 const props = withDefaults(defineProps<Props>(), {
+  memberCandidates: () => [],
   modelValue: '',
   placeholder: '',
   loading: false,
@@ -376,6 +410,76 @@ const fileInputRef = ref<HTMLInputElement | null>(null)
 const isFocused = ref(false)
 const isComposing = ref(false)
 
+const mentionCursor = ref(0),
+  mentionIndex = ref(0),
+  mentionDismissed = ref(false)
+const mentionHandledEvents = new WeakSet<KeyboardEvent>()
+const mentionMatch = computed(() =>
+  /(?:^|\s)@([^@\n]*)$/.exec(props.modelValue.slice(0, mentionCursor.value)),
+)
+const mentionMatches = computed(() =>
+  props.memberCandidates.filter(
+    (m) =>
+      m.enabled === true &&
+      m.name
+        .toLocaleLowerCase()
+        .includes((mentionMatch.value?.[1] || '').toLocaleLowerCase()),
+  ),
+)
+const mentionActive = computed(
+  () =>
+    !!mentionMatch.value &&
+    !mentionDismissed.value &&
+    !!mentionMatches.value.length &&
+    !props.disabled &&
+    !props.pendingApproval,
+)
+function handleTextInput() { updateMentionCursor(); autoResize() }
+function handleMentionCursorKeyup(event: KeyboardEvent) {
+  if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key))
+    updateMentionCursor()
+}
+function updateMentionCursor() {
+  mentionCursor.value =
+    textareaRef.value?.selectionStart ?? props.modelValue.length
+  mentionDismissed.value = false
+  mentionIndex.value = 0
+}
+function insertMemberMention(member: MemberCandidate) {
+  if (
+    props.disabled ||
+    props.pendingApproval ||
+    !props.memberCandidates.some(
+      (m) => m.agentId === member.agentId && m.enabled === true,
+    )
+  )
+    return
+  const el = textareaRef.value,
+    cursor = el?.selectionStart ?? props.modelValue.length
+  const match = /(?:^|\s)@([^@\n]*)$/.exec(props.modelValue.slice(0, cursor))
+  const start = match ? cursor - match[1]!.length - 1 : cursor
+  const token = `@${member.name} (agentId: ${member.agentId}) `
+  inputValue.value =
+    props.modelValue.slice(0, start) +
+    token +
+    props.modelValue.slice(el?.selectionEnd ?? cursor)
+  mentionDismissed.value = true
+  nextTick(() => {
+    el?.focus()
+    el?.setSelectionRange(start + token.length, start + token.length)
+    mentionCursor.value = start + token.length
+    autoResize()
+  })
+}
+watch(
+  () =>
+    props.memberCandidates.map((m) => `${m.agentId}:${m.enabled}`).join(','),
+  () => {
+    mentionDismissed.value = true
+    mentionIndex.value = 0
+  },
+)
+
 // ---- Skill slash-command menu ----
 // The menu opens when the whole input is a single "/<query>" token (no spaces
 // yet). Picking a skill rewrites the input to a directive that names the skill,
@@ -401,6 +505,25 @@ watch(slashMatch, (val) => {
 })
 
 function handleSlashKeydown(e: KeyboardEvent) {
+  if (isComposing.value || e.isComposing || e.keyCode === 229) return
+  if (mentionActive.value && !(e.key === 'Enter' && (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey))) {
+    if (['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(e.key)) {
+      e.preventDefault()
+      if (e.key === 'Escape') mentionDismissed.value = true
+      else if (e.key === 'ArrowDown')
+        mentionIndex.value =
+          (mentionIndex.value + 1) % mentionMatches.value.length
+      else if (e.key === 'ArrowUp')
+        mentionIndex.value =
+          (mentionIndex.value + mentionMatches.value.length - 1) %
+          mentionMatches.value.length
+      else {
+        if (e.key === 'Enter') mentionHandledEvents.add(e)
+        insertMemberMention(mentionMatches.value[mentionIndex.value]!)
+      }
+      return
+    }
+  }
   if (!slashActive.value) return
   const menu = slashMenuRef.value
   if (!menu) return
@@ -454,11 +577,14 @@ function handleSkillSelect(skill: Skill) {
 function onTextareaBlur(e: FocusEvent) {
   isFocused.value = false
   const next = e.relatedTarget as HTMLElement | null
+  if (next?.closest('.team-mention-list')) return
   if (next && next.closest && next.closest('.skill-slash-menu')) return
   setTimeout(() => {
     const ae = document.activeElement as HTMLElement | null
     if (ae && ae.closest && ae.closest('.skill-slash-menu')) return
+    if (ae?.closest('.team-mention-list')) return
     slashDismissed.value = true
+    mentionDismissed.value = true
   }, 0)
 }
 
@@ -554,7 +680,10 @@ const sendBtnClass = computed(() => ({
 }))
 
 // 处理回车键
-const handleEnter = () => {
+const handleEnter = (event?: KeyboardEvent) => {
+  if (event && mentionHandledEvents.has(event)) return
+  if (event?.isComposing || event?.keyCode === 229 || mentionActive.value)
+    return
   if (isComposing.value) return
   // When the slash menu is showing matches, Enter confirms the highlighted
   // skill (handled in handleSlashKeydown) instead of submitting the message.
@@ -585,11 +714,11 @@ const openFilePicker = () => {
 const handleFileChange = (event: Event) => {
   const input = event.target as HTMLInputElement
   const files = Array.from(input.files || [])
-  
+
   if (files.length) {
     emit('file-select', files)
   }
-  
+
   // 清空 input 以便重复选择同一文件
   input.value = ''
 }
@@ -623,6 +752,7 @@ const formatFileSize = (size: number) => {
 
 // 暴露方法给父组件
 defineExpose({
+  insertMemberMention,
   focus: () => textareaRef.value?.focus(),
   blur: () => textareaRef.value?.blur(),
   clear: () => {
@@ -637,6 +767,34 @@ defineExpose({
 </script>
 
 <style scoped>
+.team-mention-list {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  max-height: 220px;
+  overflow: auto;
+  background: var(--mc-bg-elevated, #fff);
+  border: 1px solid var(--mc-border, #ddd);
+  border-radius: 10px;
+  padding: 6px;
+  z-index: 25;
+  min-width: 220px;
+}
+.team-mention-list button {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 8px;
+  color: inherit;
+  cursor: pointer;
+}
+.team-mention-list button[aria-selected='true'] {
+  background: var(--mc-bg-sunken, #eee);
+}
+
+
 .chat-input-wrapper {
   padding: 10px 14px 12px;
   background: var(--mc-bg-elevated, #f8fafc);

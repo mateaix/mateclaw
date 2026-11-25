@@ -170,8 +170,9 @@ public class TeamTaskService {
         if (team == null || !TeamService.STATUS_ACTIVE.equals(team.getStatus())) {
             throw new IllegalArgumentException("team not found or not active: " + cmd.getTeamId());
         }
+        TeamRunEntity run = null;
         if (cmd.getRunId() != null) {
-            TeamRunEntity run = runService.requireRun(cmd.getRunId(), team.getWorkspaceId());
+            run = runService.requireRun(cmd.getRunId(), team.getWorkspaceId());
             if (!cmd.getTeamId().equals(run.getTeamId())) {
                 throw new IllegalArgumentException("team task and run must belong to the same team");
             }
@@ -232,7 +233,7 @@ public class TeamTaskService {
         task.setLeadConversationId(cmd.getLeadConversationId());
         task.setUsername(cmd.getUsername());
         task.setChannel(cmd.getChannel());
-        task.setMetadata(cmd.getMetadata());
+        task.setMetadata(TeamTaskBriefing.capture(cmd, run == null ? null : run.getObjective()));
         taskMapper.insert(task);
         recordEvent(cmd.getTeamId(), task.getId(), TeamTaskEventEntity.CREATED,
                 cmd.getCreatedByAgentId() != null ? AUTHOR_AGENT

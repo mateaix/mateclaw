@@ -390,6 +390,34 @@ class TeamDispatchServiceTest {
     }
 
     @Test
+    void dispatchUsesImmutableBriefingAcrossRetries() {
+        var assigned = task(1L, MEMBER_A);
+        assigned.setDescription("Changed live description");
+        assigned.setMetadata("{\"briefing\":{\"schemaVersion\":1,\"objective\":\"Original objective\",\"description\":\"Original instructions\",\"acceptanceCriteria\":\"Pass checks\",\"constraints\":\"No network\"}}");
+        String initial = service.buildDispatchContent(assigned);
+        assertTrue(initial.contains("[Run objective]\nOriginal objective"));
+        assertTrue(initial.contains("Original instructions"));
+        assertTrue(initial.contains("[Acceptance criteria]\nPass checks"));
+        assertTrue(initial.contains("[Constraints]\nNo network"));
+        assertFalse(initial.contains("Changed live description"));
+        assigned.setDispatchCount(2);
+        assigned.setReason("Try again");
+        String retry = service.buildDispatchContent(assigned);
+        assertTrue(retry.contains("Original instructions"));
+        assertTrue(retry.contains("[Retry feedback]"));
+    }
+
+    @Test
+    void legacyAndMalformedBriefingUseLiveDescription() {
+        var assigned = task(1L, MEMBER_A);
+        assigned.setDescription("Legacy instructions");
+        for (String metadata : new String[] {null, "junk", "{}", "{\"briefing\":{\"schemaVersion\":99}}", "{\"briefing\":{\"schemaVersion\":1,\"description\":[]}}"}) {
+            assigned.setMetadata(metadata);
+            assertTrue(service.buildDispatchContent(assigned).contains("Legacy instructions"));
+        }
+    }
+
+    @Test
     @DisplayName("automatic retry tells the worker why its previous attempt was rejected")
     void retryDispatchContentIncludesPreviousFailure() {
         TeamTaskEntity retry = task(1L, MEMBER_A);

@@ -632,7 +632,8 @@ public class TeamDispatchService {
         sb.append("[Assigned team task #").append(task.getTaskNumber())
                 .append(" (taskId: ").append(task.getId()).append(")]\n")
                 .append("Subject: ").append(task.getSubject()).append('\n');
-        if (task.getDescription() != null && !task.getDescription().isBlank()) {
+        if (!TeamTaskBriefing.appendTo(sb, task.getMetadata())
+                && task.getDescription() != null && !task.getDescription().isBlank()) {
             sb.append("\n").append(task.getDescription()).append('\n');
         }
         if (task.getDispatchCount() != null && task.getDispatchCount() > 1

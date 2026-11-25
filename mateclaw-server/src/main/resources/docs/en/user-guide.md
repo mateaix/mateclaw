@@ -94,6 +94,8 @@ Once a native employee is configured, use **Save as template** on its card, then
 
 For standing collaboration, choose **Chat with team** on a team card. Administrators can enable **Coordinator mode** on the team's **Members** tab so the native lead routes specialist work through the team board. Unfinished tasks block member removal and employee/team deletion; delete a lead's team before deleting the lead. [Team access, roster protection and coordination](./teams)
 
+The lead chat member strip shows responsibilities and separate enabled/busy states. Use `@` to express a member preference. Manual tasks accept acceptance criteria and constraints; new tasks save their briefing for execution and retries, visible in team task details.
+
 ::: tip When to create a new agent
 When you find yourself repeating the same setup instructions every conversation — that's the signal. Put those instructions in the system prompt so you never have to say them again.
 :::

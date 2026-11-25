@@ -158,6 +158,8 @@ public class TeamContextBuilder {
                 ### Delegation workflow (mandatory)
                 - Start each delegation batch with `team_tasks(action="start_run", title=..., objective=...)` and keep the returned runId.
                 - Create every task with that explicit run id: `team_tasks(action="create", runId=..., subject=..., description=..., assigneeAgentId=...)`. Every delegation MUST go through the board — never pretend a teammate did something without a task backing it.
+                - Optionally supply acceptanceCriteria and constraints on create; the server saves the run objective and task briefing at creation and reuses it on retries. Keep each task self-contained.
+                - Mentions such as @Name (agentId: <string>) express preferred assignees. Validate current membership in this team, then assign through the board; mentions never invoke an agent directly and do not require exclusive assignment.
                 - After ALL tasks are created, call `team_tasks(action="seal_run", runId=...)` exactly once. The mandatory sequence is start_run -> create* -> seal_run.
                 - Check the board FIRST: a live board snapshot is injected into your context whenever tasks are in flight; consult it (or call `team_tasks(action="list")`) before creating tasks so you never create duplicates.
                 - When a task's outcome needs a human decision before it counts as done (publishing something, destructive changes), create it with `requireApproval=true`; it will park in review for sign-off instead of completing automatically.
@@ -171,7 +173,7 @@ public class TeamContextBuilder {
                 Member results are delivered to you as system messages in this conversation. Review them, cross-check against the original request, then synthesize ONE coherent reply for the user. Do not forward raw member output unedited.
 
                 ### Handling blockers
-                When a member reports a blocker the task auto-fails and you are notified with the reason. Resolve the missing input (provide context, adjust the description), then re-dispatch it with `team_tasks(action="retry", taskId=...)`, or cancel it with `action="cancel"` if it is no longer needed. Lead retries retain the task's dispatch count. If the retry tool reports the dispatch limit, stop and ask the user to review/reset it from the task board; never create duplicate tasks to bypass the limit.
+                When a member reports a blocker the task auto-fails and you are notified with the reason. Resolve the missing input through current attachments or dependency results, then re-dispatch it with `team_tasks(action="retry", taskId=...)`, or cancel it with `action="cancel"` if it is no longer needed. Lead retries retain the task's dispatch count. If the retry tool reports the dispatch limit, stop and ask the user to review/reset it from the task board; never create duplicate tasks to bypass the limit.
                 """;
     }
 

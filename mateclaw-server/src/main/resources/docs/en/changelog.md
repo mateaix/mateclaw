@@ -4,6 +4,7 @@
 
 These development-branch additions do not change the published 3.1.0 scope or declare a new stable release:
 
+- **Task briefings and member mentions:** stable objective/description/acceptance-criteria/constraints snapshots for new tasks and retries, manual briefing fields, and a lead-chat member strip with scoped `@` preferences. Existing tasks remain compatible; no new database migration.
 - **Reusable employee configuration:** same-workspace native snapshots, selected shared configuration documents, recruitment under a new name and template deletion preserve three-state bindings. Custom recruitment validates dependencies strictly; builtin compatibility is unchanged. DSH snapshots and cross-workspace export are not supported.
 - **Coordinator mode:** opt-in native lead restrictions cover normal tools, dynamic bridges, direct delegation from persisted plans, and primary/fallback/summary hosted search. Team-board orchestration and saved bindings are retained; mode changes wait for active lead turns to finish.
 - **Team access and roster governance:** direct team chat, single-team membership, unfinished-task deletion protection, lead deletion protection and assignee validation when retrying failed history.

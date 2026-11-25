@@ -115,6 +115,25 @@ class TeamControllerTest {
     }
 
     @Test
+    void teamDetailExposesMemberDescriptionAndEnabledWithinWorkspace() {
+        var member = new vip.mate.team.model.AgentTeamMemberEntity();
+        member.setAgentId(11L);
+        var outside = new vip.mate.team.model.AgentTeamMemberEntity();
+        outside.setAgentId(12L);
+        var agent = new AgentEntity();
+        agent.setId(11L); agent.setWorkspaceId(1L);
+        agent.setDescription("Research specialist"); agent.setEnabled(false);
+        var foreign = new AgentEntity(); foreign.setWorkspaceId(2L);
+        when(teamService.listMembers(TEAM_ID)).thenReturn(List.of(member, outside));
+        when(agentMapper.selectById(11L)).thenReturn(agent);
+        when(agentMapper.selectById(12L)).thenReturn(foreign);
+        var members = controller.get(TEAM_ID).getData().members();
+        assertEquals(1, members.size());
+        assertEquals("Research specialist", members.getFirst().description());
+        assertEquals(false, members.getFirst().enabled());
+    }
+
+    @Test
     void workerApprovalEndpointUsesTaskScopedInterventionService() {
         TeamTaskEntity waiting = task(TEAM_ID, TeamTaskStatus.AWAITING_APPROVAL);
         waiting.setRunId(RUN_ID);
@@ -287,6 +306,8 @@ class TeamControllerTest {
         TeamController.CreateTaskRequest req = new TeamController.CreateTaskRequest();
         req.setSubject("dashboard task");
         req.setDescription("details");
+        req.setAcceptanceCriteria("Pass checks");
+        req.setConstraints("No network");
         req.setAssigneeAgentId(9L);
 
         R<TeamController.TaskVO> result = controller.createTask(TEAM_ID, req, null);
@@ -303,6 +324,8 @@ class TeamControllerTest {
                 ArgumentCaptor.forClass(TeamTaskCreateCommand.class);
         verify(taskService).createTask(taskCommand.capture());
         assertEquals(RUN_ID, taskCommand.getValue().getRunId());
+        assertEquals("Pass checks", taskCommand.getValue().getAcceptanceCriteria());
+        assertEquals("No network", taskCommand.getValue().getConstraints());
         verify(runService).sealRunWithResult(RUN_ID, 1L);
         verify(events, times(1)).publishEvent(new TeamRunDispatchCommittedIntent(TEAM_ID));
     }

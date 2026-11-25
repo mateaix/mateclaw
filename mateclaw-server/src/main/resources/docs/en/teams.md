@@ -17,6 +17,18 @@ This section describes `dev` / `3.2.0-SNAPSHOT`, not capabilities already includ
 
 Team cards and detail pages offer **Chat with team**. It opens a fresh chat with the lead selected, not a worker execution record, and does not send a task automatically. The action is hidden without chat access and unavailable when the lead is missing or disabled. To follow up on an existing run, return to its conversation through run details.
 
+### Team members and mentions in chat
+
+The lead's chat shows the current team, coordinator mode, member descriptions, and separate employee-enabled and task-busy states. Busy members can still be considered for subsequent tasks.
+
+Type `@` to choose a non-lead member of the current team, or insert a mention from the member strip. A mention expresses a preference: the message still goes to the lead, who decides and delegates through the task board. It does not start a worker directly or bypass approval. Ordinary employee chats and worker execution records do not offer this entry point.
+
+### Saved task briefing
+
+When a task is created, the server saves a briefing snapshot containing the run objective, task description, and optional **acceptance criteria** and **constraints**. Manual task creation offers the two optional fields; leads can pass `acceptanceCriteria` and `constraints` to `team_tasks(action="create")`. Task details show the saved briefing. The objective, acceptance criteria, and constraints are capped at 4,000 characters each, and the description at 12,000; each field also has a UTF-8 byte budget of the same numeric size, so multibyte text may be truncated earlier. Truncated text ends with an ellipsis. Complete task metadata is checked against the 65,535-byte MySQL `TEXT` limit; oversized metadata is rejected before creation without discarding other metadata.
+
+Execution and retries use the same briefing, so subsequent edits to the run objective or task description cannot silently change that context. Retry feedback, attachments, and prerequisite outputs continue to be added separately through the existing mechanisms. The snapshot covers only this context; it does not copy the full transcript or freeze every dependency. Historical tasks without a snapshot keep the existing dispatch behavior.
+
 ### Member removal and deletion protection
 
 An employee belongs to one team at a time, including paused teams. Remove the employee from the old team before adding it elsewhere; a lead cannot be removed directly.

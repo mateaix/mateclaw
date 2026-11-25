@@ -401,6 +401,14 @@
               <textarea v-model="taskForm.description" class="form-input form-textarea" rows="3"></textarea>
             </div>
             <div class="form-group">
+              <label for="task-acceptance-criteria">{{ t('chatTeam.acceptanceCriteria') }}</label>
+              <textarea id="task-acceptance-criteria" v-model="taskForm.acceptanceCriteria" class="form-input form-textarea" rows="3" maxlength="4000"></textarea>
+            </div>
+            <div class="form-group">
+              <label for="task-constraints">{{ t('chatTeam.constraints') }}</label>
+              <textarea id="task-constraints" v-model="taskForm.constraints" class="form-input form-textarea" rows="3" maxlength="4000"></textarea>
+            </div>
+            <div class="form-group">
               <label>{{ t('teams.assignee') }} <i>*</i></label>
               <div class="agent-picker">
                 <button
@@ -481,7 +489,8 @@
                 {{ currentTask.task.progressPercent }}% — {{ currentTask.task.progressStep }}
               </span>
             </div>
-            <div v-if="currentTask.task.description" class="task-detail__block">
+            <TeamTaskBriefing :metadata="currentTask.task.metadata" />
+            <div v-if="!currentTaskHasBriefing && currentTask.task.description" class="task-detail__block">
               <div class="task-detail__label">{{ t('teams.taskDescription') }}</div>
               <div class="task-detail__text task-detail__markdown markdown-body" v-html="renderedCurrentTaskDescription" />
             </div>
@@ -591,6 +600,8 @@
 </template>
 
 <script setup lang="ts">
+import TeamTaskBriefing from '@/components/team-run/TeamTaskBriefing.vue'
+import { parseTeamBriefing } from '@/composables/chat/teamBriefing'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
@@ -644,6 +655,7 @@ const currentTask = ref<TeamTaskVO | null>(null)
 const comments = ref<TeamTaskComment[]>([])
 const newComment = ref('')
 const taskEvents = ref<TeamTaskEvent[]>([])
+const currentTaskHasBriefing = computed(() => !!parseTeamBriefing(currentTask.value?.task.metadata))
 const renderedCurrentTaskDescription = computed(() => renderMarkdown(currentTask.value?.task.description || ''))
 const renderedCurrentTaskResult = computed(() => renderMarkdown(currentTask.value?.task.result || ''))
 const pendingAttentionActions = reactive(new Set<string>())
@@ -1103,6 +1115,8 @@ const TERMINAL_TASK_STATUSES = ['completed', 'failed', 'cancelled']
 const taskCreateDialogVisible = ref(false)
 const taskCreating = ref(false)
 const taskForm = reactive({
+  acceptanceCriteria: '',
+  constraints: '',
   subject: '',
   description: '',
   assigneeAgentId: '',
@@ -1119,6 +1133,8 @@ const blockerCandidates = computed(() =>
 )
 
 function openTaskCreateDialog() {
+  taskForm.acceptanceCriteria = ''
+  taskForm.constraints = ''
   taskForm.subject = ''
   taskForm.description = ''
   taskForm.assigneeAgentId = ''
@@ -1148,6 +1164,8 @@ async function submitTaskCreate() {
     await teamApi.createTask(store.currentTeam.team.id, {
       subject: taskForm.subject,
       description: taskForm.description || undefined,
+      acceptanceCriteria: taskForm.acceptanceCriteria || undefined,
+      constraints: taskForm.constraints || undefined,
       assigneeAgentId: taskForm.assigneeAgentId,
       priority: taskForm.priority,
       requireApproval: taskForm.requireApproval,

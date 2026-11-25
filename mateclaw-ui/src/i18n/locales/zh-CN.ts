@@ -1,4 +1,22 @@
 export default {
+  chatTeam: {
+    members: '团队成员',
+    coordinatorOn: '协调模式已开启',
+    coordinatorOff: '协调模式已关闭',
+    enabled: '已启用',
+    disabled: '已停用',
+    enabledUnknown: '启用状态未知',
+    busy: '忙碌',
+    idle: '空闲',
+    unknown: '工作状态未知',
+    preferenceHint: '提及成员仅表示优先执行人偏好，请求仍交由负责人通过团队任务板处理。',
+    savedBriefing: '已保存的任务简报',
+    savedHint: '创建任务时保存，较长的字段可能已截短。',
+    objective: '目标',
+    description: '描述',
+    acceptanceCriteria: '验收标准（可选）',
+    constraints: '约束（可选）',
+  },
   goalJsonArtifacts: {
     "title": "产物版本与检查",
     "scope": "已有适用版本可直接检查；正文需要修改时再发布新版本。每版不可修改，最多1 MiB、有效期24小时。发布本身不会完成目标。",

@@ -119,6 +119,10 @@ public class TeamTasksTool {
             String name,
             @ToolParam(description = "attach: the /api/v1/files/generated/... download link returned by the render tool", required = false)
             String url,
+            @ToolParam(description = "create: optional acceptance criteria for the saved task briefing", required = false)
+            String acceptanceCriteria,
+            @ToolParam(description = "create: optional constraints for the saved task briefing", required = false)
+            String constraints,
             @Nullable ToolContext ctx) {
 
         String conversationId = ToolExecutionContext.conversationId(ctx);
@@ -149,7 +153,7 @@ public class TeamTasksTool {
                 case "get" -> renderDetail(team, parseId(taskId, "taskId"));
                 case "output" -> renderOutput(team, workspaceId, parseId(taskId, "taskId"));
                 case "create" -> createTask(team, agentId, isLead, workspaceId, runId,
-                        subject, description, assigneeAgentId, blockedBy, priority,
+                        subject, description, acceptanceCriteria, constraints, assigneeAgentId, blockedBy, priority,
                         requireApproval, conversationId);
                 case "seal_run" -> sealRun(team, isLead, workspaceId, conversationId, runId);
                 case "complete" -> completeTask(team, agentId, parseId(taskId, "taskId"), result);
@@ -197,7 +201,7 @@ public class TeamTasksTool {
 
     private String createTask(AgentTeamEntity team, Long agentId, boolean isLead,
                               Long workspaceId, String runId,
-                              String subject, String description, String assigneeAgentId,
+                              String subject, String description, String acceptanceCriteria, String constraints, String assigneeAgentId,
                               String blockedBy, Integer priority, Boolean requireApproval,
                               String conversationId) {
         if (!isLead) {
@@ -211,6 +215,8 @@ public class TeamTasksTool {
                 .runId(parsedRunId)
                 .subject(subject)
                 .description(description)
+                .acceptanceCriteria(acceptanceCriteria)
+                .constraints(constraints)
                 .assigneeAgentId(parseId(assigneeAgentId, "assigneeAgentId"))
                 .createdByAgentId(agentId)
                 .priority(priority)

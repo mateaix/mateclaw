@@ -948,6 +948,8 @@ export interface TeamVO {
 export interface TeamMemberVO {
   agentId: string
   name: string
+  description?: string | null
+  enabled?: boolean | null
   role: 'lead' | 'member' | 'reviewer'
   icon?: string | null
 }
@@ -1050,6 +1052,8 @@ export const teamApi = {
     data: {
       subject: string
       description?: string
+      acceptanceCriteria?: string
+      constraints?: string
       runId?: string
       assigneeAgentId: string
       priority?: number

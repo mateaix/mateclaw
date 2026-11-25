@@ -167,6 +167,72 @@ class TeamTaskServiceTest {
         return run;
     }
 
+    @Test
+    void creationCapturesServerBriefingAndPreservesMetadata() {
+        var run = planningRun(TEAM_ID);
+        run.setObjective("Original objective");
+        when(runService.requireRun(RUN_ID, WORKSPACE_ID)).thenReturn(run);
+        var created = service.createTask(baseCreate().runId(RUN_ID).description("Original instructions")
+                .metadata("{\"trace\":\"keep\",\"briefing\":{\"objective\":\"forged\"}}")
+                .build());
+        var metadata = cn.hutool.json.JSONUtil.parseObj(created.getMetadata());
+        assertEquals("keep", metadata.getStr("trace"));
+        var briefing = metadata.getJSONObject("briefing");
+        assertEquals(1, briefing.getInt("schemaVersion"));
+        assertEquals("Original objective", briefing.getStr("objective"));
+        assertEquals("Original instructions", briefing.getStr("description"));
+    }
+
+    @Test
+    void briefingIsBoundedAndOptionalInputsRoundTrip() {
+        var created = service.createTask(baseCreate().description("x".repeat(12001))
+                .acceptanceCriteria("Pass checks").constraints("c".repeat(4001)).metadata("junk").build());
+        var briefing = cn.hutool.json.JSONUtil.parseObj(created.getMetadata()).getJSONObject("briefing");
+        assertEquals(12000, briefing.getStr("description").getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
+        assertTrue(briefing.getStr("description").endsWith("…"));
+        assertEquals(4000, briefing.getStr("constraints").getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
+        assertEquals("Pass checks", briefing.getStr("acceptanceCriteria"));
+        assertNull(briefing.getStr("objective"));
+    }
+
+    @Test
+    void truncationDoesNotSplitUnicodeSurrogatePair() {
+        var created = service.createTask(baseCreate().description("x".repeat(11998) + "😀more").build());
+        var description = cn.hutool.json.JSONUtil.parseObj(created.getMetadata())
+                .getJSONObject("briefing").getStr("description");
+        assertEquals("x".repeat(11997) + "…", description);
+    }
+
+    @Test
+    void multibyteBriefingFitsMysqlTextAndPreservesOtherMetadata() {
+        var run = planningRun(TEAM_ID);
+        run.setObjective("目标😀".repeat(4000));
+        when(runService.requireRun(RUN_ID, WORKSPACE_ID)).thenReturn(run);
+        var created = service.createTask(baseCreate().runId(RUN_ID)
+                .description("说明😀".repeat(12000)).acceptanceCriteria("验收😀".repeat(4000))
+                .constraints("约束😀".repeat(4000)).metadata("{\"trace\":\"保留😀\"}").build());
+        var metadata = cn.hutool.json.JSONUtil.parseObj(created.getMetadata());
+        assertEquals("保留😀", metadata.getStr("trace"));
+        var briefing = metadata.getJSONObject("briefing");
+        for (var entry : java.util.Map.of("objective", 4000, "description", 12000,
+                "acceptanceCriteria", 4000, "constraints", 4000).entrySet()) {
+            String text = briefing.getStr(entry.getKey());
+            assertTrue(text.getBytes(java.nio.charset.StandardCharsets.UTF_8).length <= entry.getValue(), entry.getKey());
+            assertTrue(text.endsWith("…"));
+            assertFalse(Character.isHighSurrogate(text.charAt(text.length() - 2)));
+        }
+        assertTrue(created.getMetadata().getBytes(java.nio.charset.StandardCharsets.UTF_8).length < 25000);
+    }
+
+    @Test
+    void oversizedPreservedMetadataFailsClearlyBeforeInsert() {
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> service.createTask(baseCreate().metadata("{\"trace\":\"" + "中".repeat(22000) + "\"}").build()));
+        assertTrue(error.getMessage().contains("65535"));
+        assertTrue(error.getMessage().contains("metadata"));
+        verify(taskMapper, never()).insert(any(TeamTaskEntity.class));
+    }
+
     // ==================== creation guards ====================
 
     @Test
@@ -388,9 +454,15 @@ class TeamTaskServiceTest {
         when(taskMapper.update(isNull(), any())).thenReturn(1);
         TeamTaskEntity failed = runTask(5L, TeamTaskStatus.FAILED);
         failed.setAssigneeAgentId(MEMBER_ID);
+        String originalMetadata = "{\"trace\":\"keep\",\"briefing\":{\"schemaVersion\":1,\"description\":\"Original instructions\"}}";
+        failed.setMetadata(originalMetadata);
         when(taskMapper.selectOne(any())).thenReturn(failed);
 
         assertTrue(service.retryTask(5L));
+        ArgumentCaptor<LambdaUpdateWrapper<TeamTaskEntity>> update = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(taskMapper).update(isNull(), update.capture());
+        assertFalse(update.getValue().getSqlSet().contains("metadata"));
+        assertEquals(originalMetadata, failed.getMetadata());
 
         verify(projectionScheduler).scheduleTask(5L);
     }

@@ -159,7 +159,7 @@ class TeamWorkerOutputPersistenceTest {
 
     private String output() {
         return tool.team_tasks("output", "5", null, null, null, null, null, null, null, null,
-                null, null, null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null, null, null);
     }
 
     private void runWorker(String reply) {
@@ -264,7 +264,7 @@ class TeamWorkerOutputPersistenceTest {
             ToolExecutionContext.set(invocation.getArgument(2), "system");
             try {
                 String response = tool.team_tasks("complete", "5", null, null, null, null, null,
-                        null, null, null, null, full, null, null, null, null, null, null, null);
+                        null, null, null, null, full, null, null, null, null, null, null, null, null, null);
                 assertTrue(response.startsWith("Error:"));
                 assertTrue(response.contains("8000"));
                 assertEquals(TeamTaskStatus.IN_PROGRESS, tasks.getTask(5L).getStatus());
@@ -355,7 +355,7 @@ class TeamWorkerOutputPersistenceTest {
     }
     private String retryAsLead() {
         return tool.team_tasks("retry", "5", null, null, null, null, null, null, null, null,
-                null, null, null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null, null, null);
     }
 
     @Test

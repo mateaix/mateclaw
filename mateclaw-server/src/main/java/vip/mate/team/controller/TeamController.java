@@ -186,6 +186,8 @@ public class TeamController {
                     .runId(req.getRunId())
                     .subject(req.getSubject())
                     .description(req.getDescription())
+                    .acceptanceCriteria(req.getAcceptanceCriteria())
+                    .constraints(req.getConstraints())
                     .assigneeAgentId(req.getAssigneeAgentId())
                     .priority(req.getPriority())
                     .blockedBy(req.getBlockedBy())
@@ -474,7 +476,7 @@ public class TeamController {
         }
         return new MemberVO(member.getAgentId(),
                 agent.getName() != null ? agent.getName() : String.valueOf(member.getAgentId()),
-                member.getRole(), agent.getIcon());
+                member.getRole(), agent.getIcon(), agent.getDescription(), agent.getEnabled());
     }
 
     private boolean memberBelongsToWorkspace(AgentTeamEntity team, AgentTeamMemberEntity member) {
@@ -518,7 +520,7 @@ public class TeamController {
     public record TeamDetailVO(TeamVO team, List<MemberVO> members) {
     }
 
-    public record MemberVO(Long agentId, String name, String role, String icon) {
+    public record MemberVO(Long agentId, String name, String role, String icon, String description, Boolean enabled) {
     }
 
     public record TaskVO(TeamTaskEntity task, String assigneeName, String ownerName, Long runId) {
@@ -553,6 +555,8 @@ public class TeamController {
         private Long runId;
         private String subject;
         private String description;
+        private String acceptanceCriteria;
+        private String constraints;
         private Long assigneeAgentId;
         private Integer priority;
         private List<Long> blockedBy;

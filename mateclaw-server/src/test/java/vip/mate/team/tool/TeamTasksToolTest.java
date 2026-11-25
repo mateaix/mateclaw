@@ -110,7 +110,7 @@ class TeamTasksToolTest {
 
     private String invoke(String action, String taskId) {
         return tool.team_tasks(action, taskId, null, null, null, null, null, null,
-                null, null, null, null, null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null, null, null, null, null);
     }
 
     @Test void methodCallbackEncodedProgressIsGroundedInActualSuccessfulWrite() throws Exception {
@@ -139,7 +139,7 @@ class TeamTasksToolTest {
         var capture = new vip.mate.tool.mcp.runtime.McpToolResultCapture();
         var ctx = capture.attach(new ToolContext(java.util.Map.of()));
         String result = tool.team_tasks("progress", "5", null, null, null, null, null, null,
-                null, null, null, null, 100, "done", null, null, null, null, ctx);
+                null, null, null, null, 100, "done", null, null, null, null, null, null, ctx);
         assertTrue(capture.isError());
         var ledger = vip.mate.agent.graph.state.ActionExecutionLedger.fromEvents(List.of(
                 vip.mate.agent.GraphEventPublisher.toolStart("p", "team_tasks", "{\"action\":\"progress\",\"taskId\":\"5\",\"percent\":100}"),
@@ -341,7 +341,7 @@ class TeamTasksToolTest {
         callerIs(MEMBER_ID);
         String out = tool.team_tasks("create", null, "subj", "desc",
                 null, null, null, String.valueOf(MEMBER_ID), null, null, null, null, null, null,
-                null, null, null, null, null);
+                null, null, null, null, null, null, null);
         assertTrue(out.contains("only the team lead can create"));
         verify(taskService, never()).createTask(any());
     }
@@ -364,9 +364,9 @@ class TeamTasksToolTest {
         callerIs(MEMBER_ID);
 
         String start = tool.team_tasks("start_run", null, null, "Run", "Objective",
-                null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
         String seal = tool.team_tasks("seal_run", null, String.valueOf(RUN_ID), null, null,
-                null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
 
         assertTrue(start.contains("only the team lead"));
         assertTrue(seal.contains("only the team lead"));
@@ -383,7 +383,7 @@ class TeamTasksToolTest {
                 .toToolContext();
 
         String output = tool.team_tasks("start_run", null, null, "Research", "Find evidence",
-                null, null, null, null, null, null, null, null, null, null, null, null, null,
+                null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
                 originalTurn);
 
         assertEquals(String.valueOf(RUN_ID), output);
@@ -415,7 +415,7 @@ class TeamTasksToolTest {
 
         String out = tool.team_tasks("create", null, String.valueOf(RUN_ID), null, null,
                 "collect data", "step details", String.valueOf(MEMBER_ID), "11,12", 5,
-                null, null, null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, "Pass checks", "No network", null);
 
         assertTrue(out.startsWith("✓ Created task #3"));
         assertTrue(out.contains("写手"));
@@ -428,6 +428,8 @@ class TeamTasksToolTest {
         assertEquals(LEAD_ID, cmd.getCreatedByAgentId());
         assertEquals(CONV, cmd.getLeadConversationId());
         assertEquals(RUN_ID, cmd.getRunId());
+        assertEquals("Pass checks", cmd.getAcceptanceCriteria());
+        assertEquals("No network", cmd.getConstraints());
         verify(dispatchService, never()).requestDispatch(any());
     }
 
@@ -442,7 +444,7 @@ class TeamTasksToolTest {
 
         tool.team_tasks("create", null, String.valueOf(RUN_ID), null, null, "later step", null,
                 String.valueOf(MEMBER_ID), "50", null, null, null, null, null, null, null,
-                null, null, null);
+                null, null, null, null, null);
 
         verify(dispatchService, never()).requestDispatch(any());
     }
@@ -457,7 +459,7 @@ class TeamTasksToolTest {
 
         tool.team_tasks("create", null, String.valueOf(RUN_ID), null, null, "publish notes", null,
                 String.valueOf(MEMBER_ID), null, null, true, null, null, null, null, null,
-                null, null, null);
+                null, null, null, null, null);
 
         ArgumentCaptor<TeamTaskCreateCommand> captor =
                 ArgumentCaptor.forClass(TeamTaskCreateCommand.class);
@@ -475,7 +477,7 @@ class TeamTasksToolTest {
 
         tool.team_tasks("create", null, String.valueOf(RUN_ID), null, null,
                 "生成报告", "请生成最终 DOCX 文件", String.valueOf(MEMBER_ID), null, null,
-                null, null, null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null, null, null);
 
         ArgumentCaptor<TeamTaskCreateCommand> captor =
                 ArgumentCaptor.forClass(TeamTaskCreateCommand.class);
@@ -490,7 +492,7 @@ class TeamTasksToolTest {
 
         String output = tool.team_tasks("create", null, null, null, null, "subject", "details",
                 String.valueOf(MEMBER_ID), null, null, null, null, null, null, null, null,
-                null, null, null);
+                null, null, null, null, null);
 
         assertTrue(output.contains("runId is required"));
         verify(taskService, never()).createTask(any());
@@ -505,7 +507,7 @@ class TeamTasksToolTest {
 
         String output = tool.team_tasks("create", null, String.valueOf(RUN_ID), null, null,
                 "subject", "details", String.valueOf(MEMBER_ID), null, null, null, null,
-                null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null);
 
         assertTrue(output.contains("runId"));
         verify(taskService, never()).createTask(any());
@@ -520,7 +522,7 @@ class TeamTasksToolTest {
 
         String output = tool.team_tasks("create", null, String.valueOf(RUN_ID), null, null,
                 "subject", "details", String.valueOf(MEMBER_ID), null, null, null, null,
-                null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null);
 
         assertTrue(output.contains("lead conversation"));
         verify(taskService, never()).createTask(any());
@@ -537,7 +539,7 @@ class TeamTasksToolTest {
                 .thenReturn(new TeamRunService.SealResult(running, true));
 
         String output = tool.team_tasks("seal_run", null, String.valueOf(RUN_ID), null, null,
-                null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
 
         assertTrue(output.contains("sealed"));
         InOrder order = inOrder(runService, dispatchService);
@@ -556,7 +558,7 @@ class TeamTasksToolTest {
                 .thenReturn(new TeamRunService.SealResult(running, false));
 
         String output = tool.team_tasks("seal_run", null, String.valueOf(RUN_ID), null, null,
-                null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
 
         assertTrue(output.contains("already sealed"));
         verify(dispatchService, never()).requestDispatch(any());
@@ -572,7 +574,7 @@ class TeamTasksToolTest {
                 .thenThrow(new IllegalStateException("cannot seal a team run without tasks"));
 
         String output = tool.team_tasks("seal_run", null, String.valueOf(RUN_ID), null, null,
-                null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
 
         assertTrue(output.startsWith("Error:"));
         verify(dispatchService, never()).requestDispatch(any());
@@ -604,7 +606,7 @@ class TeamTasksToolTest {
                 .thenReturn(run(TEAM_ID, CONV, TeamRunStatus.PLANNING));
         String out = tool.team_tasks("create", null, String.valueOf(RUN_ID), null, null,
                 "s", null, String.valueOf(MEMBER_ID), null, null, null, null, null, null,
-                null, null, null, null, null);
+                null, null, null, null, null, null, null);
         assertEquals("Error: assignee is required", out);
     }
 
@@ -617,7 +619,7 @@ class TeamTasksToolTest {
         when(taskService.completeTask(5L, MEMBER_ID, "done"))
                 .thenThrow(new IllegalStateException("wrapper", new DecisionRecordingException()));
         assertThrows(DecisionRecordingException.class, () -> tool.team_tasks("complete", "5", null, null,
-                null, null, null, null, null, null, null, "done", null, null, null, null, null, null, null));
+                null, null, null, null, null, null, null, "done", null, null, null, null, null, null, null, null, null));
     }
 
     @Test
@@ -631,7 +633,7 @@ class TeamTasksToolTest {
         assertTrue(invoke("complete", "5").startsWith("Error: result is required"));
 
         String ok = tool.team_tasks("complete", "5", null, null, null, null, null, null, null,
-                null, null, "done, see report", null, null, null, null, null, null, null);
+                null, null, "done, see report", null, null, null, null, null, null, null, null, null);
         assertTrue(ok.contains("Released 1 dependent task(s)"));
     }
 
@@ -644,7 +646,7 @@ class TeamTasksToolTest {
                 anyString(), eq("blocker"), anyString())).thenReturn(true);
 
         String out = tool.team_tasks("comment", "5", null, null, null, null, null, null, null,
-                null, null, null, null, null, "missing credentials", "blocker", null, null, null);
+                null, null, null, null, null, "missing credentials", "blocker", null, null, null, null, null);
         assertTrue(out.contains("stop working"));
     }
 
@@ -656,7 +658,7 @@ class TeamTasksToolTest {
 
         String out = tool.team_tasks("attach", "5", null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null,
-                "report.docx", "/api/v1/files/generated/abc", null);
+                "report.docx", "/api/v1/files/generated/abc", null, null, null);
 
         assertTrue(out.startsWith("✓ Deliverable attached: report.docx"));
         verify(taskService).addDeliverable(5L, MEMBER_ID, "report.docx",
