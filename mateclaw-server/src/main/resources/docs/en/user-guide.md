@@ -86,7 +86,13 @@ An agent defines exactly five things:
 | **Skills** | Which skill packages it can invoke |
 | **Wiki** | Which knowledge bases it can read |
 
-Start from a template. Templates ship ready to work — rename it, tighten the system prompt, check the tools you want, save. 30 seconds for a new agent.
+Selecting a built-in template creates the employee directly; skip templates to edit a full custom configuration.
+
+The workspace templates, direct team-chat entry and coordinator mode described below are on `dev` / `3.2.0-SNAPSHOT`, not the published 3.1.0 package.
+
+Once a native employee is configured, use **Save as template** on its card, then **Hire Employee → Workspace templates** to recruit with a new name. Snapshots preserve inheritance, opt-outs and selected bindings within the same workspace, without copying chat or personal memory. [Template scope, dependencies and API](./agents)
+
+For standing collaboration, choose **Chat with team** on a team card. Administrators can enable **Coordinator mode** on the team's **Members** tab so the native lead routes specialist work through the team board. Unfinished tasks block member removal and employee/team deletion; delete a lead's team before deleting the lead. [Team access, roster protection and coordination](./teams)
 
 ::: tip When to create a new agent
 When you find yourself repeating the same setup instructions every conversation — that's the signal. Put those instructions in the system prompt so you never have to say them again.

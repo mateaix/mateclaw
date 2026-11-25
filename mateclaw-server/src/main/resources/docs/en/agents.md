@@ -44,7 +44,7 @@ Models resolve in this order: **conversation pin → agent model override → gl
 
 ## Templates: hire a coworker who already knows the job
 
-You do not have to start from scratch. `Digital Employees → New` opens a picker populated from the server's `classpath:templates/*.json`; you can also skip templates and continue to the blank form.
+You do not have to start from scratch. The employee page's **Hire Employee** action opens a picker with builtin templates and custom templates from the current workspace; you can also skip templates and continue to the blank form.
 
 ### 6 built-in templates (recommended)
 
@@ -57,7 +57,62 @@ Each one ships with a role, goal, backstory, the right toolset, a pixel-art avat
 - **Data Analyst** — query datasources, run SQL, build charts, write conclusions
 - **Code Reviewer** — inspect code, identify issues, and recommend improvements
 
-Selecting a template creates the corresponding agent immediately; skipping opens the fully editable custom form. Name, role, goal, model, skills, tools, and knowledge-base scope remain editable after creation.
+Selecting a built-in template creates the corresponding agent immediately; workspace templates require a new employee name first. Skipping templates opens the fully editable custom form. Name, role, goal, model, skills, tools, and knowledge-base scope remain editable after creation.
+
+---
+
+### Workspace templates
+
+These custom-template actions describe `dev` / `3.2.0-SNAPSHOT`, not the published 3.1.0 package.
+
+After configuring a native employee, choose **Save as template** in its card actions. Workspace members and higher roles can save and recruit:
+
+1. Enter the template name and description.
+2. Select shared configuration documents to copy, or leave the selection empty.
+3. On the employee page, open **Hire Employee → Workspace templates**.
+4. Enter an unused employee name in the current workspace and choose **Recruit employee**.
+
+A template is an independent snapshot: editing or deleting the source employee does not rewrite it, and deleting the template does not delete recruited employees. Save another template for later revisions; in-place editing and cross-workspace export are not currently offered. The template creator or a workspace administrator can delete it.
+
+| Configuration | Save and recruitment behavior |
+|---------------|-------------------------------|
+| Identity and basic settings | Preserve the system prompt, description, type, icon, tags, iteration budget, thinking depth and enabled state; a disabled source produces a disabled employee |
+| Skill, tool and knowledge-base scope | Preserve binding rows and enabled states, distinguishing inheritance, explicit opt-out and explicit bindings; inherited defaults still refer to current workspace resources rather than freezing their content |
+| Model and knowledge-base preferences | Preserve model name, ordered provider/model preferences and the primary knowledge-base reference; validate dependencies without copying resource contents |
+| Shared configuration documents | Copy only explicitly selected `AGENTS.md`, `SOUL.md`, `TOOLS.md`, `IDENTITY.md`, `HEARTBEAT.md` and `PROACTIVE.md`, retaining enabled state and ordering |
+| Runtime data and credential settings | Exclude chat, personal memory, daily notes, runtime paths, raw runtime/binding configuration JSON and credential settings |
+
+Prompt text and selected shared documents are copied verbatim; secrets written in that text are not automatically redacted. Templates do not bundle skill packages, MCP/ACP backends, knowledge-base materials or model credentials. Valid global builtin skills and MCP/ACP virtual skills accessible to the current workspace can still be referenced.
+
+**Custom recruitment validates dependencies strictly.** Missing, disabled or out-of-scope references produce a dependency error before creation. Restore the dependency and retry; recruitment does not silently widen capability scope. Built-in templates retain their existing compatibility behavior for missing skills or unavailable tools.
+
+**Initial scope:** custom snapshots support native employees in the current workspace. Saving a DSH employee is unavailable in the UI and explicitly rejected by the API; it neither copies credentials/host paths nor silently converts the employee to native. Coordinator identity belongs to [team settings](./teams) and is not copied with an employee template.
+
+### Employee template API
+
+Use the existing authentication mechanism and the `X-Workspace-Id` header. Transmit IDs as strings.
+
+| Endpoint | Access and purpose |
+|----------|--------------------|
+| `GET /api/v1/templates` | Existing builtin-template list, unchanged |
+| `POST /api/v1/templates/{id}/apply` | Existing builtin recruitment; workspace member or higher |
+| `GET /api/v1/templates/custom` | Custom template summaries; viewer or higher; no raw snapshot JSON |
+| `POST /api/v1/templates/custom` | Save a snapshot from an employee in the same workspace; member or higher |
+| `POST /api/v1/templates/custom/{id}/apply` | Recruit with a new employee name; member or higher |
+| `DELETE /api/v1/templates/custom/{id}` | Viewer or higher, plus template creator, workspace administrator or system administrator |
+
+Example save request:
+
+```json
+{
+  "sourceAgentId": "1234567890123456789",
+  "name": "Research configuration",
+  "description": "Reusable research workflow",
+  "workspaceFileNames": ["SOUL.md", "AGENTS.md"]
+}
+```
+
+The server constructs the snapshot from the source employee; callers do not upload arbitrary snapshot content. List summaries contain `id`, `name`, `description`, `icon`, `agentType`, `creatorUserId`, `createTime`, `schemaVersion` and `canDelete`. Custom recruitment accepts `{"name":"Researcher copy"}` and returns the new employee. Responses retain the `R<T>` envelope.
 
 ---
 

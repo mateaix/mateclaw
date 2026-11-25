@@ -9,6 +9,51 @@ head:
 
 # Team Runs and Agent Teams (2.1.0+)
 
+## Current dev: team access and roster governance
+
+This section describes `dev` / `3.2.0-SNAPSHOT`, not capabilities already included in the published 3.1.0 package.
+
+### Chat with team
+
+Team cards and detail pages offer **Chat with team**. It opens a fresh chat with the lead selected, not a worker execution record, and does not send a task automatically. The action is hidden without chat access and unavailable when the lead is missing or disabled. To follow up on an existing run, return to its conversation through run details.
+
+### Member removal and deletion protection
+
+An employee belongs to one team at a time, including paused teams. Remove the employee from the old team before adding it elsewhere; a lead cannot be removed directly.
+
+| Operation | Protection and resolution |
+|-----------|---------------------------|
+| Remove a member or delete an employee | Finish or cancel unfinished work assigned to or currently owned by that employee first |
+| Delete a team | Finish or cancel all unfinished team tasks first |
+| Delete a lead | Delete its team first, even if idle; ask a workspace administrator if necessary |
+| Delete an idle ordinary member | Remove its roster membership too; retain historical task and run evidence |
+| Retry failed history | The team must remain valid and the assignee must still be a valid team member; retries cannot dispatch to a removed or deleted employee |
+
+Unfinished states include `pending`, `blocked`, `in_progress`, `awaiting_approval`, `in_review` and recoverable `stale`; terminal states are `completed`, `failed` and `cancelled`. Although `stale` appears in the board's closed column, it still blocks destructive roster operations until resolved or cancelled. Rejected operations return a 409 business error without automatically cancelling tasks or changing the roster. Removing members or deleting a team does not erase historical evidence.
+
+### Coordinator mode
+
+Workspace administrators can enable **Teams → team → Members → Coordinator mode**. It defaults to off, supports native-runtime leads only, and does not change member capability configuration.
+
+When enabled:
+
+- The lead decomposes, dispatches, follows up and synthesizes through `team_tasks` and the native Plan-Execute team-board handoff.
+- Its tools are limited to the team board, selected memory/time primitives and scoped discovery bridges. Generic delegation, skill scripts, file/command/business tools and MCP tools cannot be used to do the specialist work itself.
+- Ordinary skill catalogs, business Wiki context and automatic Goal wiring are not injected. Resuming a persisted plan cannot regain direct delegation through an old assigned step.
+- Primary, fallback and standalone team-summary model clients disable provider-native search using configuration copies, without changing stored model/provider settings. Search-only models and unsupported provider request options fail explicitly.
+
+Saved skill/tool bindings remain intact. Turning the mode off restores ordinary capabilities under the original configuration and permissions from the next turn; pausing a team does not remove coordinator restrictions. Mode changes are rejected during an active lead turn: wait for that turn to finish. A change does not rewrite an in-flight executor, and a coordinator lead cannot be switched directly to DSH.
+
+The API remains `PUT /api/v1/teams/{id}`, requiring workspace admin or higher. `settings` is still a JSON string, and the mode value must be boolean:
+
+```json
+{
+  "settings": "{\"coordinatorMode\":true}"
+}
+```
+
+The server merges settings and preserves unrelated keys. An absent flag defaults to off. Malformed historical JSON does not opt a team into coordinator mode, but it must be repaired before merging updates rather than silently discarded by a toggle.
+
 ## 2.3.0: controlled worker intervention
 
 Team run details can resolve a worker's pending tool approval, replay an approved call in its governed conversation, or deny it. Feedback can supply missing information; it is limited to 4000 characters, and pending approvals must be resolved first.
@@ -54,7 +99,7 @@ The run protocol is `start_run → create* → seal_run`: the lead creates a run
 
 | Concept | Description |
 |------|------|
-| **Team** | A group of employees plus one task board. An employee can belong to multiple teams. |
+| **Team** | A group of employees plus one task board. An employee belongs to only one team at a time, including paused teams. |
 | **Role** | `lead` / `member` / `reviewer`. The lead decomposes and summarizes, members execute, reviewers review. |
 | **Task** | One work item on the board: subject, description, assignee, dependencies (`blockedBy`), progress, result, deliverables, comments, timeline. |
 | **Board** | A kanban grouped by status. The state machine is guarded by conditional database updates — under concurrency the first successful writer wins, so a task can never hold two states. |
@@ -138,7 +183,7 @@ Leads aren't restricted by agent type. A **ReAct lead** creates tasks one by one
 - after hand-off the plan parks (`delegated`) and the lead's turn ends normally; the dispatch/announce loop takes over;
 - once all tasks settle, the wake-up passes a **parked-plan resume gate** that deterministically routes to the plan summary node, rebuilding context from task results and deliverables — the same "park in DB, resume in a fresh turn" shape the tool-approval flow already uses, with no checkpoint machinery.
 
-The hand-off is **all-or-nothing**: the plan goes to the board only when every step resolves to a team member; if any step can't be assigned, the whole plan falls back to the original serial delegation pipeline, behaving exactly as before.
+The hand-off is **all-or-nothing**: the plan goes to the board only when every step resolves to a team member; if a step cannot be assigned, an ordinary lead falls back to the original serial pipeline. Coordinator leads do not regain generic direct delegation; later steps remain constrained by coordinator tool scope.
 
 In short: **a lead that can plan turns its planning into team orchestration.**
 

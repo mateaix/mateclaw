@@ -51,6 +51,17 @@ Most AI tools die when their vendor has a bad day. Most forget you the moment th
 
 ---
 
+## On dev: reusable employees and governed teams
+
+The following additions are on `dev` / `3.2.0-SNAPSHOT`; they are not part of the published 3.1.0 release:
+
+- **Save an employee as a template:** capture a native employee's configuration in a workspace snapshot, select shared configuration documents, and recruit another employee under a new name. Inheritance, explicit opt-outs, and selected bindings are preserved; custom recruitment checks dependencies before creation. The six built-in templates retain their existing behavior. [Employee templates](mateclaw-server/src/main/resources/docs/en/agents.md)
+- **Opt-in coordinator mode:** in **Teams → team → Members**, workspace admins can make a native lead focus on dispatch, follow-up, and synthesis. Team-board handoff remains available; generic delegation, business tools, and provider-native search are restricted without overwriting saved capability bindings. [Team coordination](mateclaw-server/src/main/resources/docs/en/teams.md)
+- **Chat with a team:** start a fresh lead conversation directly from its team card or detail page. The action respects chat access and lead availability.
+- **Roster protection:** unfinished tasks block member removal and employee/team deletion. A lead cannot be deleted until its team is deleted. One employee belongs to one team at a time, including paused teams; removed or deleted assignees cannot be retried from failed history.
+
+Workspace snapshots currently support native employees in the same workspace, not DSH cloning or cross-workspace export. See [Unreleased changes](CHANGELOG.md#unreleased) for upgrade notes.
+
 ## What changes in 3.1.0
 
 Changes since [3.0.0](https://claw.mate.vip/docs/en/releases/3.0.0), grouped by what you can use:

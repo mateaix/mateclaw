@@ -250,6 +250,28 @@ Expand the chat interface's **thinking panel**. You see every tool call, argumen
 
 ---
 
+## Employee templates and teams
+
+This section covers the current `dev` / `3.2.0-SNAPSHOT` additions; published 3.1.0 packages do not include them.
+
+### Do source employee edits update an existing template?
+
+No. Workspace templates are independent configuration snapshots; save another template for revisions. Deleting a template does not delete recruited employees, and deleting the source does not rewrite the snapshot. It is not a skill-package or knowledge-base backup: inherited defaults and resource references still depend on the current workspace environment. [Template contents and boundaries](./agents)
+
+### Why does custom recruitment report a missing dependency?
+
+Custom snapshots strictly validate saved skill, tool, knowledge-base and model/provider references, including disabled or out-of-scope dependencies. Restore them and retry; recruitment does not skip them and quietly grant broader capabilities. The new employee name must also be unused in the workspace. DSH employees cannot currently be saved as these templates; copying runtime configuration is not a supported workaround.
+
+### Why can I not remove a member or delete an employee/team?
+
+Finish or cancel the relevant unfinished tasks first, including approval waits and recoverable `stale` tasks. Even an idle lead requires its team to be deleted first; ask an administrator if necessary. An employee belongs to one team, and pausing does not release that membership. A failed task cannot be retried to a removed assignee. [Roster protection rules](./teams)
+
+### Why can coordinator mode not be enabled, switched or run?
+
+The switch is on the team's **Members** tab, requires workspace admin or higher, and supports native leads only. Wait for the lead's active turn to end; malformed historical settings JSON must be repaired first. Search-only models or unsupported provider options fail explicitly rather than bypassing coordination through hosted search. The mode defaults to off; turning it off restores the previous configured capabilities from the next turn. Member configuration stays unchanged.
+
+---
+
 ## Channels
 
 ### DingTalk / Feishu webhook isn't receiving messages

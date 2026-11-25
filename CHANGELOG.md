@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+These additions are on `dev` / `3.2.0-SNAPSHOT`; no new stable release or tag is declared here.
+
+- Employee templates: save immutable, workspace-scoped native employee configuration snapshots; preserve inheritance/opt-out/binding semantics, selected shared documents and safe model preferences; recruit with a new name or delete a custom template. Missing or disabled dependencies fail before recruitment. Built-in template behavior is unchanged; DSH snapshots and cross-workspace export are not supported.
+- Coordinator mode: opt-in native team leads use the governed task board, scoped memory/time tools and result synthesis without generic delegation, automatic Goal wiring or hosted search. The scope covers persisted plan resumes, primary/fallback clients and standalone team summaries. Existing bindings and normal employee behavior are preserved; active lead turns block mode changes.
+- Team access and roster lifecycle: direct team-chat entry, single-team membership, unfinished-task guards on destructive roster changes, lead deletion protection, and rejection of retries for removed assignees.
+- Database upgrades: V205 widens team task status for `awaiting_approval`; V206 stores custom employee snapshots. H2, MySQL and Kingbase migrations are included. Back up database and configuration before upgrading; the changes do not rename existing employees or replace built-in templates.
+
+[Employee guide](mateclaw-server/src/main/resources/docs/en/agents.md) · [Team guide](mateclaw-server/src/main/resources/docs/en/teams.md) · [中文员工指南](mateclaw-server/src/main/resources/docs/zh/agents.md) · [中文团队指南](mateclaw-server/src/main/resources/docs/zh/teams.md)
+
 - Documentation: align contribution branches with `dev`, clarify deployment backups, Flyway validation and rollback, refresh user-guide/README links, and document verified private-to-public synchronization.
 - Website quick start: explicitly build the Docker services on first startup.
 

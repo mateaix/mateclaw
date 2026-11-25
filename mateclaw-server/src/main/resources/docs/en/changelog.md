@@ -1,10 +1,23 @@
-# 3.1.0: skill lesson governance and execution reliability
+# Changelog
+
+## Unreleased: dev / 3.2.0-SNAPSHOT
+
+These development-branch additions do not change the published 3.1.0 scope or declare a new stable release:
+
+- **Reusable employee configuration:** same-workspace native snapshots, selected shared configuration documents, recruitment under a new name and template deletion preserve three-state bindings. Custom recruitment validates dependencies strictly; builtin compatibility is unchanged. DSH snapshots and cross-workspace export are not supported.
+- **Coordinator mode:** opt-in native lead restrictions cover normal tools, dynamic bridges, direct delegation from persisted plans, and primary/fallback/summary hosted search. Team-board orchestration and saved bindings are retained; mode changes wait for active lead turns to finish.
+- **Team access and roster governance:** direct team chat, single-team membership, unfinished-task deletion protection, lead deletion protection and assignee validation when retrying failed history.
+- **Upgrade:** V205 widens task status for `awaiting_approval`; V206 adds custom employee snapshot storage. H2, MySQL and Kingbase migrations are included. Back up database and configuration first; do not bypass validation by editing migration history manually.
+
+[Employee templates](./agents) · [Teams and coordination](./teams) · [FAQ](./faq)
+
+## 3.1.0: skill lesson governance and execution reliability
 
 Version: **3.1.0**. Release date: **2026-11-19**. These notes cover features and fixes after `v3.0.0`; the [3.0.0 execution architecture upgrade](https://claw.mate.vip/docs/en/releases/3.0.0) remains a historical record. Published packages are listed on [GitHub Releases](https://github.com/mateaix/mateclaw/releases).
 
 3.1.0 makes learned skill lessons easier to inspect and withdraw, presents chat, tool and channel outcomes more accurately, and improves long-context, historical-media and failure recovery.
 
-## Skill lessons and memory
+### Skill lessons and memory
 
 - **Withdraw individual lessons:** durable identities identify the exact lesson being withdrawn instead of relying on its display position. Market listings and lesson panels refresh after changes.
 - **Preview snapshot restoration:** inspect the skill changes and their impact before confirming a restore.
@@ -15,7 +28,7 @@ Version: **3.1.0**. Release date: **2026-11-19**. These notes cover features and
 
 Reflection and routine mining remain disabled by default and require explicit workspace-policy configuration. Lesson governance changes do not automatically expand skill execution permissions.
 
-## Chat status and tool results
+### Chat status and tool results
 
 - Quote selected answer text into follow-up drafts. Browser titles and favicons reflect conversation and run status.
 - Shell tools show short intent titles without changing command arguments. Failed commands use actual execution outcomes, including correct rendering of historical failures.
@@ -23,7 +36,7 @@ Reflection and routine mining remain disabled by default and require explicit wo
 - Output-limited answers retain incomplete status instead of appearing successful. Stopped native streams preserve token usage already reported by the provider.
 - Usage lists show recent dates first, and language guidance stays consistent across user-visible responses (#679).
 
-## Models, context and execution recovery
+### Models, context and execution recovery
 
 - Validate generation parameters before saving model/provider configuration. Support Azure unified OpenAI endpoints while preserving required endpoint query parameters.
 - Bound concurrent requests through shared provider limits and clarify busy/cooldown failures. Failover uses the actual fallback model identity and provider telemetry (#676).
@@ -34,14 +47,14 @@ Reflection and routine mining remain disabled by default and require explicit wo
 - Enforce cumulative team-dispatch budgets across Lead retries rather than granting a fresh full budget on every retry (#688).
 - Harden H2 interrupted-write recovery and authentication-session persistence (#681).
 
-## Wiki, documents and channels
+### Wiki, documents and channels
 
 - **Per-source entity extraction:** extract entities from a selected document in the Wiki raw-material panel (#673).
 - **Consistent answers and citations:** preserve answers and reconcile citations across retrievals. Recover interrupted document analysis and keep empty child sessions out of ordinary history (#683, #686).
 - **Document delivery:** continue reasoning after DOCX generation instead of treating tool completion as task completion (#687). Preserve Markdown table values, handle export edge cases, and retain file newline styles during text edits.
 - **Message delivery:** split long DingTalk Markdown and validate delivery acknowledgements. Preserve readable Feishu attachment names. Prevent proxy buffering on Team and A2A event streams.
 
-## DeepSeek Harness, desktop and deployment
+### DeepSeek Harness, desktop and deployment
 
 DSH adds the optional **`0.2.2-rc.1`** candidate, requiring **Node.js 24.9+ (24.x)**. The managed-install default remains **`0.2.0-rc.1`**. Updating MateClaw does not automatically switch an existing DSH configuration to the candidate.
 
@@ -51,7 +64,7 @@ Desktop fixes harden multi-platform packaging and macOS signing/notarization of 
 
 Existing managed deployments gain offline-upgrade preflight backups, trial migrations and search-health checks, with backup-symlink and documentation-route fixes. These are deployment-specific operational improvements; availability and migration scope follow the deployment plan.
 
-## Dependency versions
+### Dependency versions
 
 | Component | 3.0.0 | 3.1.0 |
 | --- | --- | --- |
@@ -63,7 +76,7 @@ Existing managed deployments gain offline-upgrade preflight backups, trial migra
 
 AgentScope 2.0.5 supplies stable core fixes with regression checks for trailing-JSON rejection and string round trips. The synchronous Anthropic adapter also selects the correct generation so final text and tool calls are retained. Application code still owns model requests, approvals, permissions, memory, compaction and persistence. No beta Harness is introduced, and unused SDK queues/JDBC/Redis stores require no migration.
 
-## Upgrade and validation
+### Upgrade and validation
 
 1. Back up the database, workspace, plugins, `.env` / `.env.local`, and DSH runtime directories. Retain the JWT secret to keep existing login tokens valid.
 2. For source development, install `mateclaw-plugin-api` first, then start the backend from the repository root with explicit root `data/` database/workspace paths as shown in [Contributing](./contributing). Start the frontend in `mateclaw-ui/`.
