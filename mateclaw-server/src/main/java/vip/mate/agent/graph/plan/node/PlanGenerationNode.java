@@ -94,6 +94,12 @@ public class PlanGenerationNode implements NodeAction {
         this.teamPlanBridge = teamPlanBridge;
     }
 
+    private vip.mate.i18n.I18nService i18nService;
+
+    public void setI18nService(vip.mate.i18n.I18nService i18nService) {
+        this.i18nService = i18nService;
+    }
+
     /** Plan steps below this size are trivial tool tasks, not goal-worthy. */
     private static final int MIN_STEPS_FOR_AUTO_GOAL = 2;
     /** Cap the auto-derived goal title; the full request rides in the description. */
@@ -582,7 +588,7 @@ public class PlanGenerationNode implements NodeAction {
             String runtimeProviderId = state.value(MateClawStateKeys.RUNTIME_PROVIDER_ID, "");
             promptMessages.add(new UserMessage(
                     RuntimeContextInjector.buildContextMessage(
-                            workspaceBasePath, null, chatOrigin, runtimeModelName, runtimeProviderId)));
+                            workspaceBasePath, i18nService, chatOrigin, runtimeModelName, runtimeProviderId)));
 
             // Advertise available tools so the LLM can recognize when an action is possible,
             // but do NOT force "any tool usage implies multi-step" — single-hop tool use

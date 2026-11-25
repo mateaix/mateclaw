@@ -92,6 +92,12 @@ public class StepExecutionNode implements NodeAction {
         this.delegateAgentTool = delegateAgentTool;
     }
 
+    private vip.mate.i18n.I18nService i18nService;
+
+    public void setI18nService(vip.mate.i18n.I18nService i18nService) {
+        this.i18nService = i18nService;
+    }
+
     /**
      * Finite model/tool-round ceiling for each plan step. This is independent
      * of the ReAct agent's max_iterations; one round can execute several tools.
@@ -924,7 +930,7 @@ public class StepExecutionNode implements NodeAction {
         // 注入运行时上下文（当前时间 + 工作目录 + 发起者上下文 + 模型身份）
         messages.add(new UserMessage(
                 RuntimeContextInjector.buildContextMessage(
-                        workspaceBasePath, null, accessor.chatOrigin(), runtimeModelName, runtimeProviderId)));
+                        workspaceBasePath, i18nService, accessor.chatOrigin(), runtimeModelName, runtimeProviderId)));
 
         // Layer 2: Working context（对话历史 + 步骤结果的受控长度摘要）
         String workingContext = accessor.workingContext();
