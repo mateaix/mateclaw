@@ -141,17 +141,13 @@ public class AnthropicChatModelBuilder implements ChatModelBuilder {
         if (StringUtils.hasText(modelName)) {
             builder.model(modelName);
         }
-        boolean strictSamplingContract = isClaude47OrLater(modelName);
 
         // Extended thinking — request-level depth from ThinkingLevelHolder
         String thinkingLevel = ThinkingLevelHolder.get();
         boolean thinkingEnabled = thinkingLevel != null && !"off".equalsIgnoreCase(thinkingLevel);
 
         if (thinkingEnabled) {
-            // Anthropic thinking-mode constraints (pre-4.7): temperature MUST be 1,
-            // top_p forbidden, max_tokens must accommodate budget_tokens + buffer.
-            // Claude 4.7+ forbids temperature/top_p/top_k entirely (any non-null value
-            // → HTTP 400) and adds an "xhigh" budget tier between high and max.
+            // The Anthropic 3.x API no longer accepts sampling overrides.
             int budgetTokens = switch (thinkingLevel.toLowerCase()) {
                 case "low" -> 4096;
                 case "medium" -> 8192;
@@ -163,26 +159,8 @@ public class AnthropicChatModelBuilder implements ChatModelBuilder {
             builder.thinkingEnabled(budgetTokens);
             builder.maxTokens(Math.max(budgetTokens + 4096,
                     runtimeModel.getMaxTokens() != null ? runtimeModel.getMaxTokens() : 8192));
-            // Claude 4.7+: omit temperature entirely. Pre-4.7 thinking mode requires
-            // temperature=1 (Anthropic-mandated default for thinking).
-            if (!strictSamplingContract) {
-                builder.temperature(1.0);
-            }
         } else {
-            // Non-thinking path.
-            // - Pre-4.7: Anthropic accepts EITHER temperature OR top_p (not both).
-            // - 4.7+: rejects all of temperature/top_p/top_k unless null/default. We
-            //   omit them entirely so operators with legacy configs don't 400.
-            if (!strictSamplingContract) {
-                if (runtimeModel.getTemperature() != null) {
-                    builder.temperature(runtimeModel.getTemperature());
-                } else if (runtimeModel.getTopP() != null) {
-                    builder.topP(runtimeModel.getTopP());
-                }
-            } else if (runtimeModel.getTemperature() != null || runtimeModel.getTopP() != null) {
-                log.debug("Ignoring temperature/top_p for Claude 4.7+ model {} (API rejects sampling params)",
-                        modelName);
-            }
+            // Sampling is omitted for every model under the Spring AI 2.1 contract.
             // Anthropic rejects non-positive maxTokens — clamp here so a bad config
             // surfaces as a logged warning instead of an opaque API 400 mid-conversation.
             Integer configuredMax = runtimeModel.getMaxTokens();

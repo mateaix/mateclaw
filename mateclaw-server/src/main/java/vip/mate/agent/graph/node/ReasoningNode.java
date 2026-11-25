@@ -2068,7 +2068,6 @@ public class ReasoningNode implements NodeAction {
                 };
                 builder.thinkingEnabled(budgetTokens);
                 builder.maxTokens(budgetTokens + effectiveMaxOutputTokens());
-                builder.temperature(1.0);
                 log.info("[ReasoningNode] Anthropic extended thinking enabled: model={}, budget={}", currentModel, budgetTokens);
             } else {
                 builder.thinkingDisabled().maxTokens(effectiveMaxOutputTokens());
