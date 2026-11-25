@@ -1,0 +1,18 @@
+.employee-template-overlay { position: fixed; inset: 0; z-index: 2100; display: flex; align-items: center; justify-content: center; padding: 24px; background: rgba(0,0,0,.45); }
+.employee-template-dialog { width: min(540px, 100%); max-height: 85vh; overflow: auto; border-radius: 16px; border: 1px solid var(--mc-border); background: var(--mc-bg-elevated); color: var(--mc-text-primary); padding: 24px; box-shadow: 0 20px 60px rgba(0,0,0,.2); }
+.employee-template-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.employee-template-heading h2,.employee-template-heading h3 { margin: 0; font-size: 18px; }
+.employee-template-field { display: flex; flex-direction: column; gap: 6px; margin: 16px 0; font-size: 13px; }
+.employee-template-field input,.employee-template-field textarea { box-sizing: border-box; width: 100%; color: inherit; font: inherit; padding: 10px 12px; background: var(--mc-bg-elevated); border: 1px solid var(--mc-border); border-radius: 8px; }
+.employee-template-files { border: 1px solid var(--mc-border); border-radius: 8px; padding: 12px; }
+.employee-template-file { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 13px; }
+.employee-template-hint { font-size: 13px; line-height: 1.6; color: var(--mc-text-secondary); }
+.employee-template-error { color: var(--mc-danger); font-size: 13px; overflow-wrap: anywhere; }
+.employee-template-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.employee-template-dialog button,.employee-template-panel button { cursor: pointer; border: 1px solid var(--mc-border); border-radius: 8px; background: var(--mc-bg-elevated); color: var(--mc-text-primary); font: inherit; padding: 7px 12px; }
+.employee-template-dialog button:disabled,.employee-template-panel button:disabled { cursor: not-allowed; opacity: .5; }
+.employee-template-dialog button:focus-visible,.employee-template-panel button:focus-visible { outline: 2px solid var(--mc-accent); outline-offset: 2px; }
+.employee-template-panel { margin-bottom: 24px; padding-bottom: 20px; border-bottom: 1px solid var(--mc-border); }
+.employee-template-card { margin-top: 12px; padding: 16px; border-radius: 12px; border: 1px solid var(--mc-border); }
+.employee-template-card h4 { margin: 0; }
+.employee-template-card p { font-size: 13px; color: var(--mc-text-secondary); }

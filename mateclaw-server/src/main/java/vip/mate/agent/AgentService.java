@@ -46,6 +46,8 @@ import java.util.function.Supplier;
 @Service
 @RequiredArgsConstructor
 public class AgentService {
+    @Autowired
+    private vip.mate.team.service.TeamCoordinatorPolicy coordinatorPolicy;
 
     private final AgentMapper agentMapper;
     private final AgentGraphBuilder agentGraphBuilder;
@@ -174,6 +176,7 @@ public class AgentService {
     }
 
     public AgentEntity updateAgent(AgentEntity agent) {
+        if (coordinatorPolicy != null) coordinatorPolicy.requireSupportedRuntime(agent);
         // Detect enabled-flag flip so the lifecycle event reflects the
         // intent rather than every metadata edit. Reading the prior row
         // is cheap and gives us a clean diff source.
@@ -783,6 +786,7 @@ public class AgentService {
     private boolean isDshAgent(Long agentId) {
         if (runtimeCoordinator == null || agentId == null) return false;
         AgentEntity entity = getAgent(agentId);
+        if (coordinatorPolicy != null) coordinatorPolicy.requireSupportedRuntime(entity);
         return "dsh".equalsIgnoreCase(entity.getRuntimeType());
     }
 

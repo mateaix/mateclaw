@@ -137,6 +137,15 @@
             </div>
           </div>
 
+          <TeamCoordinatorSettings
+            v-if="activeTab === 'members' && workspaceStore.isAtLeast('admin')"
+            :key="store.currentTeam.team.id"
+            :team-id="store.currentTeam.team.id"
+            :settings="store.currentTeam.team.settings"
+            :lead-runtime-type="teamLeadRuntime"
+            @saved="applyUpdatedTeam"
+          />
+
           <!-- Live activity feed -->
           <transition-group
             v-if="activeTab === 'board' && activityFeed.length > 0"
@@ -588,7 +597,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete as DeleteIcon, Refresh as RefreshIcon } from '@element-plus/icons-vue'
 import { teamApi, teamRunApi } from '@/api/index'
-import type { TeamMemberVO, TeamRun, TeamRunTask, TeamTaskComment, TeamTaskDeliverable, TeamTaskEvent, TeamTaskVO } from '@/api/index'
+import type { TeamVO, TeamMemberVO, TeamRun, TeamRunTask, TeamTaskComment, TeamTaskDeliverable, TeamTaskEvent, TeamTaskVO } from '@/api/index'
 import { subscribeTeamEvents } from '@/composables/useTeamEvents'
 import { discoveredTeamTaskKey, shouldShowInGlobalTeamFeed } from '@/composables/chat/teamEventOwnership'
 import {
@@ -605,6 +614,7 @@ import { buildWorkerChatRoute } from '@/components/team-run/teamRunPresentation'
 import TeamRunDrawer from '@/components/team-run/TeamRunDrawer.vue'
 import TeamRunsPanel from '@/components/team-run/TeamRunsPanel.vue'
 import TeamChatButton from '@/components/team-run/TeamChatButton.vue'
+import TeamCoordinatorSettings from '@/components/team-run/TeamCoordinatorSettings.vue'
 import {
   canManageTeamRunAttention,
   captureTeamAttentionContext,
@@ -935,6 +945,15 @@ onBeforeUnmount(() => {
 })
 
 // ==================== team actions ====================
+
+const teamLeadRuntime = computed(() => {
+  const leadId = store.currentTeam?.team.leadAgentId
+  const lead = agentStore.agents.find(agent => String(agent.id) === String(leadId))
+  return lead ? (lead.runtimeType || 'native') : 'unavailable'
+})
+function applyUpdatedTeam(updated: TeamVO) {
+  if (updated?.team?.id === store.currentTeam?.team.id) store.currentTeam = updated
+}
 
 function isTeamLeadAvailable(leadAgentId: string): boolean {
   return agentStore.agents.some(agent => String(agent.id) === String(leadAgentId) && agent.enabled)

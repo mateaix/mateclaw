@@ -151,6 +151,9 @@
                     <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
                   </svg>
                 </button>
+                <button v-if="workspaceStore.isAtLeast('member')" class="action-btn" :disabled="agent.runtimeType === 'dsh'" :title="t(agent.runtimeType === 'dsh' ? 'employeeTemplates.nativeOnly' : 'employeeTemplates.action')" @click="templateSource = agent">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 14h8M8 18h5"/></svg>
+                </button>
                 <button class="action-btn danger" :title="t('agents.actions.delete')" @click="deleteAgent(agent)">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <polyline points="3 6 5 6 21 6"/>
@@ -180,6 +183,8 @@
     </div>
     
 
+    <EmployeeTemplateSaveDialog v-if="templateSource" :key="String(templateSource.id)" :source="templateSource" @close="templateSource = null" @saved="onTemplateSaved" />
+
     <!-- Template Selector Modal -->
     <div v-if="showTemplateSelector" class="modal-overlay">
       <div class="modal template-modal">
@@ -192,6 +197,8 @@
           </button>
         </div>
         <div class="modal-body">
+          <WorkspaceTemplatePanel v-if="workspaceStore.isAtLeast('member')" @hired="onCustomTemplateHired" />
+          <h3>{{ t('employeeTemplates.builtinTitle') }}</h3>
           <p class="template-desc">{{ t('agents.templates.desc') }}</p>
           <div class="template-grid">
             <div
@@ -747,6 +754,9 @@ import { useI18n } from 'vue-i18n'
 import { mcToast } from '@/composables/useMcToast'
 import { mcConfirm } from '@/components/common/useConfirm'
 import { agentApi, agentBindingApi, modelApi, skillApi, toolApi, templateApi, liveApi, wikiApi } from '@/api/index'
+import { useWorkspaceStore } from '@/stores/useWorkspaceStore'
+import EmployeeTemplateSaveDialog from '@/components/agent/EmployeeTemplateSaveDialog.vue'
+import WorkspaceTemplatePanel from '@/components/agent/WorkspaceTemplatePanel.vue'
 import type { Agent } from '@/types/index'
 import { parseAgentsLiveRoute, type AgentsView } from '@/composables/agentsLiveRouteState'
 import {
@@ -988,6 +998,17 @@ const dshDiagnostics = ref<Record<string, any> | null>(null)
 
 // Template selector state
 const showTemplateSelector = ref(false)
+const workspaceStore = useWorkspaceStore()
+const templateSource = ref<Agent | null>(null)
+function onTemplateSaved() {
+  templateSource.value = null
+  mcToast.success(t('employeeTemplates.saved'))
+}
+async function onCustomTemplateHired() {
+  showTemplateSelector.value = false
+  mcToast.success(t('agents.templates.applied'))
+  await loadAgents()
+}
 const templates = ref<any[]>([])
 const applyingTemplate = ref(false)
 

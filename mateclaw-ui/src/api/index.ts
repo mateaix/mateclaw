@@ -154,6 +154,32 @@ export const templateApi = {
   apply: (id: string) => http.post(`/templates/${id}/apply`),
 }
 
+export interface WorkspaceEmployeeTemplate {
+  id: string
+  name: string
+  description: string | null
+  icon: string | null
+  agentType: string
+  creatorUserId: string
+  createTime: string | null
+  schemaVersion: number
+  canDelete: boolean
+}
+
+export interface SaveEmployeeTemplateRequest {
+  sourceAgentId: string
+  name: string
+  description?: string
+  workspaceFileNames: string[]
+}
+
+export const customTemplateApi = {
+  list: () => http.get<WorkspaceEmployeeTemplate[]>('/templates/custom'),
+  save: (data: SaveEmployeeTemplateRequest) => http.post<WorkspaceEmployeeTemplate>('/templates/custom', data),
+  apply: (id: string, data: { name: string }) => http.post(`/templates/custom/${encId(id)}/apply`, data),
+  delete: (id: string) => http.delete(`/templates/custom/${encId(id)}`),
+}
+
 // ==================== Chat ====================
 export const chatApi = {
   uploadFile: async (conversationId: string, file: File) => {

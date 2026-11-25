@@ -147,4 +147,43 @@ class TeamServiceTest {
         assertEquals("member agent does not belong to the current workspace: 2", error.getMessage());
         verify(memberMapper, never()).insert(any(AgentTeamMemberEntity.class));
     }
+
+    @Test void coordinatorSettingsMergeValidateRuntimeAndPublishInvalidation() {
+        AgentTeamEntity team = new AgentTeamEntity(); team.setId(10L); team.setWorkspaceId(1L);
+        team.setLeadAgentId(LEAD_ID); team.setSettings("{\"notifications\":true}");
+        when(teamMapper.selectOne(any())).thenReturn(team);
+        when(agentMapper.selectById(LEAD_ID)).thenReturn(agent(LEAD_ID, "react"));
+        var member = new AgentTeamMemberEntity(); member.setAgentId(LEAD_ID);
+        when(memberMapper.selectList(any())).thenReturn(List.of(member));
+        service.updateTeam(10L, 1L, null, null, "{\"coordinatorMode\":true}");
+        assertEquals("{\"notifications\":true,\"coordinatorMode\":true}", team.getSettings());
+        verify(teamMapper).updateById(team);
+        var publisher = (ApplicationEventPublisher) org.springframework.test.util.ReflectionTestUtils.getField(service,"eventPublisher");
+        verify(publisher).publishEvent(new vip.mate.team.event.TeamChangedEvent(List.of(LEAD_ID)));
+        assertThrows(vip.mate.exception.MateClawException.class, () -> service.updateTeam(10L,1L,null,null,"{\"coordinatorMode\":null}"));
+        assertThrows(vip.mate.exception.MateClawException.class, () -> service.updateTeam(10L,1L,null,null,"{} {}"));
+        team.setSettings("legacy malformed");
+        assertThrows(vip.mate.exception.MateClawException.class, () -> service.updateTeam(10L,1L,null,null,"{}"));
+    }
+
+    @Test void activeLeadCannotToggleButMembersDoNotBlockAndDshLeadCannotEnable() {
+        AgentTeamEntity team = new AgentTeamEntity(); team.setId(10L); team.setWorkspaceId(1L); team.setLeadAgentId(LEAD_ID);
+        when(teamMapper.selectOne(any())).thenReturn(team);
+        var running = new vip.mate.agent.runtime.RunningConversationRegistry();
+        org.springframework.test.util.ReflectionTestUtils.setField(service,"runningConversationRegistry",running);
+        running.register("lead-turn",LEAD_ID);
+        assertThrows(vip.mate.exception.MateClawException.class, () -> service.updateTeam(10L,1L,null,null,"{\"coordinatorMode\":true}"));
+        running.unregister("lead-turn"); running.register("member-turn",MEMBER_ID);
+        AgentEntity lead = agent(LEAD_ID,"plan_execute"); lead.setRuntimeType("dsh");
+        when(agentMapper.selectById(LEAD_ID)).thenReturn(lead);
+        assertThrows(vip.mate.exception.MateClawException.class, () -> service.updateTeam(10L,1L,null,null,"{\"coordinatorMode\":true}"));
+        lead.setRuntimeType("native");
+        service.updateTeam(10L,1L,null,null,"{\"coordinatorMode\":true}");
+        running.register("lead-turn",LEAD_ID);
+        service.updateTeam(10L,1L,null,null,"{\"coordinatorMode\":true}"); // no effective toggle
+        assertThrows(vip.mate.exception.MateClawException.class, () -> service.updateTeam(10L,1L,null,null,"{\"coordinatorMode\":false}"));
+        running.unregister("lead-turn");
+        service.updateTeam(10L,1L,null,null,"{\"coordinatorMode\":false}");
+        assertFalse(TeamCoordinatorPolicy.enabled(team.getSettings()));
+    }
 }

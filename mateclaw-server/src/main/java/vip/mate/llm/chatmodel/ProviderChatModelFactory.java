@@ -62,7 +62,32 @@ public class ProviderChatModelFactory {
      * a configuration error, not a transient failure.
      */
     public ChatModel buildFor(ModelConfigEntity model, RetryTemplate retry) {
+        return buildFor(model, retry, false);
+    }
+
+    /** Coordinator clients cannot acquire capabilities through provider request options. */
+    public ChatModel buildFor(ModelConfigEntity model, RetryTemplate retry, boolean coordinator) {
         ModelProviderEntity provider = modelProviderService.getProviderConfig(model.getProvider());
+        if (coordinator) {
+            String name = model.getModelName() == null ? "" : model.getModelName().toLowerCase(java.util.Locale.ROOT);
+            if (name.contains("search") || name.startsWith("sonar") || name.contains("deep-research")) {
+                throw unsupportedOptions("search-only model: " + model.getModelName());
+            }
+            ModelConfigEntity scopedModel = new ModelConfigEntity();
+            org.springframework.beans.BeanUtils.copyProperties(model, scopedModel);
+            scopedModel.setEnableSearch(false);
+            ModelProviderEntity scopedProvider = new ModelProviderEntity();
+            org.springframework.beans.BeanUtils.copyProperties(provider, scopedProvider);
+            Map<String, Object> scopedKwargs = coordinatorKwargs(modelProviderService.readProviderGenerateKwargs(provider));
+            scopedKwargs.put("enableSearch", false);
+            try {
+                scopedProvider.setGenerateKwargs(new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(scopedKwargs));
+            } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+                throw unsupportedOptions("invalid JSON");
+            }
+            model = scopedModel;
+            provider = scopedProvider;
+        }
         ModelProtocol protocol = ModelProtocol.fromChatModel(provider.getChatModel());
         ChatModelBuilder builder = builders.get(protocol);
         if (builder == null) {
@@ -70,5 +95,38 @@ public class ProviderChatModelFactory {
                     "No ChatModelBuilder registered for protocol: " + protocol.getId());
         }
         return builder.build(model, provider, retry);
+    }
+    private static MateClawException unsupportedOptions(String option) {
+        return new MateClawException("err.team.coordinator_provider_options", 400,
+                "Unsupported coordinator provider setting: " + option + ". Use a standard chat model and generation options without hosted tools.");
+    }
+
+    // Allow only known generation/transport knobs. Unknown passthrough body keys
+    // can introduce hosted tools, so reject them explicitly instead of guessing.
+    private static Map<String, Object> coordinatorKwargs(Map<String, Object> kwargs) {
+        Map<String, Object> scoped = new java.util.LinkedHashMap<>();
+        if (kwargs == null) return scoped;
+        kwargs.forEach((key, value) -> {
+            if ("enableSearch".equals(key) || "enable_search".equals(key)
+                    || "searchStrategy".equals(key) || "search_strategy".equals(key)) return;
+            if ("chatOptions".equals(key) || "chat_options".equals(key)) {
+                if (!(value instanceof Map<?, ?> nested)) throw unsupportedOptions(key);
+                Map<String, Object> typed = new java.util.LinkedHashMap<>();
+                nested.forEach((k,v) -> typed.put(String.valueOf(k),v));
+                Map<String, Object> safeNested = coordinatorKwargs(typed);
+                if (!safeNested.isEmpty()) scoped.put(key, safeNested);
+                return;
+            }
+            if (!java.util.Set.of("temperature", "maxTokens", "max_tokens", "maxCompletionTokens", "max_completion_tokens",
+                    "topP", "top_p", "topK", "top_k", "reasoningEffort", "reasoning_effort",
+                    "enableThinking", "enable_thinking", "thinkingBudget", "thinking_budget", "seed", "stop",
+                    "repetitionPenalty", "repetition_penalty", "responseFormat", "response_format",
+                    "headers", "customHeaders", "custom_headers", "completionsPath", "completions_path",
+                    "requestTimeoutSeconds", "request_timeout_seconds").contains(key)) {
+                throw unsupportedOptions(key);
+            }
+            scoped.put(key, value);
+        });
+        return scoped;
     }
 }

@@ -11,6 +11,7 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.retry.support.RetryTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -36,6 +37,8 @@ import java.util.concurrent.*;
 @RequiredArgsConstructor
 public class TeamRunSummaryService {
     static final int EVIDENCE_CHARS = 16000;
+    @Autowired
+    private TeamCoordinatorPolicy coordinatorPolicy;
     private final TeamRunMapper runMapper;
     private final TeamTaskMapper taskMapper;
     private final TeamRunService runService;
@@ -108,7 +111,12 @@ public class TeamRunSummaryService {
             runtime.setMaxTokens(Math.min(configured.getMaxTokens() == null || configured.getMaxTokens() <= 0
                     ? 4096 : configured.getMaxTokens(), 4096));
             runtime.setRequestTimeoutSeconds((int) Math.max(1, Math.min(90, timeoutMillis / 1000)));
-            ChatModel model = modelFactory.buildFor(runtime, RetryTemplate.builder().maxAttempts(1).build());
+            RetryTemplate retry = RetryTemplate.builder().maxAttempts(1).build();
+            // Auxiliary synthesis is still a lead model call: hosted tools must
+            // obey the same coordinator scope as primary and failover graphs.
+            ChatModel model = coordinatorPolicy != null && coordinatorPolicy.isCoordinator(run.getLeadAgentId())
+                    ? modelFactory.buildFor(runtime, retry, true)
+                    : modelFactory.buildFor(runtime, retry);
             List<org.springframework.ai.chat.messages.Message> messages = List.of(
                     new SystemMessage("根据团队任务的实际状态与结果，直接回答原始目标，给出简洁完整的最终汇总。"
                             + "只总结提供的证据，不调用工具、不执行任务、不编造成功、验收或数字。"

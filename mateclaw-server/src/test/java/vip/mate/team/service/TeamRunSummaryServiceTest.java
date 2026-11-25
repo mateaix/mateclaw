@@ -59,6 +59,25 @@ class TeamRunSummaryServiceTest {
         verify(runService).markFinalized(20L, 30L, "All 130 checks passed and tail was verified.", "synthesized", null, null);
         verify(events).publishRunEvent(any(), eq("team_run_completed"), anyMap());
     }
+    @Test void coordinatorLeadSynthesisUsesScopedProviderFactory() {
+        var policy = mock(TeamCoordinatorPolicy.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "coordinatorPolicy", policy);
+        when(policy.isCoordinator(40L)).thenReturn(true);
+        when(factory.buildFor(any(), any(), eq(true))).thenReturn(model);
+        when(model.call(any(Prompt.class))).thenReturn(response("Scoped summary", "STOP"));
+        service.finalizeRun(20L);
+        verify(factory).buildFor(any(), any(), eq(true));
+        verify(factory, never()).buildFor(any(), any());
+        verify(runService).markFinalized(20L, 30L, "Scoped summary", "synthesized", null, null);
+    }
+    @Test void ordinaryLeadWithPolicyKeepsExistingProviderFactoryPath() {
+        var policy = mock(TeamCoordinatorPolicy.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "coordinatorPolicy", policy);
+        when(model.call(any(Prompt.class))).thenReturn(response("Ordinary summary", "STOP"));
+        service.finalizeRun(20L);
+        verify(factory).buildFor(any(), any());
+        verify(factory, never()).buildFor(any(), any(), anyBoolean());
+    }
     @Test void actualCallFailureRecordsSafeReasonAndBoundedRawEvidence() {
         when(model.call(any(Prompt.class))).thenThrow(new IllegalStateException("secret must not be persisted"));
         service.finalizeRun(20L);

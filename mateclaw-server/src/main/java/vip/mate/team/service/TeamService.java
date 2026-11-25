@@ -35,6 +35,9 @@ import java.util.Optional;
 @RequiredArgsConstructor
 public class TeamService {
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private vip.mate.agent.runtime.RunningConversationRegistry runningConversationRegistry;
+
     public static final String STATUS_ACTIVE = "active";
     public static final String STATUS_PAUSED = "paused";
 
@@ -131,8 +134,9 @@ public class TeamService {
         eventPublisher.publishEvent(new TeamChangedEvent(agentIds));
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public AgentTeamEntity updateTeam(Long teamId, Long workspaceId, String name, String description, String settings) {
+        lockTeam(teamId);
         AgentTeamEntity team = requireTeam(teamId, workspaceId);
         if (name != null) {
             team.setName(name);
@@ -141,7 +145,19 @@ public class TeamService {
             team.setDescription(description);
         }
         if (settings != null) {
-            team.setSettings(settings);
+            String merged = TeamCoordinatorPolicy.mergeSettings(team.getSettings(), settings);
+            boolean before = TeamCoordinatorPolicy.enabled(team.getSettings());
+            boolean after = TeamCoordinatorPolicy.enabled(merged);
+            if (before != after && runningConversationRegistry != null
+                    && runningConversationRegistry.isAgentActive(team.getLeadAgentId())) {
+                throw new vip.mate.exception.MateClawException("err.team.coordinator_lead_active", 409, "Wait for the lead's active turn to finish before changing coordinator mode");
+            }
+            if (after) {
+                AgentEntity lead = agentMapper.selectById(team.getLeadAgentId());
+                if (lead == null) throw new IllegalArgumentException("Team lead does not exist");
+                TeamCoordinatorPolicy.requireNative(lead.getRuntimeType());
+            }
+            team.setSettings(merged);
         }
         teamMapper.updateById(team);
         notifyTeamChanged(teamId);

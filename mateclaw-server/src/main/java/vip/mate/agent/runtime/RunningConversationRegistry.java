@@ -92,6 +92,11 @@ public class RunningConversationRegistry {
         return conversationId != null && active.containsKey(conversationId);
     }
 
+    /** True when any turn for this agent is in flight. */
+    public boolean isAgentActive(Long agentId) {
+        return agentId != null && active.values().stream().anyMatch(handle -> agentId.equals(handle.agentId));
+    }
+
     /** @return a snapshot of all currently-running conversation ids. */
     public Set<String> activeConversations() {
         return Collections.unmodifiableSet(active.keySet());

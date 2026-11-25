@@ -56,6 +56,8 @@ import java.util.stream.Collectors;
 @Slf4j
 @Service
 public class AgentBindingService implements AgentBindingResolver {
+    @Autowired
+    private vip.mate.team.service.TeamCoordinatorPolicy coordinatorPolicy;
 
     private final AgentSkillBindingMapper skillBindingMapper;
     private final AgentToolBindingMapper toolBindingMapper;
@@ -530,6 +532,8 @@ public class AgentBindingService implements AgentBindingResolver {
      * </ul>
      */
     public Set<String> getEffectiveToolNames(Long agentId) {
+        if (coordinatorPolicy != null && coordinatorPolicy.isCoordinator(agentId))
+            return vip.mate.team.service.TeamCoordinatorPolicy.TOOLS;
         AgentEntity agent = agentMapper.selectById(agentId);
         boolean skillsDisabled = agent != null && Boolean.TRUE.equals(agent.getSkillsDisabled());
         boolean toolsDisabled = agent != null && Boolean.TRUE.equals(agent.getToolsDisabled());
