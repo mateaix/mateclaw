@@ -3,6 +3,7 @@ package vip.mate.agent.graph;
 import vip.mate.llm.chatmodel.ChatModelDefaults;
 import vip.mate.llm.chatmodel.AssistantMessageParts;
 import org.springframework.ai.chat.messages.part.ReasoningPart;
+import org.springframework.ai.chat.metadata.FinishReasonCategory;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -1244,6 +1245,7 @@ public class NodeStreamingChatHelper {
         AtomicReference<String> previousReasoning = new AtomicReference<>("");
         AtomicReference<Throwable> errorRef = new AtomicReference<>();
         AtomicReference<String> finishReason = new AtomicReference<>();
+        AtomicReference<FinishReasonCategory> finishCategory = new AtomicReference<>(FinishReasonCategory.UNSPECIFIED);
         AtomicInteger promptTokens = new AtomicInteger(0);
         AtomicInteger completionTokens = new AtomicInteger(0);
         // Prompt cache / reasoning counters; providers that don't report them stay 0.
@@ -1391,6 +1393,8 @@ public class NodeStreamingChatHelper {
                         finishReason.set(generation.getMetadata().getFinishReason());
                     }
                     AssistantMessage msg = generation.getOutput();
+                    FinishReasonCategory category = generation.getMetadata().getFinishReasonCategory();
+                    if (category != FinishReasonCategory.UNSPECIFIED) finishCategory.set(category);
                     providerMetadata.updateAndGet(previous -> mergeProviderMetadata(previous, msg.getMetadata()));
 
                     // thinking-only soft cap 已触发 → 跳过一切处理（等外层 dispose）
@@ -1421,6 +1425,8 @@ public class NodeStreamingChatHelper {
                         contentDelta = split.content();
                         tagThinking = split.thinking();
                     }
+
+                    if (!java.util.Objects.equals(rawContent, contentDelta)) messageParts.markTextTransformed();
 
                     // 2. 标签提取的 thinking 先处理：形如 "…</think>answer" 的
                     //    chunk 里思考先于正文出现。
@@ -1679,7 +1685,8 @@ public class NodeStreamingChatHelper {
         // ===== 成功（检查是否因 thinking-only 软上限或内容重复被截断） =====
         boolean truncatedByThinkingCap = thinkingOnlyCapTriggered.get();
         boolean truncatedByContentRepeat = contentRepeatCapTriggered.get();
-        boolean thinkingTokenLimit = isOutputLimitFinishReason(finishReason.get())
+        boolean thinkingTokenLimit = (finishCategory.get() == FinishReasonCategory.TRUNCATED
+                || isOutputLimitFinishReason(finishReason.get()))
                 && thinkingAccum.length() > 0 && contentAccum.toString().isBlank()
                 && toolCallAccumulators.isEmpty();
         boolean truncated = truncatedByThinkingCap || truncatedByContentRepeat || thinkingTokenLimit;
@@ -1717,12 +1724,13 @@ public class NodeStreamingChatHelper {
         // A verifier JSON cut off by length is not a malformed completed verdict.
         Map<String, Object> resultMetadata = new LinkedHashMap<>(providerMetadata.get());
         if (finishReason.get() != null) resultMetadata.put("generationFinishReason", finishReason.get());
+        resultMetadata.put("generationFinishReasonCategory", finishCategory.get().name());
         return assembleResult(contentAccum, thinkingAccum, toolCallAccumulators,
                 promptTokens.get(), completionTokens.get(),
                 cacheReadTokens.get(), cacheWriteTokens.get(),
                 reasoningTokens.get(), phase,
                 truncated,
-                truncationReason, resultMetadata, messageParts.finish());
+                truncationReason, resultMetadata, messageParts.finish(contentAccum, thinkingAccum));
     }
 
     /** 组装 stopped partial 结果（用户主动停止，有已累积内容） */
@@ -2303,7 +2311,7 @@ public class NodeStreamingChatHelper {
     }
 
     private static boolean isOutputLimitFinishReason(String reason) {
-        return "length".equalsIgnoreCase(reason) || "max_tokens".equalsIgnoreCase(reason);
+        return FinishReasonCategory.categorize(reason) == FinishReasonCategory.TRUNCATED;
     }
 
     /**
@@ -2385,7 +2393,9 @@ public class NodeStreamingChatHelper {
             if (stopped || hasToolCalls || errorType != ErrorType.NONE) return false;
             if ("thinking_token_limit".equals(errorMessage)) return true;
             return errorMessage == null && assistantMessage != null
-                    && isOutputLimitFinishReason(String.valueOf(assistantMessage.getMetadata().get("generationFinishReason")));
+                    && (FinishReasonCategory.TRUNCATED.name().equals(
+                            assistantMessage.getMetadata().get("generationFinishReasonCategory"))
+                        || isOutputLimitFinishReason(String.valueOf(assistantMessage.getMetadata().get("generationFinishReason"))));
         }
 
         /** 是否有任何可保存的内容（text/thinking/toolCalls） */

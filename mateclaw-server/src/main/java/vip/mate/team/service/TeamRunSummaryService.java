@@ -7,6 +7,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.metadata.FinishReasonCategory;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.beans.BeanUtils;
@@ -148,9 +149,9 @@ public class TeamRunSummaryService {
             if (response == null || response.getResult() == null || response.getResult().getOutput() == null)
                 return fallback(evidence, "empty_response");
             var result = response.getResult();
-            String finish = result.getMetadata().getFinishReason();
-            if (finish != null && !finish.isBlank() && !"stop".equalsIgnoreCase(finish)
-                    && !"end_turn".equalsIgnoreCase(finish)) return fallback(evidence, "incomplete_response");
+            FinishReasonCategory category = result.getMetadata().getFinishReasonCategory();
+            if (category != FinishReasonCategory.COMPLETED && category != FinishReasonCategory.UNSPECIFIED)
+                return fallback(evidence, "incomplete_response");
             if (result.getOutput().hasToolCalls()) return fallback(evidence, "unexpected_tool_call");
             String text = result.getOutput().getText();
             if (text == null || text.isBlank()) return fallback(evidence, "empty_response");

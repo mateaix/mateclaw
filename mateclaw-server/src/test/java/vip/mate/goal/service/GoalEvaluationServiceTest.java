@@ -96,6 +96,25 @@ class GoalEvaluationServiceTest {
     }
 
     @Test
+    void filteredOrTruncatedVerdictIsNotAcceptedButStillCharged() {
+        when(modelConfigService.getDefaultModel()).thenReturn(model("qwen-turbo"));
+        when(chatModelFactory.buildFor(any(ModelConfigEntity.class), any(RetryTemplate.class)))
+                .thenReturn(chatModel);
+        for (var category : List.of(org.springframework.ai.chat.metadata.FinishReasonCategory.FILTERED,
+                org.springframework.ai.chat.metadata.FinishReasonCategory.TRUNCATED)) {
+            var metadata = org.springframework.ai.chat.metadata.ChatGenerationMetadata.builder()
+                    .finishReason("stop").finishReasonCategory(category).build();
+            var response = new ChatResponse(List.of(new Generation(new AssistantMessage(
+                    "{\"criterionVerdicts\":[{\"id\":\"C1\",\"passed\":true,\"evidence\":\"done\"}],\"summary\":\"done\"}"), metadata)));
+            when(chatModel.call(any(Prompt.class))).thenReturn(response);
+            var result = svc.evaluate(goalWithCriteria(), List.of(), "answer");
+            assertEquals("fallback", result.decision());
+            assertTrue(result.gap().contains("incomplete_response"));
+            assertEquals(1, result.llmCallsConsumed());
+        }
+    }
+
+    @Test
     void enabledOrdinaryGoalHasBoundedReasoningHeadroomWhileOffAndManagedKeepLegacyLimit() {
         stubChatResponse("{\"criterionVerdicts\":[],\"summary\":\"pending\"}");
         var decisions = new vip.mate.decision.config.DecisionProperties(); svc.setDecisionProperties(decisions);

@@ -2,6 +2,8 @@
 
 > **3.1.0 stable release · 2026-11-19**. Java 21 / Spring Boot 4.1.2 / Spring AI 2.0.2 / AgentScope Java 2.0.5.
 > Reviewable skill lessons, snapshot restore previews, precise memory edits, clearer chat status and more reliable model/tool execution.
+> **dev (3.2.0-SNAPSHOT)**: Java 21 / Spring Boot 4.2.0 / Spring AI 2.1.0 / AgentScope Java 2.0.5.
+
 > [3.1.0 release notes](mateclaw-server/src/main/resources/docs/en/changelog.md) · [Version history](CHANGELOG.md) · [Downloads](https://github.com/mateaix/mateclaw/releases)
 
 
@@ -20,7 +22,7 @@
 [![Live Demo](https://img.shields.io/badge/Demo-Online-orange.svg?logo=vercel&label=Demo)](https://claw-demo.mate.vip)
 [![Website](https://img.shields.io/badge/Website-claw.mate.vip-blue.svg?logo=googlechrome&label=Site)](https://claw.mate.vip)
 [![Java Version](https://img.shields.io/badge/Java-21+-blue.svg?logo=openjdk&label=Java)](https://adoptium.net/)
-[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.1.2-brightgreen.svg?logo=springboot)](https://spring.io/projects/spring-boot)
+[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.2.0-brightgreen.svg?logo=springboot)](https://spring.io/projects/spring-boot)
 [![Vue](https://img.shields.io/badge/Vue-3-4FC08D.svg?logo=vuedotjs)](https://vuejs.org/)
 [![Last Commit](https://img.shields.io/github/last-commit/mateaix/mateclaw)](https://github.com/mateaix/mateclaw)
 [![License](https://img.shields.io/badge/license-Apache--2.0-red.svg?logo=opensourceinitiative&label=License)](LICENSE)
@@ -71,7 +73,7 @@ Changes since [3.0.0](https://claw.mate.vip/docs/en/releases/3.0.0), grouped by 
 - **More reliable execution:** recover context overflow and oversized historical media, validate model parameters before saving, bound provider concurrency, preserve timeout overrides, and cap cumulative team-dispatch budgets.
 - **Knowledge and documents:** extract entities from one Wiki source, reconcile citations across retrievals, continue reasoning after document generation, and preserve Markdown table values, file newline styles and binary skill attachments.
 - **Channels and DSH:** split long DingTalk Markdown, validate delivery acknowledgements and preserve Feishu attachment names. DSH `0.2.2-rc.1` is an optional Node.js 24.9+ (24.x) candidate; the default remains `0.2.0-rc.1`.
-- **Current stack:** Spring Boot **4.1.2**, Spring AI **2.0.2**, AgentScope Java **2.0.5** and MyBatis Plus **3.5.18.1**. Native ReAct and plan-step loops retain MateClaw's approvals, permissions, Goal acceptance and persistence.
+- **Current stack:** Spring Boot **4.2.0**, Spring AI **2.1.0**, AgentScope Java **2.0.5** and MyBatis Plus **3.5.18.1**. Native ReAct and plan-step loops retain MateClaw's approvals, permissions, Goal acceptance and persistence.
 
 Use Java 21 for source builds. Back up the database, workspace, plugins and configuration before migration; use that backup for rollback. [Architecture and upgrade notes](mateclaw-server/src/main/resources/docs/en/changelog.md) · [Model budget rules](mateclaw-server/src/main/resources/docs/en/models.md)
 
@@ -244,7 +246,7 @@ Download from [GitHub Releases](https://github.com/mateaix/mateclaw/releases). B
 
 ```
 mateclaw/
-├── mateclaw-server/        Spring Boot 4.1.2 backend (Agent Runtime contract, native AgentScope + DSH)
+├── mateclaw-server/        Spring Boot 4.2.0 backend (Agent Runtime contract, native AgentScope + DSH)
 ├── mateclaw-ui/            Vue 3 + TypeScript admin SPA (built into the server JAR)
 ├── mateclaw-desktop/       Electron desktop app (local-embedded / remote-centralized)
 ├── mateclaw-webchat/       Embeddable chat widget (UMD / ES bundles)
@@ -262,7 +264,7 @@ Desktop binaries ship via [GitHub Releases](https://github.com/mateaix/mateclaw/
 
 | Layer | Technology |
 |---|---|
-| Backend | Spring Boot 4.1.2 · Spring AI 2.0.2 · AgentScope Java 2.0.5 · MyBatis Plus · Flyway |
+| Backend | Spring Boot 4.2.0 · Spring AI 2.1.0 · AgentScope Java 2.0.5 · MyBatis Plus · Flyway |
 | Agent Runtime | `AgentRuntimeProvider` contract · Native AgentScope (ReAct + Plan-Execute) · managed DSH JSON-RPC runtime · normalized events / lifecycle / usage · Tool Guard |
 | Orchestration | Workflow (7 step modes · Pebble DSL) · Triggers (6 pattern types · event governance) · Wiki Transformations (1.3.0+) |
 | Capability Extension | SKILL.md packages · MCP (stdio / SSE / HTTP · per-agent binding) · ACP bridge (Claude Code / Codex) |

@@ -2,6 +2,8 @@
 
 > **3.1.0 正式版 · 2026-11-19**。Java 21 / Spring Boot 4.1.2 / Spring AI 2.0.2 / AgentScope Java 2.0.5。
 > 技能经验审阅与撤回、快照恢复预览、精确记忆编辑、清晰的聊天状态，以及更可靠的模型与工具执行。
+> **dev (3.2.0-SNAPSHOT)**: Java 21 / Spring Boot 4.2.0 / Spring AI 2.1.0 / AgentScope Java 2.0.5.
+
 > [3.1.0 更新说明](mateclaw-server/src/main/resources/docs/zh/changelog.md) · [版本历史](CHANGELOG.md) · [下载发行包](https://github.com/mateaix/mateclaw/releases)
 
 
@@ -20,7 +22,7 @@
 [![在线演示](https://img.shields.io/badge/演示-在线-orange.svg?logo=vercel&label=Demo)](https://claw-demo.mate.vip)
 [![官网](https://img.shields.io/badge/官网-claw.mate.vip-blue.svg?logo=googlechrome&label=Site)](https://claw.mate.vip)
 [![Java 版本](https://img.shields.io/badge/Java-21+-blue.svg?logo=openjdk&label=Java)](https://adoptium.net/)
-[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.1.2-brightgreen.svg?logo=springboot)](https://spring.io/projects/spring-boot)
+[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.2.0-brightgreen.svg?logo=springboot)](https://spring.io/projects/spring-boot)
 [![Vue](https://img.shields.io/badge/Vue-3-4FC08D.svg?logo=vuedotjs)](https://vuejs.org/)
 [![最后提交](https://img.shields.io/github/last-commit/mateaix/mateclaw)](https://github.com/mateaix/mateclaw)
 [![许可证](https://img.shields.io/badge/license-Apache--2.0-red.svg?logo=opensourceinitiative&label=License)](LICENSE)
@@ -71,7 +73,7 @@
 - **执行可靠性**：恢复上下文溢出和过大的历史媒体，保存前校验模型参数，限制供应商并发，保留工具超时覆盖，并约束团队累计派发预算。
 - **知识与文档**：对单个 Wiki 来源提取实体，多轮检索后对齐引用；生成文档后继续推理，保留 Markdown 表格值、文件换行风格与技能二进制附件。
 - **渠道与 DSH**：拆分钉钉长 Markdown、校验投递回执并保留飞书附件文件名。DSH `0.2.2-rc.1` 是要求 Node.js 24.9+（24.x）的可选候选，默认仍为 `0.2.0-rc.1`。
-- **当前技术栈**：Spring Boot **4.1.2**、Spring AI **2.0.2**、AgentScope Java **2.0.5**、MyBatis Plus **3.5.18.1**。原生 ReAct 和计划单步循环继续遵守 MateClaw 的审批、权限、Goal 验收与持久化边界。
+- **当前技术栈**：Spring Boot **4.2.0**、Spring AI **2.1.0**、AgentScope Java **2.0.5**、MyBatis Plus **3.5.18.1**。原生 ReAct 和计划单步循环继续遵守 MateClaw 的审批、权限、Goal 验收与持久化边界。
 
 源码构建使用 Java 21。升级前备份数据库、workspace、插件与配置，回滚使用升级前备份。[架构与升级说明](mateclaw-server/src/main/resources/docs/zh/changelog.md) · [模型预算规则](mateclaw-server/src/main/resources/docs/zh/models.md)
 
@@ -244,7 +246,7 @@ docker compose up -d          # http://localhost:18080
 
 ```
 mateclaw/
-├── mateclaw-server/        Spring Boot 4.1.2 后端（Agent Runtime contract · Native AgentScope + DSH）
+├── mateclaw-server/        Spring Boot 4.2.0 后端（Agent Runtime contract · Native AgentScope + DSH）
 ├── mateclaw-ui/            Vue 3 + TypeScript 管理 SPA（构建产物打进后端 JAR）
 ├── mateclaw-desktop/       Electron 桌面端（本地内嵌 / 远程集中双模式）
 ├── mateclaw-webchat/       网页嵌入式聊天组件（UMD / ES bundle）
@@ -262,7 +264,7 @@ mateclaw/
 
 | 层次 | 技术 |
 |---|---|
-| 后端 | Spring Boot 4.1.2 · Spring AI 2.0.2 · AgentScope Java 2.0.5 · MyBatis Plus · Flyway |
+| 后端 | Spring Boot 4.2.0 · Spring AI 2.1.0 · AgentScope Java 2.0.5 · MyBatis Plus · Flyway |
 | Agent Runtime | `AgentRuntimeProvider` contract · Native AgentScope（ReAct + Plan-Execute）· 受管理的 DSH JSON-RPC runtime · 统一事件 / 生命周期 / 用量 · Tool Guard |
 | 业务编排 | 工作流（7 step mode · Pebble DSL）· 触发器（6 pattern type · 事件治理）· Wiki 加工器（1.3.0+）|
 | 能力扩展 | SKILL.md 包 · MCP（stdio / SSE / HTTP · per-agent 绑定）· ACP 桥接（Claude Code / Codex） |

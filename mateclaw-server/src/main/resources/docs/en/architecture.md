@@ -126,7 +126,7 @@ The backend is a **single modular monolith**. Other projects are independent pac
 
 ## Native ReAct and explicit plan phases
 
-The backend uses Java 21, Spring Boot 4.1.2, Spring AI 2.0.2 and AgentScope Java 2.0.5. `NativePolicyDriver` creates a fresh native `ReActAgent` for each invocation; the SDK owns reasoning/acting iteration. Application policies retain prompt preparation, approvals, observations, summaries and goal budgets.
+The backend uses Java 21, Spring Boot 4.2.0, Spring AI 2.1.0 and AgentScope Java 2.0.5. `NativePolicyDriver` creates a fresh native `ReActAgent` for each invocation; the SDK owns reasoning/acting iteration. Application policies retain prompt preparation, approvals, observations, summaries and goal budgets.
 
 ### Request and budget ownership
 

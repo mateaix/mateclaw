@@ -75,7 +75,7 @@ MateClaw 换了一个打法：**所有东西放在一个屋檐下，跑在你自
 
 ## 底下是什么
 
-- **后端**——Java 21、Spring Boot 4.1.2、Spring AI 2.0.2 与 AgentScope Java 2.0.5。原生 ReAct 管理推理/行动循环，显式应用阶段管理 Plan-and-Execute。MyBatis Plus 持久化产品数据，流式输出使用 servlet MVC SSE。
+- **后端**——Java 21、Spring Boot 4.2.0、Spring AI 2.1.0 与 AgentScope Java 2.0.5。原生 ReAct 管理推理/行动循环，显式应用阶段管理 Plan-and-Execute。MyBatis Plus 持久化产品数据，流式输出使用 servlet MVC SSE。
 - **前端**——Vue 3 + TypeScript。Pinia 管状态，Element Plus + Tailwind 做 UI，支持深色模式。前端 build 的产物直接进后端 JAR 的 `static/`，一个进程服务两端。
 - **桌面端**——Electron 包 JRE 21 + 后端 JAR。双击启动，用户完全不需要知道底下跑的是 Java。
 - **渠道**——每个渠道是一个 `ChannelAdapter` SPI 实现。Web 走 SSE，IM 各自走平台的长连接或 webhook。

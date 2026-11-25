@@ -41,6 +41,7 @@ class SdkCacheUsageExtractorTest {
                         .outputTokensDetails(Optional.empty())
                         .serverToolUse(Optional.empty())
                         .serviceTier(Optional.empty())
+                        .speed(Optional.empty())
                         .inputTokens(10)
                         .outputTokens(20)
                         .cacheReadInputTokens(80)

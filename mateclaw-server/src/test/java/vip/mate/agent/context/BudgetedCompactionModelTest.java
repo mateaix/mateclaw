@@ -12,6 +12,13 @@ import static org.mockito.Mockito.*;
 import static org.mockito.ArgumentMatchers.*;
 import static vip.mate.agent.graph.state.MateClawStateKeys.*;
 class BudgetedCompactionModelTest {
+ @Test void currentOptionsAccessorRetainsProviderDefaults() {
+  var delegate=mock(ChatModel.class);
+  var options=org.springframework.ai.openai.OpenAiChatOptions.builder().model("summary-model").maxTokens(1024).build();
+  when(delegate.getOptions()).thenReturn(options);
+  var model=new BudgetedCompactionModel(delegate,2,24000,1024);
+  assertSame(options,model.getOptions());
+ }
  @Test void veryLargeOutputReserveCannotOverflowTotalAndBypassGuard() {
   var delegate=mock(ChatModel.class);
   var prompt=new Prompt("summary",ChatOptions.builder().maxTokens(Integer.MAX_VALUE).build());

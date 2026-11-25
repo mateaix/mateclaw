@@ -59,6 +59,27 @@ class TeamRunSummaryServiceTest {
         verify(runService).markFinalized(20L, 30L, "All 130 checks passed and tail was verified.", "synthesized", null, null);
         verify(events).publishRunEvent(any(), eq("team_run_completed"), anyMap());
     }
+    @Test void acceptsExplicitCompletedCategoryForProviderSpecificFinishReason() {
+        var metadata = org.springframework.ai.chat.metadata.ChatGenerationMetadata.builder()
+                .finishReason("provider_completed").finishReasonCategory(
+                        org.springframework.ai.chat.metadata.FinishReasonCategory.COMPLETED).build();
+        when(model.call(any(Prompt.class))).thenReturn(new ChatResponse(List.of(
+                new Generation(new AssistantMessage("Category summary"), metadata))));
+        service.finalizeRun(20L);
+        verify(runService).markFinalized(20L, 30L, "Category summary", "synthesized", null, null);
+    }
+    @Test void rejectsFilteredOrTruncatedCategoryEvenWithLegacyStopString() {
+        for (var category : List.of(org.springframework.ai.chat.metadata.FinishReasonCategory.TRUNCATED,
+                org.springframework.ai.chat.metadata.FinishReasonCategory.FILTERED)) {
+            reset(runService);
+            var metadata = org.springframework.ai.chat.metadata.ChatGenerationMetadata.builder()
+                    .finishReason("stop").finishReasonCategory(category).build();
+            when(model.call(any(Prompt.class))).thenReturn(new ChatResponse(List.of(
+                    new Generation(new AssistantMessage("Partial summary"), metadata))));
+            service.finalizeRun(20L);
+            verify(runService).markFinalized(eq(20L), eq(30L), anyString(), eq("fallback"), eq("incomplete_response"), isNull());
+        }
+    }
     @Test void coordinatorLeadSynthesisUsesScopedProviderFactory() {
         var policy = mock(TeamCoordinatorPolicy.class);
         org.springframework.test.util.ReflectionTestUtils.setField(service, "coordinatorPolicy", policy);

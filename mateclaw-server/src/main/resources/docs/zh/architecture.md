@@ -126,7 +126,7 @@ mateclaw/
 
 ## 原生 ReAct 与显式计划阶段
 
-后端使用 Java 21、Spring Boot 4.1.2、Spring AI 2.0.2 和 AgentScope Java 2.0.5。`NativePolicyDriver` 为每次调用创建独立的原生 `ReActAgent`，由 SDK 管理推理/行动循环。应用策略继续管理提示词、审批、观察、总结与目标预算。
+后端使用 Java 21、Spring Boot 4.2.0、Spring AI 2.1.0 和 AgentScope Java 2.0.5。`NativePolicyDriver` 为每次调用创建独立的原生 `ReActAgent`，由 SDK 管理推理/行动循环。应用策略继续管理提示词、审批、观察、总结与目标预算。
 
 ### 请求与预算归属
 

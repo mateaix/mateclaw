@@ -75,7 +75,7 @@ Running MateClaw on your own hardware is not a compliance checkbox. It changes w
 
 ## What's under the hood
 
-- **Backend** — Java 21, Spring Boot 4.1.2, Spring AI 2.0.2 and AgentScope Java 2.0.5. Native ReAct owns reasoning/action iteration; explicit application phases own Plan-and-Execute. MyBatis Plus persists product data. Streaming uses servlet MVC SSE.
+- **Backend** — Java 21, Spring Boot 4.2.0, Spring AI 2.1.0 and AgentScope Java 2.0.5. Native ReAct owns reasoning/action iteration; explicit application phases own Plan-and-Execute. MyBatis Plus persists product data. Streaming uses servlet MVC SSE.
 - **Frontend** — Vue 3 + TypeScript. Pinia for state, Element Plus + Tailwind for UI, full dark mode. Built into the backend JAR's `static/` so one process serves both.
 - **Desktop** — Electron with bundled JRE 21 and the packaged server JAR. Launches, initializes, and your users never know Java is underneath.
 - **Channels** — Each channel is a `ChannelAdapter` SPI implementation. Web streams over SSE. IM channels run on their platform's long-connection or webhook mode.

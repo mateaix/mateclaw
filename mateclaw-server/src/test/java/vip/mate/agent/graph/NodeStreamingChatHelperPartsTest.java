@@ -27,6 +27,35 @@ class NodeStreamingChatHelperPartsTest {
         return new NodeStreamingChatHelper(mock(ChatStreamTracker.class), (ChatModel) null)
                 .streamCall(model, new Prompt("hello"), "parts", "reasoning");
     }
+    @Test void completeIndexedTextReplacesPartialTextInFinalResultAndReplay() {
+        var partial = AssistantMessage.builder().part(StreamingParts.partial(TextPart.of("Hel"), 0)).build();
+        var complete = AssistantMessage.builder().part(StreamingParts.complete(TextPart.of("Hello"), 0)).build();
+        var result = call(Flux.just(chunk(partial), chunk(complete)));
+        assertEquals("Hello", result.text());
+        assertEquals("Hello", result.assistantMessage().getText());
+    }
+    @Test void completeIndexedReasoningReplacesPartialReasoningInFinalResult() {
+        var partial = AssistantMessage.builder().part(StreamingParts.partial(ReasoningPart.of("Rea"), 0)).build();
+        var complete = AssistantMessage.builder().part(StreamingParts.complete(ReasoningPart.of("Reason"), 0)).build();
+        var result = call(Flux.just(chunk(partial), chunk(complete), chunk(new AssistantMessage("Answer"))));
+        assertEquals("Reason", result.thinking());
+        assertEquals("Reason", result.assistantMessage().getMetadata().get("reasoningContent"));
+    }
+    @Test void indexedAggregationDoesNotUndoInlineThinkingFiltering() {
+        var message = AssistantMessage.builder().part(StreamingParts.complete(
+                TextPart.of("<think>Reason</think>Answer"), 0)).build();
+        var result = call(Flux.just(chunk(message)));
+        assertEquals("Answer", result.text());
+        assertEquals("Reason", result.thinking());
+        assertEquals("Answer", result.assistantMessage().getText());
+    }
+    @Test void explicitTruncatedCategorySurvivesStreamingAssembly() {
+        var metadata = org.springframework.ai.chat.metadata.ChatGenerationMetadata.builder()
+                .finishReason("provider_limit").finishReasonCategory(
+                        org.springframework.ai.chat.metadata.FinishReasonCategory.TRUNCATED).build();
+        var response = new ChatResponse(List.of(new Generation(new AssistantMessage("Partial"), metadata)));
+        assertTrue(call(Flux.just(response)).isOutputTokenLimit());
+    }
     @Test void nativeReasoningIsDeltaEvenWhenMetadataIsCumulative() {
         var first = AssistantMessage.builder().part(StreamingParts.partial(ReasoningPart.of("same"), 0))
                 .properties(Map.of("reasoningContent", "same")).build();

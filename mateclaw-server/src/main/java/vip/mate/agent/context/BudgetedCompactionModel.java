@@ -77,6 +77,6 @@ public final class BudgetedCompactionModel implements ChatModel {
                     .doFinally(signal -> recordUsage(last.get()));
         });
     }
-    @Override public ChatOptions getDefaultOptions() { return ChatModelDefaults.optionsFor(delegate); }
+    @Override public ChatOptions getOptions() { return ChatModelDefaults.optionsFor(delegate); }
 }
 
