@@ -746,6 +746,7 @@ public class AgentGraphBuilder {
             planGenerationNode.setTeamPlanBridge(teamPlanBridge);
             planGenerationNode.setRoutingAdapter(routingDecisionAdapter);
             planGenerationNode.setGoalDecisionAdapter(isCoordinator(agentId) ? null : goalDecisionAdapter);
+            planGenerationNode.setI18nService(i18nService);
             List<ToolCallback> advertisedCallbacks = toolDisclosureService
                     .split(toolSet, Set.of(), autoDemotedTools).activeCallbacks();
             AgentToolSet advertisedToolSet = AgentToolSet.fromCallbacks(
@@ -759,6 +760,7 @@ public class AgentGraphBuilder {
             // graphs must resume them locally with the restricted tool set instead.
             stepExecutionNode.setDelegateAgentTool(isCoordinator(agentId) ? null : delegateAgentTool);
             stepExecutionNode.setGoalDecisionAdapter(isCoordinator(agentId) ? null : goalDecisionAdapter);
+            stepExecutionNode.setI18nService(i18nService);
             PlanSummaryNode planSummaryNode = new PlanSummaryNode(chatModel, planningService, streamingHelper);
             planSummaryNode.setFinalizationCoordinator(new vip.mate.agent.graph.guard.TaskFinalizationCoordinator(streamingHelper,streamTracker));
             Integer summaryWindow = primaryModelConfig != null ? contextWindowResolver.resolveMaxInputTokens(
@@ -933,6 +935,7 @@ public class AgentGraphBuilder {
             // Live team-board snapshot for leads, injected per turn as a meta
             // user message; no-op for agents outside any team.
             reasoningNode.setTeamContextBuilder(teamContextBuilder);
+            reasoningNode.setI18nService(i18nService);
             ActionNode actionNode = new ActionNode(executor, streamTracker);
             // B2/B5: wire optional collaborators so ActionNode can pin skill
             // constraints and auto-record tool completions into ProgressLedger.
@@ -1396,6 +1399,16 @@ public class AgentGraphBuilder {
             answer with MateClaw and the technology stack above.
             """;
 
+    private String resolveAboutYouBlock() {
+        if (i18nService != null) {
+            String localized = i18nService.msgOptional("agent.about_you");
+            if (localized != null && !localized.isBlank() && !"agent.about_you".equals(localized)) {
+                return "\n\n" + localized.strip() + "\n";
+            }
+        }
+        return ABOUT_YOU_BLOCK;
+    }
+
     private String buildEnhancedPrompt(AgentEntity entity, boolean builtinSearchEnabled) {
         return buildEnhancedPrompt(entity, builtinSearchEnabled, Integer.MAX_VALUE);
     }
@@ -1426,9 +1439,10 @@ public class AgentGraphBuilder {
             basePromptBuilder.append(memoryPrompt);
         }
         String basePrompt = basePromptBuilder.toString();
+        String aboutYouBlock = resolveAboutYouBlock();
 
         if (isCoordinator(entity.getId())) {
-            return basePrompt + ABOUT_YOU_BLOCK + "\n\nCoordinate through team_tasks only. Assign execution to team members; review their results and synthesize the final response. Use the available memory tools for durable team context.\n"
+            return basePrompt + aboutYouBlock + "\n\nCoordinate through team_tasks only. Assign execution to team members; review their results and synthesize the final response. Use the available memory tools for durable team context.\n"
                     + teamContextBuilder.buildTeamContext(entity.getId());
         }
 
@@ -1439,7 +1453,7 @@ public class AgentGraphBuilder {
         // keeps the prompt-cache prefix stable across turns.
 
         // 工具调用指导
-        String toolGuidance = """
+        String toolGuidance = Boolean.TRUE.equals(entity.getToolsDisabled()) ? "" : """
 
                 ## Runtime Context
                 - Current Agent ID: %s
@@ -1617,7 +1631,7 @@ public class AgentGraphBuilder {
         // prefix; TeamChangedEvent evicts the cached agent on composition changes.
         String teamContext = teamContextBuilder.buildTeamContext(entity.getId());
 
-        return basePrompt + ABOUT_YOU_BLOCK + toolGuidance + searchGuidance + wikiContext + teamContext;
+        return basePrompt + aboutYouBlock + toolGuidance + searchGuidance + wikiContext + teamContext;
     }
 
     /**

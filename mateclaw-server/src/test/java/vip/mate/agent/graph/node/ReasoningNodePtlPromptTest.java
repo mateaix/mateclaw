@@ -5,11 +5,13 @@ import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import vip.mate.agent.AgentToolSet;
+import vip.mate.i18n.I18nService;
 import vip.mate.wiki.service.WikiContextService;
 
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
@@ -136,6 +138,29 @@ class ReasoningNodePtlPromptTest {
                 vip.mate.agent.context.ChatOrigin.EMPTY, "", "");
 
         assertThat(prefix).hasSize(2);
+    }
+
+    @Test
+    void localizedRuntimeContextUsesWiredI18nService() {
+        I18nService i18nService = mock(I18nService.class);
+        when(i18nService.msg(eq("context.current_time"), any(), any()))
+                .thenReturn("[system-context] 当前时间: 2026-11-25 12:00 (Asia/Shanghai)");
+
+        ReasoningNode node = newNode(null);
+        node.setI18nService(i18nService);
+
+        List<Message> prefix = node.buildNonHistoryPrefix(
+                "you are a helpful assistant",
+                "",
+                "42",
+                "你好",
+                vip.mate.agent.context.ChatOrigin.EMPTY, "", "");
+
+        assertThat(prefix).hasSize(2);
+        assertThat(prefix.get(1)).isInstanceOf(UserMessage.class);
+        assertThat(prefix.get(1).getText())
+                .contains("[system-context] 当前时间: 2026-11-25 12:00 (Asia/Shanghai)")
+                .doesNotContain("Current time:");
     }
 
     private static ReasoningNode newNode(WikiContextService wikiContextService) {

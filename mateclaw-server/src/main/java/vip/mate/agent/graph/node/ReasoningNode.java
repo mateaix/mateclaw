@@ -548,6 +548,12 @@ public class ReasoningNode implements NodeAction {
         this.teamContextBuilder = teamContextBuilder;
     }
 
+    private vip.mate.i18n.I18nService i18nService;
+
+    public void setI18nService(vip.mate.i18n.I18nService i18nService) {
+        this.i18nService = i18nService;
+    }
+
     /** Floor for the window-aware output clamp — an answer needs at least this much room. */
     private static final int MIN_CLAMPED_OUTPUT_TOKENS = 512;
 
@@ -1993,7 +1999,7 @@ public class ReasoningNode implements NodeAction {
         List<Message> prefix = new ArrayList<>();
         prefix.add(new SystemMessage(systemPrompt));
         prefix.add(new UserMessage(RuntimeContextInjector.buildContextMessage(
-                workspaceBasePath, null, chatOrigin, runtimeModelName, runtimeProviderId)));
+                workspaceBasePath, i18nService, chatOrigin, runtimeModelName, runtimeProviderId)));
         // When this turn already recalled the user's own current project from
         // structured memory, skip auto-injecting knowledge-base reference context.
         // Otherwise the KB pages (reference material, possibly about unrelated
