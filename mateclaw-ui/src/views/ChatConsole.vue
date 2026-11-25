@@ -1157,7 +1157,7 @@ const eligibleModels = computed(() => {
 })
 
 // ============ 生命周期 ============
-// Global shortcuts (Ctrl+K agents, Ctrl+N new chat) live in MainLayout so they
+// Global shortcuts (Alt+K agents, Alt+N new chat) live in MainLayout so they
 // work from any page; this view reacts to the dispatched event when mounted.
 function handleChatShortcut(e: Event) {
   const action = (e as CustomEvent).detail as 'newChat' | undefined
@@ -1433,7 +1433,7 @@ onActivated(async () => {
 })
 
 watch(() => route.query, () => {
-  // If a fresh action arrives (e.g. user re-fires Ctrl+K via the URL while
+  // If a fresh action arrives (e.g. user re-fires Alt+K via the URL while
   // the view is already alive), pick it up immediately.
   captureRouteAction()
   if (pendingRouteAction) applyPendingRouteAction()

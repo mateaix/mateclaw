@@ -891,7 +891,7 @@ export default {
     roleAdmin: '管理员',
     shortcutAgents: '员工',
     shortcutNew: '新建',
-    shortcutsHint: 'Ctrl+K {agents} | Ctrl+N {newAction}',
+    shortcutsHint: 'Alt+K {agents} | Alt+N {newAction}',
   },
   // Issue #81: provider-level hint / status text shared across chat popup and ModelSelector.
   provider: {
