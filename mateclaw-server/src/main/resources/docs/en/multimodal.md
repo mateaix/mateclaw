@@ -19,7 +19,7 @@ Configure once. Use everywhere.
 | **fal.ai** | Flux | Fast Flux inference via fal.ai |
 | **Google (Nano Banana)** | gemini-3-pro-image-preview, gemini-2.5-flash-image | Via the native Gemini path; **supports image editing** — see [Nano Banana](#nano-banana) below |
 | **Zhipu** | CogView | Native Chinese prompt support |
-| **MiniMax** | — | Sync and async both supported |
+| **MiniMax** | `image-01`, `MiniMax-H3-Image`, `MiniMax-H3-Image-Highspeed` | `image_generate(prompt="A sunny garden", model="MiniMax-H3-Image")` |
 
 The image-generation tool auto-picks the provider configured as default, or you can force a specific one per call. Async generation returns a job id the agent polls; when the image lands, it attaches to the **original assistant message**, not a new one.
 

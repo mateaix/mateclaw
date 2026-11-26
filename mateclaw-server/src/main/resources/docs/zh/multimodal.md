@@ -19,7 +19,7 @@
 | **fal.ai** | Flux | 通过 fal.ai 跑 Flux，快 |
 | **Google（Nano Banana）** | gemini-3-pro-image-preview、gemini-2.5-flash-image | 走原生 Gemini 路径；**支持图像编辑**——见下方 [Nano Banana](#nano-banana) |
 | **智谱** | CogView | 对中文 prompt 原生支持 |
-| **MiniMax** | —— | 同步异步都可以 |
+| **MiniMax** | `image-01`, `MiniMax-H3-Image`, `MiniMax-H3-Image-Highspeed` | `image_generate(prompt="A sunny garden", model="MiniMax-H3-Image")` |
 
 图像生成工具会自动挑默认供应商，也可以在调用时强制指定某一家。异步生成返回一个 job id，Agent 轮询；图片落地后会挂到**原来的那条消息上**，不是创建一条新的。
 
