@@ -10,7 +10,7 @@ import java.nio.charset.StandardCharsets;
 public final class DshSdkTurn {
     // Session vocabulary pinned to the reviewed SDK prereleases.
     private static final Set<String> KNOWN_EVENTS = Set.of(
-            "agent-preset/selected", "agent/inbox/spliced", "approval/asked", "approval/decided",
+            "action-cards/decision", "agent-preset/selected", "agent/inbox/spliced", "approval/asked", "approval/decided",
             "approval/policy", "assistant/attempt", "assistant/message", "command/done",
             "command/run", "compaction/end", "compaction/prune", "compaction/start",
             "compaction/summary", "deliverables/presented", "developer/message", "feedback/message-delete",
@@ -21,11 +21,11 @@ public final class DshSdkTurn {
             "request/header", "sandbox/mode", "schedule/change", "session-log-deepseek/delivery-accepted",
             "session/end-seed", "session/title", "session/title-llm-request", "step/end",
             "step/start", "subagent/catalog", "subagent/descriptor", "subagent/model-selection-policy",
-            "system/message", "team/member", "team/message/delivered", "team/message/queued",
+            "system/message", "team/mode", "team/member", "team/message/delivered", "team/message/queued",
             "team/task", "todo/write", "tool-workflow/agent-end", "tool-workflow/agent-start",
             "tool-workflow/run-end", "tool-workflow/run-start", "tool/call", "tool/ptc-dispatch",
             "tool/ptc-dispatch-start", "tool/result", "turn/end", "turn/start",
-            "user/message", "web/deepseek-search-llm-request", "workspace/changes");
+            "user/message", "web/deepseek-search-llm-request", "workspace/changes", "workspace-root/change");
     private final String sessionId;
     private final String promptId;
     private final List<JsonNode> pending = new ArrayList<>();
@@ -34,6 +34,9 @@ public final class DshSdkTurn {
     private String messageId;
     private boolean received;
     private boolean complete;
+    private String waitId;
+    private boolean rootIdle;
+    private boolean treeSettled;
     private String reason;
     private String answer = "";
     private long inputTokens;
@@ -43,9 +46,23 @@ public final class DshSdkTurn {
 
     public DshSdkTurn(String sessionId, String promptId) { this.sessionId = sessionId; this.promptId = promptId; }
 
+    public void waitForTree(String requestId) { waitId = requestId; }
+
     /** Returns newly admitted root events; caller projects tools and settled reasoning. */
     public List<JsonNode> accept(JsonNode frame) {
         if (complete) return List.of();
+        if (waitId != null && waitId.equals(frame.path("id").asText())) {
+            if (frame.has("error")) {
+                if (frame.path("error").path("code").asInt() != -32601)
+                    throw new IllegalStateException("DSH_TREE_WAIT_REJECTED");
+                // Retained SDKs without this method preserve their root-idle completion contract.
+                waitId = null;
+            } else {
+                treeSettled = true;
+            }
+            complete = rootIdle && received;
+            return List.of();
+        }
         if (frame.has("id") && promptId.equals(frame.path("id").asText())) {
             if (frame.has("error")) throw new IllegalStateException("DSH_PROMPT_REJECTED");
             messageId = frame.path("result").path("messageId").asText("");
@@ -78,10 +95,12 @@ public final class DshSdkTurn {
             if (!received) return List.of();
         }
         if ("session.status".equals(method) && "idle".equals(params.path("status").asText())) {
-            complete = true;
+            rootIdle = true;
+            complete = waitId == null || treeSettled;
             if (reason == null) reason = "missing-turn-end";
             return List.of();
         }
+        if ("session.status".equals(method) && "running".equals(params.path("status").asText())) rootIdle = false;
         if (!"session.event".equals(method)) return List.of();
         if (!event.path("seq").canConvertToLong() || !event.path("seq").isIntegralNumber())
             throw new IllegalStateException("DSH_EVENT_SEQUENCE_INVALID");
@@ -90,7 +109,10 @@ public final class DshSdkTurn {
         if (!KNOWN_EVENTS.contains(type) && !event.path("ignorable").asBoolean(false))
             throw new IllegalStateException("DSH_UNKNOWN_REQUIRED_EVENT: " + type);
         JsonNode data = event.path("data");
-        if ("assistant/message".equals(type)) {
+        if ("turn/start".equals(type)) {
+            reason = null;
+            answer = "";
+        } else if ("assistant/message".equals(type)) {
             JsonNode content = data.path("message").path("content");
             if (!content.isArray()) throw new IllegalStateException("DSH_ASSISTANT_CONTENT_INVALID");
             StringBuilder text = new StringBuilder();

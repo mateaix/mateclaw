@@ -12,6 +12,7 @@ import vip.mate.agent.model.AgentEntity;
 import vip.mate.agent.runtime.contract.RuntimeEvent;
 import vip.mate.agent.runtime.contract.RuntimeEventType;
 import vip.mate.agent.runtime.contract.RuntimeSession;
+import vip.mate.agent.runtime.RuntimeEventProjector;
 import vip.mate.agent.runtime.dsh.management.DshRuntimeConfigService;
 import vip.mate.agent.runtime.dsh.management.DshRuntimeConfiguration;
 import vip.mate.llm.model.ModelProviderEntity;
@@ -148,12 +149,12 @@ class DshRuntimeServiceTest {
 
     @Test void ptcCallerCancellationIsDistinctFromToolFailure() throws Exception {
         var json = new ObjectMapper();
-        for (String code : List.of("ABORTED", "CODE_RUN_FAILED")) {
+        for (String code : List.of("ABORTED", "ABORTED_BEFORE_DISPATCH", "CODE_RUN_FAILED")) {
             RuntimeEvent event = service().mapEvent("root", 1, json.readTree("""
                     {"type":"tool/result","data":{"message":{"toolCallId":"c1","isError":true,"content":[]},
                     "error":{"name":"ToolError","code":"%s","reason":"private runtime detail"}}}
                     """.formatted(code)));
-            assertEquals(code.equals("ABORTED"), event.data().get("cancelled"));
+            assertEquals(code.startsWith("ABORTED"), event.data().get("cancelled"));
             assertEquals(code, event.data().get("errorCode"));
             assertEquals(true, event.data().get("isError"));
             assertEquals(false, event.data().get("success"));
@@ -186,6 +187,38 @@ class DshRuntimeServiceTest {
                 {"type":"tool/result","data":{"message":{"role":"tool","toolCallId":"call-1","content":[]}}}
                 """));
         assertEquals("call-1", event.data().get("callId"));
+    }
+
+    @Test
+    void toolCardsKeepArgumentsOutputAndStructuredFailureThroughChatProjection() throws Exception {
+        var json = new ObjectMapper();
+        var started = RuntimeEventProjector.project(service().mapEvent("root", 1, json.valueToTree(
+                Map.of("type", "tool/call", "data", Map.of("name", "bash", "callId", "c1",
+                        "arguments", "{\"command\":\"printf TOOL_OK\"}")))));
+        assertEquals("bash", started.eventData().get("toolName"));
+        assertEquals("{\"command\":\"printf TOOL_OK\"}", started.eventData().get("arguments"));
+        var finished = RuntimeEventProjector.project(service().mapEvent("root", 2, json.readTree("""
+                {"type":"tool/result","data":{"message":{"toolCallId":"c1","isError":true,
+                "content":[{"type":"text","text":"permission denied"}]},
+                "error":{"name":"SandboxError","code":"EACCES","reason":"outside workspace"}}}
+                """)));
+        assertEquals("c1", finished.eventData().get("toolCallId"));
+        assertEquals("permission denied", finished.eventData().get("result"));
+        assertEquals("SandboxError", finished.eventData().get("errorName"));
+        assertEquals("EACCES", finished.eventData().get("errorCode"));
+        assertEquals(false, finished.eventData().get("success"));
+    }
+
+    @Test
+    void toolCardOutputIsBoundedWithoutDiscardingErrorStatus() throws Exception {
+        var json = new ObjectMapper();
+        var event = json.valueToTree(Map.of("type", "tool/result", "data", Map.of("message",
+                Map.of("toolCallId", "large", "isError", true, "content",
+                        List.of(Map.of("type", "text", "text", "x".repeat(100000)))))));
+        var result = service().mapEvent("root", 1, event);
+        assertTrue(((String) result.data().get("result")).length() < 40000);
+        assertEquals(true, result.data().get("resultTruncated"));
+        assertEquals(false, result.data().get("success"));
     }
 
     private static DshRuntimeService service() {

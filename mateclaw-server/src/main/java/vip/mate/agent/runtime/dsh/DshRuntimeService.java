@@ -62,6 +62,7 @@ public class DshRuntimeService implements AgentRuntimeProvider {
     private long initializeTimeoutMs = 30000;
     private static final int DEFAULT_MAX_OUTPUT_TOKENS = 4096;
     private static final int DEFAULT_CONTEXT_WINDOW = 128000;
+    private static final int MAX_TOOL_RESULT_CHARS = 32768;
 
     public DshRuntimeService(
             ObjectMapper objectMapper,
@@ -165,6 +166,7 @@ public class DshRuntimeService implements AgentRuntimeProvider {
         agent.setId(session.agentId());
         agent.setWorkspaceId(session.workspaceId());
         agent.setModelName(session.modelName());
+        agent.setSystemPrompt((String) session.configuration().get("hostSystemPrompt"));
         AtomicReference<Process> activeProcess = new AtomicReference<>();
         AtomicBoolean cancelled = new AtomicBoolean();
         AtomicReference<RuntimeContextUsage> latestUsage = new AtomicReference<>(
@@ -205,6 +207,8 @@ public class DshRuntimeService implements AgentRuntimeProvider {
             case "cancelled" -> RuntimeEventType.CANCELLED;
             case "tool_call_started" -> RuntimeEventType.TOOL_STARTED;
             case "tool_call_completed" -> RuntimeEventType.TOOL_FINISHED;
+            case "subagent_start" -> RuntimeEventType.SUBAGENT_STARTED;
+            case "subagent_complete" -> RuntimeEventType.SUBAGENT_FINISHED;
             case "tool_approval_requested" -> RuntimeEventType.TOOL_APPROVAL_REQUIRED;
             default -> RuntimeEventType.RUNTIME_READY;
         };
@@ -269,6 +273,7 @@ public class DshRuntimeService implements AgentRuntimeProvider {
                 DshLaunchSpec launch = DshLaunchSpec.create(configuration, agent.getWorkspaceId(), agent.getId(), session.workingDirectory());
                 Map<String, String> environment = childEnvironment(System.getenv(), session, configuration, provider);
                 modelEnvironment(environment, effectiveModelName, model, maxOutputTokens);
+                putIfPresent(environment, "MATECLAW_DSH_SYSTEM_PROMPT", agent.getSystemPrompt());
                 process = processSupervisor.start(launch, environment);
                 processRef.set(process);
                 if (process instanceof DshDockerProcess owned) {
@@ -292,12 +297,26 @@ public class DshRuntimeService implements AgentRuntimeProvider {
                             RuntimeEventType.RUNTIME_READY, null, Map.of("runtimeProvider", "dsh"))));
                     String promptId = "prompt-" + conversationId;
                     turn = new DshSdkTurn(dshSessionId, promptId);
+                    DshSubagentEvents subagents = new DshSubagentEvents(dshSessionId);
+                    boolean waitingForTree = false;
                     sdk.send("session/prompt", promptId, Map.of("sessionId", dshSessionId,
                             "contentBlocks", List.of(Map.of("type", "text", "text", message))));
                     while (!turn.complete() && !sink.isCancelled()) {
                         JsonNode payload = sdk.next(Duration.ofMinutes(10));
                         if (payload.has("method") && payload.has("id")) {
                             sdk.send(errorResponse(payload.get("id"), -32601, "Unsupported runtime request"));
+                            continue;
+                        }
+                        RuntimeEvent subagent = subagents.accept(conversationId, sequence, payload);
+                        if (subagent != null) {
+                            if (!waitingForTree && subagent.type() == RuntimeEventType.SUBAGENT_STARTED) {
+                                String waitId = "wait-" + dshSessionId;
+                                turn.waitForTree(waitId);
+                                sdk.send("session/wait", waitId, Map.of("sessionId", dshSessionId));
+                                waitingForTree = true;
+                            }
+                            sequence++;
+                            sink.next(RuntimeEventProjector.project(subagent));
                             continue;
                         }
                         for (JsonNode event : turn.accept(payload)) {
@@ -315,7 +334,7 @@ public class DshRuntimeService implements AgentRuntimeProvider {
                                                 RuntimeEventType.THINKING_DELTA, part.path("text").asText(""), Map.of())));
                                     }
                                 }
-                            } else if ("turn/end".equals(type) && !answerDelivered && !turn.answer().isEmpty()) {
+                            } else if ("turn/end".equals(type) && !waitingForTree && !answerDelivered && !turn.answer().isEmpty()) {
                                 // The exact final step is known now; do not wait for idle or process shutdown.
                                 sink.next(RuntimeEventProjector.project(RuntimeEvent.of(conversationId, sequence++,
                                         RuntimeEventType.ASSISTANT_DELTA, turn.answer(), Map.of())));
@@ -657,14 +676,38 @@ public class DshRuntimeService implements AgentRuntimeProvider {
         }
         if (type.contains("tool") && (type.contains("start") || type.contains("call"))) {
             return RuntimeEvent.of(sessionId, sequence, RuntimeEventType.TOOL_STARTED, null,
-                    Map.of("toolName", data.path("name").asText("dsh-tool"), "callId", data.path("callId").asText("")));
+                    Map.of("toolName", data.path("name").asText("dsh-tool"), "callId", data.path("callId").asText(""),
+                            "arguments", data.path("arguments").isTextual() ? data.path("arguments").asText()
+                                    : data.path("arguments").isMissingNode() ? "{}" : data.path("arguments").toString()));
         }
         if (type.contains("tool") && (type.contains("end") || type.contains("result"))) {
             String code = data.path("error").path("code").asText("");
             boolean failed = data.path("message").path("isError").asBoolean(false);
-            return RuntimeEvent.of(sessionId, sequence, RuntimeEventType.TOOL_FINISHED, null, Map.of(
-                    "callId", data.path("message").path("toolCallId").asText(data.path("callId").asText("")),
-                    "isError", failed, "success", !failed, "errorCode", code, "cancelled", failed && "ABORTED".equals(code)));
+            StringBuilder output = new StringBuilder();
+            boolean truncated = false;
+            for (JsonNode block : data.path("message").path("content")) {
+                if (!"text".equals(block.path("type").asText())) continue;
+                String text = block.path("text").asText("");
+                int remaining = MAX_TOOL_RESULT_CHARS - output.length();
+                if (text.length() > remaining) {
+                    int end = remaining;
+                    if (end > 0 && Character.isHighSurrogate(text.charAt(end - 1))) end--;
+                    output.append(text, 0, end);
+                    truncated = true;
+                    break;
+                }
+                output.append(text);
+            }
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("callId", data.path("message").path("toolCallId").asText(data.path("callId").asText("")));
+            result.put("isError", failed);
+            result.put("success", !failed);
+            result.put("errorCode", code);
+            result.put("errorName", data.path("error").path("name").asText(""));
+            result.put("cancelled", failed && ("ABORTED".equals(code) || "ABORTED_BEFORE_DISPATCH".equals(code)));
+            result.put("result", output + (truncated ? "\n[truncated]" : ""));
+            result.put("resultTruncated", truncated);
+            return RuntimeEvent.of(sessionId, sequence, RuntimeEventType.TOOL_FINISHED, null, result);
         }
         if ("turn/end".equals(type)) {
             String kind = data.path("reason").path("kind").asText("");

@@ -13,13 +13,13 @@ import static org.junit.jupiter.api.Assertions.*;
 @EnabledIfEnvironmentVariable(named="MATECLAW_DSH_INSTALL_ACCEPTANCE_PREFIX", matches=".+")
 class DshManagedInstallAcceptanceTest {
     @org.junit.jupiter.params.ParameterizedTest
-    @org.junit.jupiter.params.provider.ValueSource(strings={"0.2.2-rc.1", "0.2.0-rc.1", "0.2.1-rc.2", "0.1.7-rc.2"})
+    @org.junit.jupiter.params.provider.ValueSource(strings={"0.2.3-alpha.2", "0.2.2-rc.5", "0.2.2-rc.1", "0.2.0-rc.1", "0.2.1-rc.2", "0.1.7-rc.2"})
     void exactManagedCandidateInstallsAndInitializesWithItsPolicyPatch(String version) throws Exception {
         var json = new ObjectMapper();
         Path prefix = Path.of(System.getenv("MATECLAW_DSH_INSTALL_ACCEPTANCE_PREFIX")).toAbsolutePath().resolve(version);
         var installed = new DshPinnedInstaller(json).install(version, prefix);
         assertEquals(version, installed.version());
-        assertEquals(prefix.resolve("0.2.2-rc.1".equals(version) ? "bin/dsh" : "node_modules/.bin/dsh").toString(), installed.executablePath());
+        assertEquals(prefix.resolve(DshPinnedInstaller.usesManagedPatch(version) ? "bin/dsh" : "node_modules/.bin/dsh").toString(), installed.executablePath());
         Path home = Files.createTempDirectory("dsh-022-install-home");
         var builder = new ProcessBuilder(installed.executablePath(), "--profile", "sdk").directory(home.toFile());
         builder.environment().clear();

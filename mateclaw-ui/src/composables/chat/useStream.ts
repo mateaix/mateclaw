@@ -47,6 +47,8 @@ export type SSEEventType =
   | 'browser_action'
   // Agent 委派事件
   | 'delegation_start'
+  | 'subagent_start'
+  | 'subagent_complete'
   | 'delegation_progress'
   | 'delegation_end'
   | 'delegation_child_complete'

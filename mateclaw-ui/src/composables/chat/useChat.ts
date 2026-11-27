@@ -1330,7 +1330,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     })
   }
 
-  stream.on('delegation_start', (data) => {
+  function handleDelegationStart(data: any) {
     if (isStaleEvent(data)) return
     streamPhase.value = 'executing_tool'
     if (!currentAssistantId.value) return
@@ -1353,7 +1353,9 @@ export function useChat(options: UseChatOptions): UseChatReturn {
       addDelegation(segs, data)
     }
     flushSegmentsToMessage()
-  })
+  }
+  stream.on('delegation_start', handleDelegationStart)
+  stream.on('subagent_start', handleDelegationStart)
 
   // Fire-and-forget delegation. The parent agent keeps running after spawning,
   // so unlike delegation_start we do NOT close the parent's running content/thinking
@@ -1432,7 +1434,7 @@ export function useChat(options: UseChatOptions): UseChatReturn {
     flushSegmentsToMessage()
   })
 
-  stream.on('delegation_end', (data) => {
+  function handleDelegationEnd(data: any) {
     if (isStaleEvent(data)) return
     if (!currentAssistantId.value) return
     const segs = currentSegments.value
@@ -1460,7 +1462,9 @@ export function useChat(options: UseChatOptions): UseChatReturn {
         !!data.success, data.resultPreview, data.durationMs, data.promptTokens, data.completionTokens)
     }
     flushSegmentsToMessage()
-  })
+  }
+  stream.on('delegation_end', handleDelegationEnd)
+  stream.on('subagent_complete', handleDelegationEnd)
 
   // Heartbeat watchdog flagged a subagent as making no observable progress.
   // Mark the matching segment/node stale so the timeline can surface it; the

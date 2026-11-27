@@ -9,6 +9,7 @@ import vip.mate.agent.repository.AgentMapper;
 import vip.mate.agent.runtime.contract.AgentRuntimeConnection;
 import vip.mate.agent.runtime.contract.AgentRuntimeCoordinator;
 import vip.mate.agent.runtime.dsh.DshConversationHistory;
+import vip.mate.agent.runtime.RunningConversationRegistry;
 import vip.mate.memory.MemoryProperties;
 import vip.mate.memory.service.MemoryRecallTracker;
 
@@ -79,14 +80,22 @@ class AgentServiceDshHistoryTest {
         when(history.enrich("conversation", "question", "question", origin)).thenReturn("history plus question");
         when(coordinator.start(eq(agent), eq("conversation"), eq("conversation"), eq("model"), any(), any()))
                 .thenReturn(connection);
+        var registry = mock(RunningConversationRegistry.class);
+        doAnswer(invocation -> {
+            assertEquals(origin, ChatOriginHolder.get());
+            assertEquals("high", ThinkingLevelHolder.get());
+            return null;
+        }).when(registry).register("conversation", 1L);
         when(connection.prompt(anyString())).thenReturn(Flux.empty());
         ReflectionTestUtils.setField(service, "runtimeCoordinator", coordinator);
         ReflectionTestUtils.setField(service, "dshConversationHistory", history);
+        ReflectionTestUtils.setField(service, "runningConversationRegistry", registry);
 
-        service.chatStructuredStream(1L, "question", "conversation", "user", null, origin).blockLast();
+        service.chatStructuredStream(1L, "question", "conversation", "user", "high", origin).blockLast();
 
         verify(history).enrich("conversation", "question", "question", origin);
         verify(connection).prompt("history plus question");
         verify(connection).close();
+        verify(registry).register("conversation", 1L);
     }
 }

@@ -47,4 +47,19 @@ describe('tool structured completion', () => {
     expect(meta.toolCalls[1].status).toBe('running')
     expect(meta.segments[1].status).toBe('running')
   })
+
+  it('renders SDK subagent lifecycle as nested delegation cards', async () => {
+    const chat = useChat({ baseUrl: '' })
+    await chat.sendMessage('delegate', { conversationId: 'conv', agentId: 'agent' })
+    emit('subagent_start', { subagentId: 'child', childAgentName: 'DSH', depth: 1 })
+    emit('subagent_start', { subagentId: 'nested', parentSubagentId: 'child', childAgentName: 'DSH', depth: 2 })
+    emit('subagent_complete', { subagentId: 'nested', success: false, status: 'error' })
+    emit('subagent_complete', { subagentId: 'child', success: true, status: 'ok' })
+    const meta = chat.messages.value.at(-1)?.metadata as any
+    const card = meta.segments.find((segment: any) => segment.id === 'child')
+    expect(card.toolName).toBe('→ DSH')
+    expect(card.status).toBe('completed')
+    expect(card.childTimeline.children[0].subagentId).toBe('nested')
+    expect(card.childTimeline.children[0].status).toBe('error')
+  })
 })

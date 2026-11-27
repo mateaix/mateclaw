@@ -33,7 +33,7 @@ class DshDockerSupervisorTest {
                 #!/usr/bin/env python3
                 import sys,json,os,time
                 a=sys.argv[1:]
-                with open(%s,'a') as f: f.write(json.dumps({'argv':a,'secret':os.getenv('DEEPSEEK_API_KEY')})+'\\n')
+                with open(%s,'a') as f: f.write(json.dumps({'argv':a,'secret':os.getenv('DEEPSEEK_API_KEY'),'persona':os.getenv('MATECLAW_DSH_SYSTEM_PROMPT')})+'\\n')
                 if a[0]=='context': print('"unix:///test/pinned.sock"')
                 elif 'inspect' in a: print(json.dumps({'vip.mateclaw.dsh.version':'0.2.1-rc.2','vip.mateclaw.dsh.lock-sha256':%s}))
                 elif 'create' in a or 'rm' in a: print(%s)
@@ -44,12 +44,14 @@ class DshDockerSupervisorTest {
         Path patch=Files.writeString(root.resolve("patch, one.js"),"// patch");
         var launch=new DshLaunchSpec(List.of(executable.toString(),"--profile","sdk","--patch",patch.toString()),root.resolve("homes/w/a"),cwd);
         Process process=new DshProcessSupervisor("docker",docker.toString(),json.writeValueAsString(Map.of("0.2.1-rc.2",image)),json)
-                .start(launch,Map.of("DEEPSEEK_API_KEY","fixture-secret"));
+                .start(launch,Map.of("DEEPSEEK_API_KEY","fixture-secret","MATECLAW_DSH_SYSTEM_PROMPT","employee instructions"));
         process.destroy();
         var records=Files.readAllLines(calls).stream().map(line->{try{return json.readTree(line);}catch(Exception e){throw new RuntimeException(e);}}).toList();
         var create=records.stream().filter(r->r.path("argv").toString().contains("\"create\"")).findFirst().orElseThrow();
         String argv=create.path("argv").toString();
         assertFalse(argv.contains("fixture-secret"));assertEquals("fixture-secret",create.path("secret").asText());
+        assertFalse(argv.contains("employee instructions"));assertEquals("employee instructions",create.path("persona").asText());
+        assertTrue(argv.contains("MATECLAW_DSH_SYSTEM_PROMPT"));
         assertTrue(argv.contains("--pull=never"));assertTrue(argv.contains(image));assertTrue(argv.contains("readonly"));
         assertFalse(argv.contains("--privileged"));assertFalse(argv.contains("--pid=host"));
         assertTrue(records.stream().filter(r->!r.path("argv").get(0).asText().equals("context"))

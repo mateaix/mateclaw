@@ -40,6 +40,15 @@ class RuntimeSessionFactoryTest {
     }
 
     @Test
+    void snapshotsEmployeeInstructionsInsteadOfRuntimeConfigOverride() {
+        AgentEntity employee = agent("dsh", "{\"hostSystemPrompt\":\"stale instructions\"}");
+        employee.setSystemPrompt("You are the workspace build engineer.");
+        RuntimeSession session = factory.create(employee, "chat", "session", "model",
+                Path.of("/workspace"), Path.of("/workspace"));
+        assertEquals(employee.getSystemPrompt(), session.configuration().get("hostSystemPrompt"));
+    }
+
+    @Test
     void rejectsDshSessionWithoutWorkspace() {
         assertThrows(IllegalArgumentException.class, () -> factory.create(
                 agent("dsh", "{}"), "conversation-1", "session-1", "model-a",

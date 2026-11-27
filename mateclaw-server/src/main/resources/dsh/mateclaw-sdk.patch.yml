@@ -1,6 +1,10 @@
-# Reviewed defaults for managed 0.2.2-rc.1. Explicit administrator patches follow this file.
+# Reviewed defaults for managed SDK candidates. Explicit administrator patches follow this file.
 - id: fs-observation-policy
   disabled: false
+
+- id: system-prompt
+  config:
+    personaPrefix: !!js process.env.MATECLAW_DSH_SYSTEM_PROMPT || 'You are a coding agent powered by the {{model}} model.'
 
 # SDK initialize accepts output limits only. Bind model metadata before the first request.
 - id: llm-deepseek

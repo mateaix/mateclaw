@@ -38,7 +38,7 @@
 
       <div class="settings-card install-card">
         <div class="card-heading"><div><h3>版本升级与连接</h3><p>版本与依赖使用固定清单。升级会排空活动任务，在副本中验证后切换，并保留旧数据。</p></div></div>
-        <label>目标版本 <select v-model="targetVersion" :disabled="busy || upgrading"><option v-for="release in status.catalog || []" :key="release.version" :value="release.version">{{ release.version }} · {{ release.version.includes('-') ? '预发布' : '正式版' }}</option></select></label>
+        <label>目标版本 <select v-model="targetVersion" :disabled="busy || upgrading"><option v-for="release in status.catalog || []" :key="release.version" :value="release.version">{{ release.version }} · {{ release.channel === 'alpha' ? '实验预览' : release.version.includes('-') ? '预发布' : '正式版' }}</option></select></label>
         <p class="muted-note">当前版本：{{ status.activeVersion || '未知 / 外部安装' }}。候选版本需完成本机检测，不代表已通过所有平台验证。</p>
         <div class="actions">
           <button class="btn-secondary" :disabled="busy || upgrading || !targetVersion" @click="install">安装 / 升级所选版本</button>
@@ -47,7 +47,7 @@
           <button v-if="status.enabled" class="btn-danger" :disabled="busy || upgrading" @click="disable">停用</button>
           <button v-else class="btn-primary" :disabled="busy || !canEnable" @click="enable">启用 DSH</button>
         </div>
-        <p class="muted-note">自动安装候选支持 Linux x64 / macOS arm64，旧版本支持 Node.js 22 / 24；0.2.2-rc.1 要求 Node.js 24.9+（24.x）和 npm。自定义地址必须支持 Messages API；官方根地址会转换为 /anthropic。真实模型测试和升级验证会调用已配置的模型。</p>
+        <p class="muted-note">自动安装候选支持 Linux x64 / macOS arm64 和 npm。0.2.2 候选要求 Node.js 24.9+（24.x）；0.2.3-alpha.2 要求 Node.js 24.22.3+（24.x），仅供显式选择验证；保留的 0.2.0 / 0.2.1 / 0.1.7 支持 Node.js 22 / 24。自定义地址必须支持 Messages API；官方根地址会转换为 /anthropic。真实模型测试和升级验证会调用已配置的模型。</p>
         <div v-if="operation.id" class="muted-note" role="status">
           <strong>{{ operation.state }}</strong> · {{ operation.message }}
           <p v-if="operation.homesChecked">已检查 {{ operation.homesChecked }} 个数据目录 · SDK {{ operation.handshakeStatus }} · 模型 {{ operation.taskStatus }}</p>

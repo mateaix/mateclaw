@@ -7,6 +7,7 @@ const load = async name => import(pathToFileURL(require.resolve(`@deepseek-ai/${
 const { Context } = await load('cordis');
 const ctx = new Context();
 const version = require('@deepseek-ai/dsh/package.json').version;
+const batchExecutor = ['0.2.2-rc.5', '0.2.3-alpha.2'].includes(version);
 mkdirSync('/tmp/dsh-smoke-workspace', { recursive: true });
 for (const [name, config] of [
   ['dsh-system-prompt', {}], ['dsh-session-projection', {}],
@@ -21,7 +22,20 @@ for (const [name, config] of [
   const plugin = await load(name);
   ctx.plugin(plugin.default ?? plugin, config);
 }
+if (batchExecutor) {
+  const executor = await load('dsh-tool-executor-native');
+  ctx.plugin(executor.default ?? executor, {});
+}
 for (let i=0; i<100 && !ctx.tools?.get('bash'); i++) await new Promise(resolve => setTimeout(resolve, 20));
+const execute = async input => {
+  if (!batchExecutor) return ctx.tools.execute(input);
+  const batch = await ctx.tools.execute({
+    calls: [{ type: 'tool-call', id: input.callId, name: input.name, arguments: JSON.stringify(input.arguments) }],
+    signal: input.signal,
+  });
+  assert.equal(batch.results.length, 1);
+  return batch.results[0].result;
+};
 try {
   assert.ok(ctx.tools?.get('bash'), 'Bash tool must register');
   const confined = await ctx.sandbox.confine(['bash', '-c', 'true'], {
@@ -32,7 +46,7 @@ try {
     assert.equal(confined.argv[0], 'bwrap', 'privileged smoke must use bwrap');
     console.log('DSH_BWRAP_BACKEND_OK');
   }
-  const result = await ctx.tools.execute({callId:'smoke', name:'bash', arguments:{
+  const result = await execute({callId:'smoke', name:'bash', arguments:{
     description:'Write and read sandbox smoke marker',
     command:"printf DSH_BASH_OK > marker; cat marker", workdir:'/tmp/dsh-smoke-workspace',
   }, signal:AbortSignal.timeout(30000)});
@@ -42,7 +56,7 @@ try {
   assert.equal(result.value.sandbox.enforcement, 'full');
   assert.equal(result.value.sandbox.mode, 'workspace-write');
   assert.equal(readFileSync('/tmp/dsh-smoke-workspace/marker','utf8'), 'DSH_BASH_OK');
-  const denied = await ctx.tools.execute({callId:'denied',name:'bash',arguments:{
+  const denied = await execute({callId:'denied',name:'bash',arguments:{
     description:'Check sandbox blocks writes outside workspace',
     command:'printf forbidden > /etc/dsh-smoke-forbidden',workdir:'/tmp/dsh-smoke-workspace',
   },signal:AbortSignal.timeout(30000)});

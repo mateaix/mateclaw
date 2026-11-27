@@ -91,7 +91,7 @@ class DshImageSmokeTest {
                 else
                   echo 'DSH_BWRAP_RESTRICTED: host namespace permissions required for bwrap'
                 fi
-                for version in 0.2.0-rc.1 0.2.1-rc.2 0.2.2-rc.1; do
+                for version in 0.2.0-rc.1 0.2.1-rc.2 0.2.2-rc.1 0.2.2-rc.5 0.2.3-alpha.2; do
                 java -cp '/checks/classes:/checks/libs/*' \
                   'vip.mate.agent.runtime.dsh.management.DshImageSmokeTest$InstallerMain' "$version"
                 if [ "$CHECK_DSH_BASH" = true ]; then

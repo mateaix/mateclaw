@@ -70,7 +70,7 @@ class DshUpgradeServiceTest {
         assertEquals("private-content", Files.readString(outside));
     }
     @org.junit.jupiter.params.ParameterizedTest
-    @org.junit.jupiter.params.provider.ValueSource(strings={"0.2.0-rc.1", "0.2.2-rc.1"})
+    @org.junit.jupiter.params.provider.ValueSource(strings={"0.2.0-rc.1", "0.2.2-rc.1", "0.2.2-rc.5", "0.2.3-alpha.2"})
     void candidateChecksEveryCopiedProfileBeforeActivation(String targetVersion) throws Exception {
         ObjectMapper mapper = new ObjectMapper();
         DshGenerationStore store = new DshGenerationStore(root.toString(), mapper, new SettingCrypto("test"));

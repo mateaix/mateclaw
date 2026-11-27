@@ -8,6 +8,7 @@ import vip.mate.agent.model.AgentEntity;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.LinkedHashMap;
 
 /** Builds and validates the runtime-neutral session boundary for an employee turn. */
 public final class RuntimeSessionFactory {
@@ -40,9 +41,16 @@ public final class RuntimeSessionFactory {
             }
         }
 
+        Map<String, Object> configuration = new LinkedHashMap<>(parseConfig(agent.getRuntimeConfig()));
+        if ("dsh".equals(runtimeType)) {
+            configuration.remove("hostSystemPrompt");
+            if (agent.getSystemPrompt() != null && !agent.getSystemPrompt().isBlank()) {
+                configuration.put("hostSystemPrompt", agent.getSystemPrompt());
+            }
+        }
         RuntimeSession session = new RuntimeSession(sessionId, conversationId, agent.getId(),
                 agent.getWorkspaceId(), modelName, normalizedWorkingDirectory,
-                parseConfig(agent.getRuntimeConfig()));
+                configuration);
         RuntimeValidation validation = provider.validate(session);
         if (validation == null || !validation.valid()) {
             String code = validation == null ? "runtime.invalid" : validation.code();

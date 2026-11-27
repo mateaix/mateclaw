@@ -58,6 +58,18 @@ class DshPinnedInstallerTest {
         }
     }
 
+    @Test void currentReleasesKeepExactIntegrityAndRequireReviewedNodePatch() {
+        assertEquals("candidate", DshPinnedInstaller.release("0.2.2-rc.5").channel());
+        assertEquals("alpha", DshPinnedInstaller.release("0.2.3-alpha.2").channel());
+        assertDoesNotThrow(() -> DshPinnedInstaller.requireNodeVersion("0.2.2-rc.5", "v24.9.0"));
+        assertThrows(IllegalStateException.class, () -> DshPinnedInstaller.requireNodeVersion("0.2.2-rc.5", "v22.22.3"));
+        assertDoesNotThrow(() -> DshPinnedInstaller.requireNodeVersion("0.2.3-alpha.2", "v24.22.3"));
+        assertDoesNotThrow(() -> DshPinnedInstaller.requireNodeVersion("0.2.3-alpha.2", "v24.23.0"));
+        for (String node : java.util.List.of("v24.22.2", "v24.9.0", "v22.22.3", "v26.13.1", "v24.22.3-pre")) {
+            assertThrows(IllegalStateException.class, () -> DshPinnedInstaller.requireNodeVersion("0.2.3-alpha.2", node), node);
+        }
+    }
+
     @Test void managedLauncherRestoresObservationPolicyAndPreservesArgumentBoundaries(@org.junit.jupiter.api.io.TempDir java.nio.file.Path temp) throws Exception {
         var prefix = java.nio.file.Files.createDirectories(temp.resolve("prefix with spaces"));
         var upstream = prefix.resolve("node_modules/.bin/dsh");

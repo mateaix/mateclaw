@@ -437,7 +437,8 @@ public class AgentService {
                                     connection.prompt(dshConversationHistory.enrich(
                                             convId, message, msg, origin))),
                             connection -> connection.close()),
-                    StreamDelta::content);
+                    StreamDelta::content, origin != null ? origin : ChatOrigin.EMPTY,
+                    thinkingLevel != null && !thinkingLevel.isBlank() ? thinkingLevel : dshAgent.getDefaultThinkingLevel());
         }
         BaseAgent agent = getOrBuildAgentForConversation(agentId, conversationId);
 

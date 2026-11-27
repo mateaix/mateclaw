@@ -58,7 +58,7 @@ public class DshProcessSupervisor {
             mount(args,Path.of(launch.command().get(i+1)),true);
         }
         sdkEnvironment.put("HOME",launch.home().toString());
-        for(String key:List.of("DEEPSEEK_API_KEY","DEEPSEEK_BASE_URL","DSH_HOME","DSH_AGENTS_HOME","DSH_CWD","MATECLAW_DSH_MODEL","MATECLAW_DSH_CONTEXT_WINDOW","MATECLAW_DSH_MAX_TOKENS")) {
+        for(String key:List.of("DEEPSEEK_API_KEY","DEEPSEEK_BASE_URL","DSH_HOME","DSH_AGENTS_HOME","DSH_CWD","MATECLAW_DSH_MODEL","MATECLAW_DSH_CONTEXT_WINDOW","MATECLAW_DSH_MAX_TOKENS","MATECLAW_DSH_SYSTEM_PROMPT")) {
             if(sdkEnvironment.containsKey(key)){args.add("--env");args.add(key);}
         }
         args.add("--env");args.add("HOME="+launch.home());
@@ -143,7 +143,7 @@ public class DshProcessSupervisor {
             String value=System.getenv(key);if(value!=null)b.environment().put(key,value);
         }
         // Only selected SDK variables are given to docker create, never in argv.
-        for(String key:List.of("DEEPSEEK_API_KEY","DEEPSEEK_BASE_URL","DSH_HOME","DSH_AGENTS_HOME","DSH_CWD","MATECLAW_DSH_MODEL","MATECLAW_DSH_CONTEXT_WINDOW","MATECLAW_DSH_MAX_TOKENS"))if(extra.containsKey(key))b.environment().put(key,extra.get(key));
+        for(String key:List.of("DEEPSEEK_API_KEY","DEEPSEEK_BASE_URL","DSH_HOME","DSH_AGENTS_HOME","DSH_CWD","MATECLAW_DSH_MODEL","MATECLAW_DSH_CONTEXT_WINDOW","MATECLAW_DSH_MAX_TOKENS","MATECLAW_DSH_SYSTEM_PROMPT"))if(extra.containsKey(key))b.environment().put(key,extra.get(key));
         // HOME is required by Docker for its config as well as by the container. Use an explicit
         // container HOME value, avoiding changing the client's config lookup.
         return b;

@@ -21,6 +21,10 @@ public class DshPinnedInstaller {
     public record Release(String version, String channel, String integrity) {}
     public record Installation(String version, String platform, String executablePath, String integrity) {}
     private static final Map<String, Release> CATALOG = Map.of(
+            "0.2.3-alpha.2", new Release("0.2.3-alpha.2", "alpha",
+                    "sha512-mi5hq96nk5x6HPU6gkcHSUZEKs0/xoyd8MV7GCTDpULYlcJVIUkfn5JiNv+UAMaV22VO4VQwbLWnjkFBV5b/ig=="),
+            "0.2.2-rc.5", new Release("0.2.2-rc.5", "candidate",
+                    "sha512-cNbp12tLYLUTXaVli7zwwMjzmmEVCD1PRldg4oKtXM4+lFYckcaliMS2PU/FoThB4iAN/fKOSID0nrtRZU4Gjw=="),
             "0.2.2-rc.1", new Release("0.2.2-rc.1", "candidate",
                     "sha512-ijR9UEVYkG15Q/Q79JzvzLBzQOQfc63VLr9n6flpwHPhr5IKn2UxthnSoto/P9l7qGd7pPvI1Ra6TW7LH3oKpg=="),
             "0.2.1-rc.2", new Release("0.2.1-rc.2", "candidate",
@@ -37,7 +41,7 @@ public class DshPinnedInstaller {
         if (release == null) throw new IllegalArgumentException("dsh.unsupported_version: select an exact catalog version");
         return release;
     }
-    public static List<Release> catalog() { return List.of(release("0.2.0-rc.1"), release("0.2.2-rc.1"), release("0.2.1-rc.2"), release("0.1.7-rc.2")); }
+    public static List<Release> catalog() { return List.of(release("0.2.0-rc.1"), release("0.2.2-rc.5"), release("0.2.3-alpha.2"), release("0.2.2-rc.1"), release("0.2.1-rc.2"), release("0.1.7-rc.2")); }
 
     public static String platform(String os, String arch) {
         if (os.toLowerCase().contains("linux") && (arch.equals("amd64") || arch.equals("x86_64"))) return "linux-x64";
@@ -96,17 +100,26 @@ public class DshPinnedInstaller {
         release(version);
         var match = java.util.regex.Pattern.compile("v(22|24)\\.([0-9]+)\\.([0-9]+)").matcher(node);
         boolean valid = match.matches();
-        if (valid && "0.2.2-rc.1".equals(version)) {
+        if (valid && usesManagedPatch(version)) {
             valid = "24".equals(match.group(1)) && Long.parseLong(match.group(2)) >= 9;
         }
+        if (valid && "0.2.3-alpha.2".equals(version)) {
+            long minor = Long.parseLong(match.group(2));
+            valid = minor > 22 || minor == 22 && Long.parseLong(match.group(3)) >= 3;
+        }
         if (!valid) throw new IllegalStateException("dsh.node_version_unverified: " + version
-                + ("0.2.2-rc.1".equals(version) ? " requires Node.js 24.9+ (24.x)" : " requires Node.js 22.x or 24.x"));
+                + ("0.2.3-alpha.2".equals(version) ? " requires Node.js 24.22.3+ (24.x)"
+                : usesManagedPatch(version) ? " requires Node.js 24.9+ (24.x)" : " requires Node.js 22.x or 24.x"));
+    }
+
+    static boolean usesManagedPatch(String version) {
+        return List.of("0.2.2-rc.1", "0.2.2-rc.5", "0.2.3-alpha.2").contains(version);
     }
 
     /** Keep the package untouched; a generation-owned launcher supplies reviewed defaults. */
     static Path managedExecutable(Path prefix, String version) throws IOException {
         Path upstream = prefix.resolve("node_modules/.bin/dsh");
-        if (!"0.2.2-rc.1".equals(version)) return upstream;
+        if (!usesManagedPatch(version)) return upstream;
         try (var input = new ClassPathResource("dsh/mateclaw-sdk.patch.yml").getInputStream()) {
             Files.copy(input, prefix.resolve("mateclaw-sdk.patch.yml"));
         }

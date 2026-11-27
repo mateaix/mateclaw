@@ -69,7 +69,7 @@ RUN mvn -pl mateclaw-server -am package -Dmaven.test.skip=true -q ${MAVEN_FLAGS}
 
 # Node/npm for the managed dsh installer. Pin the reviewed Node 24 runtime even
 # when Playwright changes its bundled Node major. Bookworm glibc runs on Noble.
-FROM node@sha256:c86ecead9e55a5210ac1727de38a4ca840bf03dcaf34dc9749addbf383b1920c AS dsh-node
+FROM node@sha256:49f7adaf9f1574bc45c20ea317139b39a59d7e758d0e93745e112fd85cb42623 AS dsh-node
 
 # Stage 3 — Runtime
 #
