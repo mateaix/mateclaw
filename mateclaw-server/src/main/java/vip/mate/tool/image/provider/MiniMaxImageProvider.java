@@ -17,12 +17,7 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * MiniMax 图片生成 Provider — image-01 模型
- * <p>
- * 同步模式：返回 Base64 图片。
- * 复用视频生成中的 MiniMax API Key + region 设置（{@code minimaxRegion}）。
- * <p>
- * API: POST {@code <baseUrl>/v1/image_generation} —— host 由 region 决定。
+ * MiniMax text-to-image generation with region-specific model endpoints.
  *
  * @author MateClaw Team
  */
@@ -43,6 +38,8 @@ public class MiniMaxImageProvider implements ImageGenerationProvider {
     static final String REGION_CN = "cn";
 
     private static final String DEFAULT_MODEL = "image-01";
+    private static final String H3 = "MiniMax-H3-Image";
+    private static final String H3_HIGHSPEED = "MiniMax-H3-Image-Highspeed";
 
     /**
      * Resolve MiniMax base URL from system settings region. Shared semantics
@@ -90,7 +87,7 @@ public class MiniMaxImageProvider implements ImageGenerationProvider {
                 .aspectRatios(List.of("1:1", "16:9", "4:3", "3:2", "2:3", "3:4", "9:16"))
                 .maxCount(9)
                 .defaultModel(DEFAULT_MODEL)
-                .models(List.of("image-01"))
+                .models(List.of(DEFAULT_MODEL, H3, H3_HIGHSPEED))
                 .build();
     }
 
@@ -117,15 +114,27 @@ public class MiniMaxImageProvider implements ImageGenerationProvider {
                 body.put("aspect_ratio", request.getAspectRatio());
             }
 
-            String baseUrl = resolveBaseUrl(config);
-            HttpResponse response = HttpRequest.post(baseUrl + "/v1/image_generation")
+            boolean h3 = H3.equals(model) || H3_HIGHSPEED.equals(model);
+            if (h3) {
+                // The image service stores synchronous results as PNG attachments.
+                body.put("output_format", "png");
+            }
+            HttpRequest post = HttpRequest.post(generationEndpoint(config, h3))
                     .header("Authorization", "Bearer " + apiKey)
                     .header("Content-Type", "application/json")
                     .body(body.toString())
-                    .timeout(60_000)
-                    .execute();
-
-            JsonNode result = objectMapper.readTree(response.body());
+                    .timeout(h3 ? 600_000 : 60_000);
+            if (h3) {
+                // Streaming the POST body prevents HttpURLConnection from replaying a paid generation.
+                post.removeHeader("Content-Length").setChunkedStreamingMode(4096).setFollowRedirects(false);
+            }
+            JsonNode result;
+            try (HttpResponse response = post.execute()) {
+                result = objectMapper.readTree(response.body());
+                if (h3) {
+                    return parseH3Response(response.getStatus(), result);
+                }
+            }
 
             int statusCode = result.path("base_resp").path("status_code").asInt(-1);
             if (statusCode != 0) {
@@ -169,5 +178,37 @@ public class MiniMaxImageProvider implements ImageGenerationProvider {
             log.error("[MiniMax Image] Error: {}", e.getMessage(), e);
             return ImageSubmitResult.failure(id(), "MiniMax Image 异常: " + e.getMessage());
         }
+    }
+
+    String generationEndpoint(SystemSettingsDTO config, boolean h3) {
+        if (!h3) {
+            return resolveBaseUrl(config) + "/v1/image_generation";
+        }
+        String host = REGION_CN.equalsIgnoreCase(config.getMinimaxRegion()) ? "https://api.minimax.cn" : BASE_URL_GLOBAL;
+        return host + "/v1/images/generations";
+    }
+
+    private ImageSubmitResult parseH3Response(int status, JsonNode result) {
+        String error = result.path("error").path("message").asText(null);
+        List<String> images = new ArrayList<>();
+        for (JsonNode item : result.path("data")) {
+            if (item.hasNonNull("error")) {
+                if (error == null) {
+                    error = item.path("error").path("message").asText(null);
+                }
+                continue;
+            }
+            String url = item.path("url").asText(null);
+            String base64 = item.path("b64_json").asText(null);
+            if (StringUtils.hasText(url)) {
+                images.add(url);
+            } else if (StringUtils.hasText(base64)) {
+                images.add("data:image/png;base64," + base64);
+            }
+        }
+        if (status >= 200 && status < 300 && !images.isEmpty()) {
+            return ImageSubmitResult.syncSuccess(id(), images);
+        }
+        return ImageSubmitResult.failure(id(), error != null ? error : "No image returned (HTTP " + status + ")");
     }
 }
