@@ -8,10 +8,10 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * <p>
  * Backs the global fallback boundary enforced by
  * {@link vip.mate.tool.guard.WorkspacePathGuard}. When a conversation has no
- * per-workspace base path configured, file and shell tools are confined to
- * {@link #root} instead of running unconstrained against the whole filesystem.
- * This is the fail-closed default for the common out-of-the-box state where a
- * workspace's {@code base_path} column is unset.
+ * per-workspace base path configured, file paths and literal shell paths are
+ * validated against {@link #root}. This path validation does not contain
+ * arbitrary subprocess file access; strict member isolation additionally
+ * requires the container executor.
  *
  * @author MateClaw Team
  */

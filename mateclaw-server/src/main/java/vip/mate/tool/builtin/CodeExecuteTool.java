@@ -43,6 +43,9 @@ import java.util.Set;
  *
  * <p>Safety:
  * <ul>
+ *   <li>Compatibility mode executes on the host with the server's filesystem
+ *       permissions. A working directory is not a filesystem sandbox. Strict
+ *       member isolation uses the container executor instead.</li>
  *   <li>Dangerous patterns in the code trigger ToolGuard approval/blocking — the
  *       tool name is registered as a shell-equivalent guarded tool.</li>
  *   <li>The subprocess does not inherit the server's secret env vars; only a

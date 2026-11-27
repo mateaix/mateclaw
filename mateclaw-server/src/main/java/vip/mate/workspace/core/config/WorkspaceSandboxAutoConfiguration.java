@@ -26,6 +26,12 @@ import java.nio.file.Paths;
 public class WorkspaceSandboxAutoConfiguration {
 
     public WorkspaceSandboxAutoConfiguration(WorkspaceSandboxProperties properties) {
+        if (!properties.isMemberIsolationEnabled()) {
+            log.warn("[WorkspaceSandbox] Host execution mode: filesystem path checks do not isolate Python/Node, "
+                    + "shell commands or skill scripts from server files. For untrusted users, configure "
+                    + "mateclaw.workspace.sandbox.member-isolation-enabled with a container runtime; "
+                    + "see the security guide's code execution isolation section.");
+        }
         if (!properties.isEnabled()) {
             WorkspacePathGuard.setDefaultRoot(null);
             log.warn("[WorkspaceSandbox] Fallback sandbox root disabled — conversations "

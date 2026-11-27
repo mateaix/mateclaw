@@ -323,7 +323,7 @@ CRITICAL 永远人审、safety floor 硬拦截的底线语义不变。
 
 ## File Guard
 
-File Guard 是文件系统级的访问控制。它坐在读写文件的任何工具或技能下面，决定哪些路径在边界内。
+File Guard 检查已接入文件工具的路径访问。任意代码和子进程的文件访问需要另外的执行隔离，详见下方「代码执行隔离」。
 
 ### 评估管道
 
@@ -350,7 +350,7 @@ File Guard 是文件系统级的访问控制。它坐在读写文件的任何工
 
 | 规则 | 说明 |
 |------|------|
-| 工作空间隔离 | 默认访问限定在工作空间目录内 |
+| 文件工具工作空间隔离 | 直接文件操作默认限定在工作空间目录内；代码和子进程需要严格执行隔离 |
 | 系统路径拒绝 | `/etc`、`/usr`、`/bin`、`/boot` 等默认拒绝 |
 | 敏感文件保护 | `.ssh`、`.config`、`.env` 拒绝 |
 | 路径穿越防护 | `../` 攻击被检测和阻止 |
@@ -367,6 +367,31 @@ mateclaw:
       enabled: true                    # 设 false 恢复旧的不受限行为
       root: ${user.dir}/data/workspace # 兜底沙箱根，启动时自动创建
 ```
+
+### 代码执行隔离
+
+默认兼容模式中的 `execute_code`、Shell 和技能脚本在服务端宿主环境执行，拥有服务进程的文件系统权限。工作目录、File Guard 和 Shell 文本检查不能把任意 Python/Node 程序限制在工作空间内；这同样适用于通过审批的调用。多用户或不可信用户部署需要启用严格成员隔离，不能只依赖角色权限或路径规则。
+
+在具有本地 Docker daemon 和 Docker CLI 的 Linux 后端上，先从仓库根目录构建执行镜像：
+
+```sh
+docker build -t mateclaw-sandbox:local docker/member-sandbox
+```
+
+再配置并重启后端：
+
+```yaml
+mateclaw:
+  workspace:
+    sandbox:
+      member-isolation-enabled: true
+      root: /srv/mateclaw/workspace
+      image: mateclaw-sandbox:local
+```
+
+也可设置 `MATECLAW_WORKSPACE_SANDBOX_MEMBER_ISOLATION_ENABLED=true`。后端和 Docker daemon 必须使用同一主机上的同一绝对存储路径，宿主文件操作还要求 Linux 文件系统支持 `SecureDirectoryStream`。每次执行仅挂载当前成员目录；读取其他成员、宿主文件或越界符号链接会失败。镜像或 Docker 不可用时直接报错，不回退到宿主执行。
+
+严格模式当前仅开放六个已审查的文件/代码工具，要求已认证的成员身份；共享技能脚本、MCP/plugin、DSH 及缺少可信用户身份的渠道不可用。已有共享文件不会自动迁移或通过共享目录回退读取。上线前请在目标 Linux 主机验证工作区内读写成功、工作区外读取失败。
 
 可视化编辑器在 `设置 → 安全与审批 → File Guard`。
 

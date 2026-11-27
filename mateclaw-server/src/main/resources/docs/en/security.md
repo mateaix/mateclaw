@@ -323,7 +323,7 @@ The hard floors are unchanged: CRITICAL always goes to a human, and safety-floor
 
 ## File Guard
 
-File Guard is filesystem-level access control. It sits underneath any tool or skill that reads or writes files, and decides what paths are in-bounds.
+File Guard checks path access through integrated file tools. Arbitrary code and subprocess file access require separate execution isolation; see "Code execution isolation" below.
 
 ### Evaluation pipeline
 
@@ -367,6 +367,31 @@ mateclaw:
       enabled: true                    # set false to restore the legacy unconstrained behaviour
       root: ${user.dir}/data/workspace # fallback sandbox root, created at startup
 ```
+
+### Code execution isolation
+
+In the default compatibility mode, `execute_code`, shell commands, and skill scripts run in the server host environment with the server process's filesystem permissions. A working directory, File Guard, and shell text checks cannot confine arbitrary Python/Node programs to a workspace, including approved calls. Deployments serving multiple or untrusted users require strict member isolation rather than relying only on roles or path rules.
+
+On a Linux backend with a local Docker daemon and Docker CLI, build the execution image from the repository root:
+
+```sh
+docker build -t mateclaw-sandbox:local docker/member-sandbox
+```
+
+Configure and restart the backend:
+
+```yaml
+mateclaw:
+  workspace:
+    sandbox:
+      member-isolation-enabled: true
+      root: /srv/mateclaw/workspace
+      image: mateclaw-sandbox:local
+```
+
+Alternatively, set `MATECLAW_WORKSPACE_SANDBOX_MEMBER_ISOLATION_ENABLED=true`. The backend and daemon must use the same absolute storage path on the same host; protected host file operations also require Linux filesystem support for `SecureDirectoryStream`. Each execution mounts only the current member directory. Other members' files, host files, and symlinks escaping that mount remain inaccessible. An unavailable image or Docker runtime causes an error without falling back to host execution.
+
+Strict mode currently exposes six audited file/code tools and requires an authenticated member identity. Shared skill scripts, MCP/plugins, DSH, and channels without a trusted user identity are unavailable. Existing shared files are not migrated or read through shared-directory fallbacks. Before rollout, verify on the target Linux host that in-workspace reads/writes succeed and out-of-workspace reads fail.
 
 Visual editor on `Settings → Security & Approval → File Guard`.
 

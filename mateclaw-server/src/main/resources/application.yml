@@ -225,13 +225,14 @@ mateclaw:
       tool-schema-max-tokens: ${MATECLAW_TOOL_SCHEMA_MAX_TOKENS:4000}
   workspace:
     sandbox:
-      # Global fallback filesystem boundary for file/shell tools. When a
-      # conversation has no per-workspace base path configured, operations are
-      # confined to this root instead of running unconstrained against the whole
-      # filesystem (fail-closed default). Set enabled=false to restore the legacy
-      # unconstrained behaviour for unconfigured conversations.
+      # Fallback root for file-path and literal shell-path checks when a
+      # conversation has no per-workspace base path. These checks do not
+      # sandbox arbitrary Python/Node, shell subprocesses, or skill scripts.
+      # Strict member isolation requires a configured container runtime; see
+      # the security guide before enabling it on an existing deployment.
       enabled: ${MATECLAW_WORKSPACE_SANDBOX_ENABLED:true}
       root: ${MATECLAW_WORKSPACE_SANDBOX_ROOT:${user.dir}/data/workspace}
+      member-isolation-enabled: ${MATECLAW_WORKSPACE_SANDBOX_MEMBER_ISOLATION_ENABLED:false}
   chat:
     upload:
       # Root directory for conversation chat attachments when neither the active
