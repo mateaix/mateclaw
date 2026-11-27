@@ -52,6 +52,24 @@ class DatasourceServicePasswordPersistenceTest {
     }
 
     @Test
+    @DisplayName("enable and disable responses mask passwords without changing stored ciphertext")
+    void toggleMasksPasswordInResponse() {
+        Fixture fixture = new Fixture();
+        fixture.service.create(fixture.newDatasource());
+        String originalCiphertext = fixture.persisted().getPassword();
+
+        for (boolean enabled : new boolean[]{false, true}) {
+            DatasourceEntity response = fixture.service.toggle(1L, enabled);
+
+            assertEquals(PASSWORD_MASK, response.getPassword());
+            assertEquals(enabled, response.getEnabled());
+            assertEquals(enabled, fixture.persisted().getEnabled());
+            assertEquals(originalCiphertext, fixture.persisted().getPassword());
+            assertEquals(PLAINTEXT, fixture.service.getDecrypted(1L).getPassword());
+        }
+    }
+
+    @Test
     @DisplayName("reusing a masked create response keeps repeated updates decryptable")
     void repeatedUpdatesPreserveDecryptability() {
         Fixture fixture = new Fixture();

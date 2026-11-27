@@ -99,6 +99,7 @@ public class DatasourceService {
         if (!enabled) {
             connectionManager.invalidate(id);
         }
+        maskPassword(entity);
         return entity;
     }
 
